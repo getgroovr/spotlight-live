@@ -210,6 +210,51 @@ Two buckets, because privacy differs:
    creator-upload first.
 4. **Reuse the existing Supabase project** (your stated preference) — confirm and
    wire `.env.local` when starting.
+5. **Account model for minors** (see Safety & moderation): open self-signup vs.
+   teacher-created/invited student accounts. A classroom tool with under-18
+   students likely wants the teacher to own the roster — settle this before
+   building signup into the flow.
+
+---
+
+---
+
+## Safety & moderation (FIRST-CLASS — design in, don't bolt on)
+
+Spotlight involves **students — some likely minors — uploading videos and
+commenting on each other.** That makes safety a core design concern from the
+first online slice, not a later add-on. Retrofitting moderation after content and
+comments already flow is far harder than building the seams now.
+
+Principles for the upload and social slices:
+
+- **The teacher is the moderation hub.** This matches the desktop design (teacher
+  as assembler/curator) and is the natural safety model for a classroom tool: a
+  trusted adult reviews/curates, students don't have unmediated reach to each other.
+- **Peer comments are gated, not live.** When `SOCIAL` turns on, classmate
+  comments should default to **teacher-reviewed before they're visible to other
+  students**, not posted instantly. The `peer_comments` table should carry a
+  `status` (`pending` | `approved` | `removed`) and a `reviewed_by` / `reviewed_at`.
+- **Reporting/flagging from day one.** Add a `reports` table when comments go live:
+  `{ id, reporter_id, target_type ('comment'|'video'|'profile'), target_id,
+  reason, created_at, resolved_at, resolved_by }`. A student (or teacher) can flag
+  content; the teacher resolves. Don't ship student-visible peer content without
+  this in place.
+- **Teacher-only stays teacher-only, enforced by RLS.** `reading_audio` and any
+  review/report tables must be locked by Row-Level Security per role — not hidden
+  in the UI. (The desktop "honor-system privacy" becomes real here.)
+- **Account/age reality.** The signup page already has an "18 or older" gate, but
+  a *classroom* tool will have under-18 students. The next chat must decide the
+  real model: likely **teacher-created/invited student accounts** (teacher owns
+  the class roster) rather than open self-signup, so minors aren't self-registering
+  into a public system. This is an open question to settle, flagged below.
+- **Minimal data on minors.** Collect only what the game needs (display name,
+  color, bio, their own clips). No unnecessary PII.
+
+These belong in the data model above: `peer_comments.status`, a `reports` table,
+and RLS policies are the concrete artifacts. Treat "can a student see another
+student's comment" as a *permission* question answered by the teacher, not a
+default.
 
 ---
 
