@@ -93,6 +93,126 @@ In priority order, matching the desktop kickoff's "deferred to spotlight-social"
 6. **Peer comments surfaced** — flip `SOCIAL = true` in the engine and back it with
    real data + teacher curation.
 
+---
+
+## First-draft data model (for the upload slice — REACT TO THIS, don't just build it)
+
+This is a starting proposal, not a final spec. The goal is to make the static
+`students.js` come from Supabase **without the engine having to change how it
+thinks**. The engine already models the world as: one teacher → a class of
+students → each student is a *stack of entries* (video + its description + audio)
+→ plus peer comments → plus the player's own session comments (which become the
+CSV). The tables below give each of those a real home.
+
+### The shapes the engine reads today (the target we map onto)
+- `TEACHER` = `{ name, email, className }`
+- a **student** = `{ id, name, color, bio, entries[], peerComments[] }`
+- an **entry** = `{ primary, description, uploadedAt, descriptionText, descriptionL1, readingAudio }`
+  - `primary` = main video (required), `description` = optional extra video,
+    `descriptionText` = written English, `descriptionL1` = native-language
+    (dormant, the translation seam), `readingAudio` = teacher-only audio.
+  - **The archive rule:** `entries[0]` is live; a new upload pushes to the front
+    and the old entry slides into the archive **with its description still
+    welded to it.** The DB must preserve this — never re-associate an old
+    description with a new video.
+- a **peer comment** = `{ author, text, videoUrl, createdAt }`
+- the **CSV row** = `{ player, session_date, video_student, video_number,
+  video_date, favorited, comment }` — this deliverable must survive online.
+
+### Proposed tables (Supabase / Postgres)
+
+```
+profiles            one row per auth user (extends Supabase auth.users)
+  id            uuid  PK, = auth.users.id
+  role          text  'teacher' | 'student'
+  display_name  text
+  color         text  the student's accent color (engine's `color`)
+  bio           text  the student's one-line bio (engine's `bio`)
+  created_at    timestamptz
+
+classes             a teacher's class (the engine's single TEACHER + className)
+  id            uuid  PK
+  teacher_id    uuid  FK -> profiles.id
+  name          text  e.g. "ESL Conversation — Spring"
+  created_at    timestamptz
+
+class_members       which students belong to which class (many-to-many)
+  class_id      uuid  FK -> classes.id
+  student_id    uuid  FK -> profiles.id
+  PRIMARY KEY (class_id, student_id)
+
+entries             the heart of it: one row per uploaded video = one "entry"
+  id              uuid  PK
+  student_id      uuid  FK -> profiles.id   (whose video this is)
+  class_id        uuid  FK -> classes.id    (which class it was made for)
+  primary_url     text  storage path to the main video (was `primary`)
+  description_url text  optional extra video (was `description`)
+  description_text text  written English        (descriptionText)
+  description_l1  text  native language, dormant (descriptionL1)
+  reading_audio_url text TEACHER-ONLY audio      (readingAudio)
+  uploaded_at     timestamptz                    (uploadedAt)
+  is_live         boolean  exactly one TRUE per student per class = entries[0]
+  -- archive rule = flip old row's is_live to false, insert new row is_live true.
+  -- Each row keeps its OWN description_text forever; nothing is re-associated.
+
+peer_comments       classmate comments (dormant until SOCIAL=true)
+  id            uuid  PK
+  author_id     uuid  FK -> profiles.id   (who wrote it)
+  subject_id    uuid  FK -> profiles.id   (whose spotlight it's about)
+  class_id      uuid  FK -> classes.id
+  text          text
+  video_url     text  optional video reply (the online "video comment")
+  created_at    timestamptz
+
+sessions            a player's one playthrough (replaces per-machine localStorage)
+  id            uuid  PK
+  player_id     uuid  FK -> profiles.id
+  class_id      uuid  FK -> classes.id
+  started_at    timestamptz
+  finished_at   timestamptz  null until done
+
+session_comments    the player's mandatory comment per video = the CSV rows
+  id            uuid  PK
+  session_id    uuid  FK -> sessions.id
+  entry_id      uuid  FK -> entries.id    (which video was commented on)
+  comment       text
+  favorited     boolean
+  created_at    timestamptz
+  -- buildSessionRows() reads from here; the CSV deliverable is unchanged.
+```
+
+### Storage
+Two buckets, because privacy differs:
+- `videos` — primary + description clips. Readable by classmates (it's the game).
+- `reading-audio` — TEACHER-ONLY. Locked down by RLS so only the class's teacher
+  (and the owning student) can read. This is the desktop "honor-system privacy"
+  finally made real.
+
+### Why this shape
+- **Engine compatibility:** a query of "all students in class X, each with their
+  entries newest-first" reconstructs the exact `STUDENTS` array the engine wants.
+  A thin adapter maps snake_case columns → the camelCase fields above, so
+  `spotlight.jsx` stays untouched.
+- **The archive rule becomes a DB invariant** (`is_live`), not a hand-edited
+  array — which is exactly what the desktop `addEntry()` comment warned to protect.
+- **Privacy is real**, enforced by Row-Level Security per role, not by hiding
+  things in the UI.
+- **The CSV survives**: `session_comments` carries every column the teacher's
+  deliverable needs.
+
+### Open questions for the next chat to settle
+1. **One teacher or many?** Desktop assumed a single fixed teacher. The model
+   above allows many teachers/classes — confirm that's wanted, or simplify.
+2. **Can a student be in more than one class?** (The model allows it; maybe not needed.)
+3. **Upload slice scope:** build the *creator upload UI* first (student records +
+   uploads), or the *teacher view* first (see/collect the class)? The desktop
+   kickoff calls the upload destination "the first real problem," suggesting
+   creator-upload first.
+4. **Reuse the existing Supabase project** (your stated preference) — confirm and
+   wire `.env.local` when starting.
+
+---
+
 ## What Slice One deliberately did NOT change
 The shuffle-stop engine and the content data model are byte-identical to the
 desktop build. The mechanic, the mandatory-comment gate, the CSV deliverable, the
