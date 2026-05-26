@@ -40,6 +40,11 @@ export default function SignupPage() {
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
+        // Recorded into raw_user_meta_data; the profiles auto-provision trigger
+        // (migration 01) reads is_18_plus from here. NOTE: this is an adult
+        // *affirmation*, not verification — it records the user's claim, it does
+        // not prevent an under-18 user from signing up (BUILD_PLAN #4).
+        data: { is_18_plus: confirm },
       },
     });
     setLoading(false);

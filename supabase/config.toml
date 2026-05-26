@@ -1,0 +1,34 @@
+# Supabase local config for spotlight-live.
+# This file is safe to commit. It declares the storage buckets so that
+# `supabase start` / `supabase seed buckets` provision them locally, matching
+# the buckets the migrations create on a remote project. No secrets here.
+
+project_id = "spotlight-live"
+
+[storage]
+enabled = true
+# Global cap. Videos stay SHORT (BUILD_PLAN #7) — well under a minute — so a
+# 50 MiB ceiling is generous and keeps the deck snappy. This is also the Free
+# plan's hard maximum, so it matches the reused groovr-creator project.
+file_size_limit = "50MiB"
+
+# ── media — classmate-readable submission photos / short videos ───────────
+# Private bucket: served to classmates via signed URLs (RLS on storage.objects
+# in migration 08 authorizes by path: media/<class_id>/<student_id>/...).
+[storage.buckets.media]
+public = false
+file_size_limit = "50MiB"
+allowed_mime_types = [
+  "image/jpeg", "image/png", "image/webp", "image/gif",
+  "video/mp4", "video/webm", "video/quicktime"
+]
+
+# ── reading-audio — TEACHER-ONLY audio of a student reading their blurb ────
+# Private; readable only by the owning student and the class's teacher
+# (storage RLS in migration 08). The desktop honor-system privacy made real.
+[storage.buckets.reading-audio]
+public = false
+file_size_limit = "10MiB"
+allowed_mime_types = [
+  "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "audio/wav"
+]
