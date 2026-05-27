@@ -160,21 +160,36 @@ function Avatar({ student, size = 56, lit = false }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// VideoStage — plays the spotlighted student's video. If there's a real
-// videoUrl it plays the file; if null (prototype), an animated placeholder
-// "performs" for a few seconds, then fires onEnded so the loop continues.
-// This is the analog of the matching game's DancerVideo, simplified: full
-// playback (no clip windowing), one video at a time, calls back when done.
+// VideoStage — plays the spotlighted student's video, OR shows their photo.
+//
+// VIDEO: if there's a real videoUrl it plays the file; if null (prototype),
+// an animated placeholder "performs" for ~6 seconds, then fires onEnded.
+//
+// PHOTO: shows the image with a soft timer — the photo is on screen alone
+// for ~3 seconds, then onEnded fires and the comment card appears. The
+// progress bar gives the student a visible "look here for a moment" beat
+// without locking anything; they can't interact with the photo (no buttons
+// yet), so there's no friction, just pacing.
+//
+// This is the analog of the matching game's DancerVideo, simplified for
+// shuffle-stop: one media item at a time, calls back when its beat ends.
 // ─────────────────────────────────────────────────────────────────────────
-function VideoStage({ student, src, onEnded, label }) {
+const PHOTO_BEAT_MS = 3000;
+const VIDEO_PLACEHOLDER_MS = 6000;
+
+function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
   const vref = useRef(null);
   const [placeholderProgress, setPlaceholderProgress] = useState(0);
 
+  const isPhoto = mediaType === "photo";
+
   useEffect(() => {
-    if (src) return; // real video drives its own onEnded
-    // Placeholder "video": ~6s performance, then ended.
+    // Real <video> with a src drives its own onEnded; nothing to time here.
+    if (!isPhoto && src) return;
+    // For photos OR for the no-src video placeholder, we run a timed beat.
     setPlaceholderProgress(0);
-    const total = 6000, step = 60;
+    const total = isPhoto ? PHOTO_BEAT_MS : VIDEO_PLACEHOLDER_MS;
+    const step = 60;
     let elapsed = 0;
     const iv = setInterval(() => {
       elapsed += step;
@@ -185,7 +200,7 @@ function VideoStage({ student, src, onEnded, label }) {
       }
     }, step);
     return () => clearInterval(iv);
-  }, [src, student.id, onEnded]);
+  }, [src, student.id, onEnded, isPhoto]);
 
   return (
     <div style={{ width: "100%", maxWidth: 440, margin: "0 auto" }}>
@@ -204,7 +219,21 @@ function VideoStage({ student, src, onEnded, label }) {
           boxShadow: `0 0 80px ${student.color}55, 0 14px 34px #7a5a3a55`,
         }}
       >
-        {src ? (
+        {isPhoto && src ? (
+          // ── PHOTO branch: <img> + soft-timer progress bar at the bottom.
+          <>
+            <img
+              src={src}
+              alt=""
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            />
+            <div style={{ position: "absolute", left: 0, right: 0, bottom: 0,
+              height: 4, background: "#00000033" }}>
+              <div style={{ width: `${placeholderProgress * 100}%`, height: "100%",
+                background: student.color, transition: "width 0.06s linear" }} />
+            </div>
+          </>
+        ) : src ? (
           <video
             ref={vref} src={src} autoPlay playsInline
             onEnded={onEnded}
@@ -463,18 +492,24 @@ function StageGrid({ order, shownIds, running, favorites }) {
 
 // ─────────────────────────────────────────────────────────────────────────
 // APP
+//
+// initialStudents: the deck the engine plays. Defaults to the in-file
+// STUDENTS array so local dev without Supabase still works. The /play
+// Server Component fetches the DB-backed deck and passes it in; the engine
+// neither knows nor cares where the deck came from. The thin DB→engine
+// adapter (src/lib/deck.ts) is what shapes DB rows into this prop.
 // ─────────────────────────────────────────────────────────────────────────
-export default function App() {
+export default function App({ initialStudents = STUDENTS }) {
   const [view, setView] = useState("splash"); // splash | game
   // Phase within the game: idle (not scrambling) | running | playing | descr | reveal | done
   const [phase, setPhase] = useState("idle");
-  const [order, setOrder] = useState(STUDENTS);
+  const [order, setOrder] = useState(initialStudents);
   const [shownIds, setShownIds] = useState(new Set());
   const [selected, setSelected] = useState(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   // We keep a local mutable copy of students so simulate-upload can mutate.
-  const [students, setStudents] = useState(STUDENTS);
+  const [students, setStudents] = useState(initialStudents);
 
   // Favorites (active) + the player's ONE comment per student (the data that
   // becomes the CSV sent to the teacher). myComments = { studentId: "text" }.
@@ -721,6 +756,7 @@ export default function App() {
       {phase === "playing" && selected && (
         <div style={{ animation: "fadeIn 0.4s ease" }}>
           <VideoStage student={selected} src={liveEntry(selected)?.primary || null}
+            mediaType={liveEntry(selected)?.mediaType || "video"}
             onEnded={onVideoEnded} label="In the spotlight" />
         </div>
       )}
@@ -755,6 +791,7 @@ export default function App() {
       {phase === "rewatch" && selected && (
         <div style={{ animation: "fadeIn 0.4s ease" }}>
           <VideoStage student={selected} src={liveEntry(selected)?.primary || null}
+            mediaType={liveEntry(selected)?.mediaType || "video"}
             onEnded={() => { setSelected(null); setPhase("done"); }}
             label={`Watching ${selected.name} again`} />
           <div style={{ textAlign: "center", marginTop: 16 }}>

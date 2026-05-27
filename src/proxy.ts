@@ -13,9 +13,11 @@ import { NextResponse, type NextRequest } from "next/server";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// Routes that require a signed-in user. Empty for slice one (the game is
-// public). Add "/dashboard", "/upload", etc. here as those slices land.
-const PROTECTED_PREFIXES: string[] = [];
+// Routes that require a signed-in user. The proxy redirects unauthenticated
+// requests to /auth/login. Real authz (teacher-vs-student, ownership) is
+// done in Server Actions / RLS — the proxy is only an optimistic check, per
+// the Next.js 16 proxy docs.
+const PROTECTED_PREFIXES: string[] = ["/teacher"];
 
 export async function proxy(request: NextRequest) {
   // No backend configured yet -> nothing to refresh or protect. Pass through.

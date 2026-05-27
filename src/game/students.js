@@ -104,10 +104,17 @@ export const TEACHER = {
 // Helper to keep the demo data readable: makes one entry.
 // Backward-compatible: old entry(primary, description, date) calls still work;
 // the creator fields default to empty/null and can be added per entry.
+//
+// mediaType (NEW): 'photo' | 'video'. The engine renders an <img> for photos
+// (with a soft-timer beat before the comment card appears) and a <video> for
+// videos. Defaults to 'video' so the existing in-file STUDENTS sample data —
+// which is all video-shaped — keeps its meaning unchanged. The DB adapter
+// always sets this explicitly from the entries.media_type column.
 const entry = (primary, description, uploadedAt, extra = {}) => ({
   primary,
   description,                                   // optional extra VIDEO (legacy)
   uploadedAt,
+  mediaType: extra.mediaType || "video",        // 'photo' | 'video'
   descriptionText: extra.descriptionText || "", // creator's WRITTEN English blurb
   descriptionL1: extra.descriptionL1 || "",     // DORMANT: native-language text (online translates)
   readingAudio: extra.readingAudio || null,     // TEACHER-ONLY audio of them reading the English
@@ -215,10 +222,11 @@ export function archivedEntries(student) {
 // pass no description, the new live entry just has description:null; the old
 // entry's old description is untouched and stays archived with its old primary.
 // ─────────────────────────────────────────────────────────────────────────
-export function addEntry(student, { primary, description = null }) {
+export function addEntry(student, { primary, description = null, mediaType = "video" }) {
   const newEntry = {
     primary,
     description,
+    mediaType,
     uploadedAt: new Date().toISOString().slice(0, 10),
   };
   return { ...student, entries: [newEntry, ...student.entries] };

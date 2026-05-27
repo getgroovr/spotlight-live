@@ -7,7 +7,15 @@ import App from "./spotlight.jsx";
 // Ported from the desktop main.jsx Shell: same light/warm theme, but here it
 // only paints the page background while mounted and restores it on unmount, so
 // it doesn't bleed into the (dark-themed) auth pages that share this app.
-export default function GameShell() {
+//
+// initialStudents (optional): forwarded to the engine. The /play Server
+// Component fetches the deck and passes it in; if omitted, the engine falls
+// back to its built-in STUDENTS sample data so local dev without env vars
+// still works.
+/**
+ * @param {{ initialStudents?: unknown[] }} props
+ */
+export default function GameShell({ initialStudents } = {}) {
   useEffect(() => {
     const htmlEl = document.documentElement;
     const bodyEl = document.body;
@@ -43,7 +51,7 @@ export default function GameShell() {
       }}
     >
       <div style={{ width: "100%", maxWidth: 560 }}>
-        <App />
+        <App initialStudents={initialStudents} />
       </div>
     </div>
   );
