@@ -305,7 +305,26 @@ function ProfileCard({
       boxShadow: `0 0 60px ${student.color}33, 0 14px 34px #7a5a3a55`,
     }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
-        <Avatar student={student} size={84} lit />
+        {/* PHOTO HERO — when the entry is a photo, show the photo itself as
+            the visual focus rather than a colored letter avatar. The photo
+            stays on screen the entire time the student is reading the
+            description and writing their comment. For non-photo entries
+            (videos, or no media) we fall back to the original Avatar circle. */}
+        {(live && live.primary && live.mediaType === "photo") ? (
+          <img
+            src={live.primary}
+            alt=""
+            style={{
+              width: "100%", maxWidth: 380, aspectRatio: "4/3",
+              objectFit: "cover", borderRadius: 16,
+              border: `2px solid ${student.color}`,
+              boxShadow: `0 0 40px ${student.color}55`,
+              display: "block",
+            }}
+          />
+        ) : (
+          <Avatar student={student} size={84} lit />
+        )}
         <h2 style={{ fontFamily: F, fontSize: 26, fontWeight: 800, color: C.text, margin: "14px 0 4px" }}>
           {student.name}
         </h2>
@@ -454,6 +473,12 @@ function ProfileCard({
 // ─────────────────────────────────────────────────────────────────────────
 // StageGrid — the 3×3 of student tiles, scrambling while running.
 // "shown" students render as dimmed/checked and are out of play.
+//
+// Each tile shows the actual photo (square crop) if the entry has one;
+// otherwise it falls back to the colored letter avatar. The visible photo
+// is critical for an ESL audience — the student needs to recognize the
+// images so the spin/stop choice is something they engage with, not a
+// blind lottery.
 // ─────────────────────────────────────────────────────────────────────────
 function StageGrid({ order, shownIds, running, favorites }) {
   return (
@@ -463,11 +488,13 @@ function StageGrid({ order, shownIds, running, favorites }) {
     }}>
       {order.map((s) => {
         const shown = shownIds.has(s.id);
+        const live = liveEntry(s);
+        const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
         return (
           <div key={s.id} style={{
             background: C.panel,
             border: `1px solid ${shown ? C.panelEdge : s.color + "66"}`,
-            borderRadius: 14, padding: "14px 8px 12px",
+            borderRadius: 14, padding: "10px 8px 12px",
             display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
             opacity: shown ? 0.4 : 1,
             transition: running ? "all 0.18s ease" : "all 0.3s ease",
@@ -479,7 +506,20 @@ function StageGrid({ order, shownIds, running, favorites }) {
             {favorites[s.id] && !shown && (
               <div style={{ position: "absolute", top: 7, right: 9, fontSize: 12, color: C.light }}>★</div>
             )}
-            <Avatar student={s} size={50} />
+            {hasPhoto ? (
+              <img
+                src={live.primary}
+                alt=""
+                style={{
+                  width: "100%", aspectRatio: "1/1",
+                  objectFit: "cover", borderRadius: 10,
+                  border: `2px solid ${s.color}`,
+                  display: "block",
+                }}
+              />
+            ) : (
+              <Avatar student={s} size={50} />
+            )}
             <div style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: shown ? C.textFaint : C.text }}>
               {s.name}
             </div>
@@ -546,7 +586,15 @@ export default function App({ initialStudents = STUDENTS }) {
     const pool = students.filter((s) => !shownIds.has(s.id));
     const pick = pool[Math.floor(Math.random() * pool.length)];
     setSelected(pick);
-    setPhase("playing");
+    // For photo entries, the photo is now the visual hero of the reveal card
+    // itself — there's no separate "play the photo for 3 seconds" beat. Going
+    // straight to reveal keeps the photo on screen continuously until the
+    // student has written their comment, which is what we actually want for
+    // an ESL writing task. For video entries (Slice 2+), keep the "playing"
+    // phase so the actual video plays before the reveal.
+    const live = liveEntry(pick);
+    const isPhoto = live?.mediaType === "photo";
+    setPhase(isPhoto ? "reveal" : "playing");
   }, [phase, students, shownIds]);
 
   // Called when the (placeholder or real) video finishes.
