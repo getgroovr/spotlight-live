@@ -12,7 +12,7 @@
 //   id                       (uuid)          (used as student.id, since each
 //                                             starter entry is presented as
 //                                             its own "student" in the deck)
-//   media_url                (storage path)  primary (signed URL)
+//   media_url                (storage path)  primary (public URL)
 //   media_type               (enum)          mediaType ('photo'|'video')
 //   description_text         (text)          descriptionText
 //   description_l1           (text)          descriptionL1 (DORMANT)
@@ -30,6 +30,13 @@
 //   auth context, and anon visitors go through the public-class RLS path.
 //   Either way, what comes back is exactly what the visitor is allowed to
 //   see. No service-role key, no privilege escalation, no surprises.
+//
+// STORAGE
+//   Starter media lives in the `teacher-deck` PUBLIC bucket. getPublicUrl
+//   returns a permanent world-readable URL — no signing, no expiry, no
+//   anon-role storage RLS puzzle. This replaces the previous
+//   createSignedUrl approach which silently returned null for anon
+//   visitors against the private `media` bucket (see migration 08).
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
@@ -42,9 +49,9 @@ const STARTER_PALETTE = [
   "#22B8C9", "#639922", "#BA7517",
 ];
 
-// How long signed URLs live. 1 hour is plenty for one /play session and
-// keeps the URL out of the static prerender's "infinite" trap.
-const SIGNED_URL_TTL_SECONDS = 60 * 60;
+// Public bucket holding teacher-uploaded starter photos. Keep in sync with
+// STARTER_BUCKET in src/app/teacher/deck/actions.ts.
+const STARTER_BUCKET = "teacher-deck";
 
 // What the engine expects (shape of a single "student" tile). Kept loose
 // because students.js doesn't export a type; this is documentation as much
@@ -125,44 +132,54 @@ export async function loadGenericDeck(): Promise<DeckResult> {
   }
   const picked = pool.slice(0, DECK_SIZE);
 
-  // Sign each media_url. createSignedUrl works against the private bucket
-  // because the RLS in migration 10 grants the caller read access to
-  // public-class objects. If signing fails (e.g. an entry's media_url is a
-  // path that no longer exists in storage), we surface a null primary so
-  // the engine falls back to its animated placeholder for that tile rather
-  // than crashing the whole deck.
-  const students: EngineStudent[] = await Promise.all(
-    picked.map(async (r, i): Promise<EngineStudent> => {
-      let signedUrl: string | null = null;
-      if (r.media_url) {
-        const { data: signed } = await supabase.storage
-          .from("media")
-          .createSignedUrl(r.media_url, SIGNED_URL_TTL_SECONDS);
-        signedUrl = signed?.signedUrl ?? null;
+  // Build the public URL for each media_url. teacher-deck is a public bucket
+  // so getPublicUrl returns a permanent world-readable URL — no signing,
+  // no expiry, no anon RLS dance. If the path is missing or the call fails
+  // for some unforeseen reason, log it (NEVER swallow silently again — that
+  // bug cost a session) and surface a null primary so the engine falls back
+  // to its animated placeholder for that tile rather than crashing the deck.
+  const students: EngineStudent[] = picked.map((r, i): EngineStudent => {
+    let publicUrl: string | null = null;
+    if (r.media_url) {
+      try {
+        const { data } = supabase.storage
+          .from(STARTER_BUCKET)
+          .getPublicUrl(r.media_url);
+        publicUrl = data?.publicUrl ?? null;
+        if (!publicUrl) {
+          console.error(
+            `[deck] getPublicUrl returned no URL for path: ${r.media_url}`
+          );
+        }
+      } catch (e) {
+        console.error(
+          `[deck] getPublicUrl threw for path: ${r.media_url}`,
+          e
+        );
       }
-      const color = STARTER_PALETTE[i % STARTER_PALETTE.length];
-      return {
-        id: r.id,
-        name: `Photo ${i + 1}`,
-        color,
-        // bio is empty for starters: the engine's reveal card already shows
-        // descriptionText as a quoted block below the name. Setting bio to
-        // the same text would duplicate it. For actual student tiles in
-        // later slices, bio carries the student's profile blurb.
-        bio: "",
-        entries: [{
-          primary: signedUrl,
-          description: null,
-          mediaType: (r.media_type as "photo" | "video") || "photo",
-          uploadedAt: (r.uploaded_at || "").slice(0, 10),
-          descriptionText: r.description_text || "",
-          descriptionL1: r.description_l1 || "",
-          readingAudio: null,
-        }],
-        peerComments: [],
-      };
-    })
-  );
+    }
+    const color = STARTER_PALETTE[i % STARTER_PALETTE.length];
+    return {
+      id: r.id,
+      name: `Photo ${i + 1}`,
+      color,
+      // bio is empty for starters: the engine's reveal card already shows
+      // descriptionText as a quoted block below the name. Setting bio to
+      // the same text would duplicate it. For actual student tiles in
+      // later slices, bio carries the student's profile blurb.
+      bio: "",
+      entries: [{
+        primary: publicUrl,
+        description: null,
+        mediaType: (r.media_type as "photo" | "video") || "photo",
+        uploadedAt: (r.uploaded_at || "").slice(0, 10),
+        descriptionText: r.description_text || "",
+        descriptionL1: r.description_l1 || "",
+        readingAudio: null,
+      }],
+      peerComments: [],
+    };
+  });
 
   return { ok: true, students };
 }

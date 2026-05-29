@@ -3,6 +3,13 @@
 // Server Component. Lists the current starters with their descriptions and a
 // delete button. Renders an upload form that posts to the uploadStarter
 // Server Action. Refuses to render at all if the visitor isn't a teacher.
+//
+// Slice 1A / piece 3 change: image URLs now come from getPublicUrl against
+// the `teacher-deck` bucket (which is public by design). Previously this
+// signed against the `media` bucket — a leftover from before the bucket
+// migration. Public URLs don't expire and don't require a signing roundtrip,
+// which is the correct shape for a public starter pool that anonymous /play
+// visitors will also need to read.
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { DeckClient } from "./deck-client";
@@ -10,6 +17,11 @@ import { DeckClient } from "./deck-client";
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Spotlight — Deck" };
+
+// Starter bucket name. Kept in one place so we don't drift from actions.ts
+// (which has its own STARTER_BUCKET const for the same reason). If we ever
+// rename or split the bucket again, both files change in lockstep.
+const STARTER_BUCKET = "teacher-deck";
 
 type Starter = {
   id: string;
@@ -90,21 +102,24 @@ export default async function TeacherDeckPage() {
     .eq("is_starter", true)
     .order("uploaded_at", { ascending: true });
 
-  // Sign URLs for the gallery thumbnails.
-  const starters: Starter[] = await Promise.all(
-    (rows || []).map(async (r) => {
-      const { data: signed } = r.media_url
-        ? await supabase.storage.from("media").createSignedUrl(r.media_url, 60 * 60)
-        : { data: null };
-      return {
-        id: r.id,
-        media_url: r.media_url,
-        description_text: r.description_text,
-        signed_url: signed?.signedUrl ?? null,
-        uploaded_at: r.uploaded_at,
-      };
-    })
-  );
+  // Build public URLs for the gallery thumbnails.
+  // getPublicUrl is synchronous, never errors, and the URL never expires —
+  // which is what we want for a public bucket. Kept the field name
+  // `signed_url` on the Starter type so deck-client.tsx doesn't need to
+  // change; from its perspective it's still "a URL string the <img> can
+  // load," just generated a different way.
+  const starters: Starter[] = (rows || []).map((r) => {
+    const publicUrl = r.media_url
+      ? supabase.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url).data.publicUrl
+      : null;
+    return {
+      id: r.id,
+      media_url: r.media_url,
+      description_text: r.description_text,
+      signed_url: publicUrl,
+      uploaded_at: r.uploaded_at,
+    };
+  });
 
   return (
     <Frame>
