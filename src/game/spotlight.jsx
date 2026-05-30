@@ -1,5 +1,18 @@
 "use client";
 
+// ─────────────────────────────────────────────────────────────────────────
+// src/game/spotlight.jsx
+//
+// Slice 1B (Profile v1) changes vs. previous version:
+//   • Splash no longer gates on a name — you hit "Enter the stage" and go.
+//     Progress save/resume now keys on a single per-browser anon key.
+//   • The end-of-game join form collects EMAIL ONLY. Name, screen name, and
+//     the "why was this your favorite?" note all moved to the profile (the
+//     page you land on after clicking the magic link). No self-photo here —
+//     the student's own content photo belongs to round 2.
+//   • The "check your email" screen now briefly explains what the class is.
+// ─────────────────────────────────────────────────────────────────────────
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   STUDENTS,
@@ -34,35 +47,34 @@ function shuffle(a) {
   return b;
 }
 
-const SAVE_PREFIX = "spotlight:progress:";
-function saveKey(name) { return SAVE_PREFIX + (name || "").trim().toLowerCase(); }
-function saveProgress(name, data) {
+// Round 1 is anonymous now — progress is saved per browser under a single
+// key, so a player can hit Resume without ever typing a name.
+const SAVE_KEY = "spotlight:progress:anon";
+function saveProgress(data) {
   try {
     const payload = {
-      playerName: name,
       shownIds: [...data.shownIds],
       myComments: data.myComments,
       savedAt: new Date().toISOString(),
     };
-    localStorage.setItem(saveKey(name), JSON.stringify(payload));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
   } catch (e) {}
 }
-function loadProgress(name) {
+function loadProgress() {
   try {
-    const raw = localStorage.getItem(saveKey(name));
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const p = JSON.parse(raw);
     return {
-      playerName: p.playerName || name,
       shownIds: new Set(p.shownIds || []),
       myComments: p.myComments || {},
       savedAt: p.savedAt || null,
     };
   } catch (e) { return null; }
 }
-function clearProgress(name) { try { localStorage.removeItem(saveKey(name)); } catch (e) {} }
-function hasResumableProgress(name) {
-  const p = loadProgress(name);
+function clearProgress() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
+function hasResumableProgress() {
+  const p = loadProgress();
   return !!(p && p.shownIds.size > 0);
 }
 
@@ -376,23 +388,20 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
   );
 }
 
-function EnrollForm({ myComments, favoriteId, onBack }) {
-  const [name, setName] = useState("");
+// ─────────────────────────────────────────────────────────────────────────
+// EnrollForm — now collects EMAIL ONLY. Name, screen name, and the
+// "why is this your favorite?" note are gathered on the profile, after the
+// student clicks the magic link. The favorite + the nine comments still go
+// up in the same Server Action call so nothing is lost.
+// ─────────────────────────────────────────────────────────────────────────
+function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
   const [email, setEmail] = useState("");
-  const [photo, setPhoto] = useState(null);
-  const [photoPreview, setPhotoPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
 
-  const handlePhoto = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPhoto(file);
-    setPhotoPreview(URL.createObjectURL(file));
-  };
-
-  const ready = !!name.trim() && !!email.trim() && !!photo;
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const ready = validEmail;
 
   const handleSubmit = async () => {
     if (!ready || loading) return;
@@ -400,9 +409,7 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
     setLoading(true);
     try {
       const fd = new FormData();
-      fd.append("name", name);
-      fd.append("email", email);
-      fd.append("photo", photo);
+      fd.append("email", email.trim());
       fd.append("comments", JSON.stringify(myComments));
       fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
       const result = await enrollStudent(fd);
@@ -420,13 +427,19 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
 
   if (done) {
     return (
-      <div style={{ textAlign: "center", padding: "2rem 1rem", maxWidth: 420, margin: "0 auto" }}>
+      <div style={{ textAlign: "center", padding: "2rem 1rem", maxWidth: 440, margin: "0 auto" }}>
         <div style={{ fontSize: 48, marginBottom: 12 }}>✉️</div>
         <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 10px" }}>
           Check your email
         </h2>
-        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.7, maxWidth: 360, margin: "0 auto" }}>
-          You'll get a Spotlight invitation (sent via Supabase). Click the link inside to join the class.
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.7, maxWidth: 380, margin: "0 auto 14px" }}>
+          We just sent you a Spotlight invitation. Click the link inside to open your
+          profile and finish joining — that's where you'll add your name and tell us
+          why you picked your favorite.
+        </p>
+        <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6, maxWidth: 380, margin: "0 auto" }}>
+          You're joining a small class of up to {totalStudents} students. Each round you'll
+          add one of your own photos and comment on the other students' photos.
         </p>
       </div>
     );
@@ -437,28 +450,15 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
       <div style={{ textAlign: "center", marginBottom: 22 }}>
         <div style={{ fontSize: 36, marginBottom: 8 }}>🎓</div>
         <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
-          Complete your profile
+          Join the class
         </h2>
-        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6, maxWidth: 340, margin: "0 auto" }}>
-          We'll email you an invitation. Click the link to join the class.
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6, maxWidth: 360, margin: "0 auto" }}>
+          Enter your email and we'll send you an invitation. Click the link to open
+          your profile and finish up — no password needed.
         </p>
       </div>
 
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
-          display: "block", marginBottom: 6 }}>Your name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="First name is fine"
-          style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-            fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-            border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
-        />
-      </div>
-
-      <div style={{ marginBottom: 14 }}>
+      <div style={{ marginBottom: 18 }}>
         <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
           display: "block", marginBottom: 6 }}>Your email</label>
         <input
@@ -468,31 +468,9 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
           placeholder="you@example.com"
           style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
             fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-            border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
+            border: `1px solid ${validEmail ? C.light + "88" : C.panelEdge}`,
+            borderRadius: 10, outline: "none" }}
         />
-      </div>
-
-      <div style={{ marginBottom: 20 }}>
-        <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
-          display: "block", marginBottom: 6 }}>A photo of yourself</label>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          {photoPreview ? (
-            <img src={photoPreview} alt="preview"
-              style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover",
-                border: `2px solid ${C.light}` }} />
-          ) : (
-            <div style={{ width: 64, height: 64, borderRadius: "50%", background: C.panelEdge,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 24, color: C.textFaint }}>👤</div>
-          )}
-          <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, padding: "9px 18px",
-            background: C.panel, border: `1px solid ${C.panelEdge}`, borderRadius: 20,
-            cursor: "pointer", color: C.text }}>
-            {photo ? "Change photo" : "Choose photo"}
-            <input type="file" accept="image/jpeg,image/png,image/webp"
-              onChange={handlePhoto} style={{ display: "none" }} />
-          </label>
-        </div>
       </div>
 
       {error && (
@@ -512,14 +490,14 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
           cursor: (ready && !loading) ? "pointer" : "not-allowed",
           letterSpacing: 0.5, marginBottom: 12 }}
       >
-        {loading ? "Submitting…" : "Send my favorite to my new teacher →"}
+        {loading ? "Sending…" : "Send my invitation →"}
       </button>
 
       <div style={{ textAlign: "center" }}>
         <button onClick={onBack}
           style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
             border: "none", cursor: "pointer", textDecoration: "underline" }}>
-          ← Back to my photos
+          ← Back to the photos
         </button>
       </div>
     </div>
@@ -531,7 +509,7 @@ function EnrollForm({ myComments, favoriteId, onBack }) {
 // Kept only the prompt + the grid + the button.
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
-  playerName, myComments, students, totalStudents, onPlayAgain,
+  myComments, students, totalStudents, onPlayAgain,
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
@@ -588,6 +566,7 @@ function DoneScreen({
         <EnrollForm
           myComments={myComments}
           favoriteId={favoriteId}
+          totalStudents={totalStudents}
           onBack={() => setDonePhase("review")}
         />
       )}
@@ -603,7 +582,6 @@ export default function App({ initialStudents = STUDENTS }) {
   const [selected, setSelected] = useState(null);
   const [students, setStudents] = useState(initialStudents);
   const [myComments, setMyComments] = useState({});
-  const [playerName, setPlayerName] = useState("");
 
   const scrambleRef = useRef(null);
   const allShown = shownIds.size >= students.length;
@@ -653,33 +631,31 @@ export default function App({ initialStudents = STUDENTS }) {
   useEffect(() => {
     if (view !== "game") return;
     if (phase === "done") return;
-    if (!playerName.trim()) return;
     if (shownIds.size === 0 && Object.keys(myComments).length === 0) return;
-    saveProgress(playerName, { shownIds, myComments });
-  }, [view, phase, playerName, shownIds, myComments]);
+    saveProgress({ shownIds, myComments });
+  }, [view, phase, shownIds, myComments]);
 
   const resume = useCallback(() => {
-    const p = loadProgress(playerName);
+    const p = loadProgress();
     if (!p) return;
-    setPlayerName(p.playerName);
     setShownIds(p.shownIds);
     setMyComments(p.myComments);
     setSelected(null);
     setOrder(shuffle(students));
     setPhase(p.shownIds.size >= students.length ? "done" : "idle");
     setView("game");
-  }, [playerName, students]);
+  }, [students]);
 
   const resetAll = useCallback(() => {
-    clearProgress(playerName);
+    clearProgress();
     setShownIds(new Set());
     setSelected(null);
     setPhase("idle");
     setOrder(shuffle(students));
     setMyComments({});
-  }, [students, playerName]);
+  }, [students]);
 
-  const canResume = view === "splash" && playerName.trim() && hasResumableProgress(playerName);
+  const canResume = view === "splash" && hasResumableProgress();
 
   if (view === "splash") {
     return (
@@ -708,19 +684,9 @@ export default function App({ initialStudents = STUDENTS }) {
             Spotlight
           </h1>
           <p style={{ fontFamily: F, fontSize: 15, fontWeight: 300, color: C.textDim,
-            maxWidth: 360, margin: "0 auto 22px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
+            maxWidth: 360, margin: "0 auto 24px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
             Nine photos. Hit stop, look closely, and tell us what you see.
           </p>
-          <input
-            value={playerName}
-            onChange={(e) => setPlayerName(e.target.value)}
-            placeholder="Type your name"
-            style={{ fontFamily: F, fontSize: 14, padding: "11px 16px", width: 220,
-              textAlign: "center", background: "#FFFDF7", color: C.text,
-              border: `1px solid ${C.panelEdge}`, borderRadius: 30, outline: "none",
-              marginBottom: 18, animation: "fadeUp 1.0s ease", display: "block",
-              marginLeft: "auto", marginRight: "auto" }}
-          />
           {canResume ? (
             <div style={{ animation: "fadeUp 1.1s ease" }}>
               <button
@@ -744,12 +710,10 @@ export default function App({ initialStudents = STUDENTS }) {
           ) : (
             <button
               onClick={() => { resetAll(); setView("game"); }}
-              disabled={!playerName.trim()}
               style={{ fontFamily: F, fontSize: 16, fontWeight: 600, padding: "14px 44px",
-                background: playerName.trim() ? C.light : C.panelEdge,
-                color: playerName.trim() ? C.stageDeep : C.textFaint, border: "none", borderRadius: 50,
-                cursor: playerName.trim() ? "pointer" : "not-allowed", letterSpacing: 1,
-                animation: "fadeUp 1.1s ease", boxShadow: playerName.trim() ? `0 8px 30px ${C.light}44` : "none" }}
+                background: C.light, color: C.stageDeep, border: "none", borderRadius: 50,
+                cursor: "pointer", letterSpacing: 1,
+                animation: "fadeUp 1.1s ease", boxShadow: `0 8px 30px ${C.light}44` }}
             >
               Enter the stage
             </button>
@@ -845,7 +809,6 @@ export default function App({ initialStudents = STUDENTS }) {
 
       {isDone && (
         <DoneScreen
-          playerName={playerName}
           myComments={myComments}
           students={students}
           totalStudents={students.length}
