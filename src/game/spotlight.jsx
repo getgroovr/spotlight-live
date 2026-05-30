@@ -7,56 +7,20 @@ import {
   liveEntry,
   archivedEntries,
   addEntry,
-  buildSessionCSV,
-  buildSessionRows,
-  sessionFilename,
 } from "./students.js";
-
-// ═══════════════════════════════════════════════════════════════════════
-// Spotlight — shuffle-stop engine (education / ESL showcase)
-//
-// Forked from the GroovR matching template. The MATCHING logic is gone (no
-// right answer here). What carried over: the content-layer pattern, the video
-// player primitive, the reveal-card pattern, the splash/shell, the favorites
-// data shape, and the SOCIAL master-switch.
-//
-// THE LOOP (as specified):
-//   • 9 student tiles in the pool, scrambling while running.
-//   • Player hits STOP → one student is selected; their LIVE video plays,
-//     literally in a spotlight (the rest of the stage dims).
-//   • Video ends → replaced by that student's PROFILE CARD, with an optional
-//     "watch description video" button (only if the live entry has one).
-//   • That student LEAVES the pool (won't replay this session); pool shrinks.
-//   • Repeat until all 9 shown → "session complete" + reset.
-//   • One fixed teacher.
-//
-// BUILT NOW, DORMANT ON DESKTOP (gated by SOCIAL, same pattern as the parent):
-//   • Peer comments (other students commenting — text now, video online).
-// BUILT NOW, ACTIVE ON DESKTOP:
-//   • Favorites (star a student).
-//   • Archive shelf (see a student's older videos; auto-archive is in students.js).
-//   • "Send to teacher" — emails this session's favorites + comments via mailto:,
-//     the poor-man's-backend alternative to a live server.
-// ═══════════════════════════════════════════════════════════════════════
+import { enrollStudent } from "@/app/play/actions";
 
 const F = "'Outfit',sans-serif";
-
-// ─────────────────────────────────────────────────────────────────────────
-// SOCIAL — master switch for ONLINE-only features (peer comments). Hidden on
-// desktop. Flip to true for the online build. Same one-line gate as GroovR.
-// ─────────────────────────────────────────────────────────────────────────
 const SOCIAL = false;
 
-// Warm, light "lamplit classroom" palette — tan/cream surfaces, amber accents,
-// brown reserved for small contrast elements (inputs). No dark wells, no fades.
 const C = {
-  stage: "#E8D3A8",      // main stage — light warm tan
-  stageDeep: "#7a5a3a",  // deep accent (inputs, video backdrop) — warm brown
-  panel: "#F3E4C4",      // cards — light cream
-  panelEdge: "#C9A877",  // visible warm border
-  light: "#D98A2B",      // amber accent (buttons, highlights) — deeper for contrast on light
+  stage: "#E8D3A8",
+  stageDeep: "#7a5a3a",
+  panel: "#F3E4C4",
+  panelEdge: "#C9A877",
+  light: "#D98A2B",
   lightSoft: "#E0954A",
-  text: "#3A2A18",       // dark espresso text — readable on light surfaces
+  text: "#3A2A18",
   textDim: "#6E5536",
   textFaint: "#9A815E",
 };
@@ -70,42 +34,19 @@ function shuffle(a) {
   return b;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// SAVE / RESUME — local progress, so a student who closes mid-game picks up
-// where they left off. Stored in localStorage, KEYED BY PLAYER NAME, so a
-// shared browser keeps each student's progress separate. Autosaved after each
-// comment; cleared when a session is finished or the student starts fresh.
-//
-// NOTE: localStorage works in the real `npm run dev` / desktop build but NOT
-// in the sandboxed double-click preview.html — there, save/resume silently
-// no-ops (wrapped in try/catch). This is a desktop-build feature.
-//
-// What's saved: enough to fully restore the IN-PROGRESS game — who's been
-// shown, every comment written so far, favorites, the player's name. We do
-// NOT save transient UI (the current spotlight animation, scramble order);
-// resume always returns the student to the calm "pick a video" grid.
-// ─────────────────────────────────────────────────────────────────────────
 const SAVE_PREFIX = "spotlight:progress:";
-
-function saveKey(name) {
-  return SAVE_PREFIX + (name || "").trim().toLowerCase();
-}
-
+function saveKey(name) { return SAVE_PREFIX + (name || "").trim().toLowerCase(); }
 function saveProgress(name, data) {
   try {
     const payload = {
       playerName: name,
-      shownIds: [...data.shownIds],          // Set -> array for JSON
+      shownIds: [...data.shownIds],
       myComments: data.myComments,
-      favorites: data.favorites,
       savedAt: new Date().toISOString(),
     };
     localStorage.setItem(saveKey(name), JSON.stringify(payload));
-  } catch (e) {
-    // localStorage unavailable (sandboxed preview) — silently skip.
-  }
+  } catch (e) {}
 }
-
 function loadProgress(name) {
   try {
     const raw = localStorage.getItem(saveKey(name));
@@ -115,78 +56,41 @@ function loadProgress(name) {
       playerName: p.playerName || name,
       shownIds: new Set(p.shownIds || []),
       myComments: p.myComments || {},
-      favorites: p.favorites || {},
       savedAt: p.savedAt || null,
     };
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
-
-function clearProgress(name) {
-  try {
-    localStorage.removeItem(saveKey(name));
-  } catch (e) {}
-}
-
-// Does a saved game exist for this name with at least one comment? (Used to
-// offer "Resume" only when there's real progress to resume.)
+function clearProgress(name) { try { localStorage.removeItem(saveKey(name)); } catch (e) {} }
 function hasResumableProgress(name) {
   const p = loadProgress(name);
   return !!(p && p.shownIds.size > 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Avatar — colored initial placeholder (used when a student has no avatar img).
-// ─────────────────────────────────────────────────────────────────────────
 function Avatar({ student, size = 56, lit = false }) {
   const initial = student.name[0].toUpperCase();
   return (
-    <div
-      style={{
-        width: size, height: size, borderRadius: "50%",
-        background: lit ? student.color : student.color + "dd",
-        border: `2px solid ${student.color}`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: F, fontWeight: 800, fontSize: size * 0.42,
-        color: "#ffffff",
-        flexShrink: 0, transition: "all 0.3s ease",
-        boxShadow: lit ? `0 0 ${size * 0.5}px ${student.color}99` : "none",
-      }}
-    >
-      {initial}
-    </div>
+    <div style={{
+      width: size, height: size, borderRadius: "50%",
+      background: lit ? student.color : student.color + "dd",
+      border: `2px solid ${student.color}`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: F, fontWeight: 800, fontSize: size * 0.42,
+      color: "#ffffff", flexShrink: 0, transition: "all 0.3s ease",
+      boxShadow: lit ? `0 0 ${size * 0.5}px ${student.color}99` : "none",
+    }}>{initial}</div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// VideoStage — plays the spotlighted student's video, OR shows their photo.
-//
-// VIDEO: if there's a real videoUrl it plays the file; if null (prototype),
-// an animated placeholder "performs" for ~6 seconds, then fires onEnded.
-//
-// PHOTO: shows the image with a soft timer — the photo is on screen alone
-// for ~3 seconds, then onEnded fires and the comment card appears. The
-// progress bar gives the student a visible "look here for a moment" beat
-// without locking anything; they can't interact with the photo (no buttons
-// yet), so there's no friction, just pacing.
-//
-// This is the analog of the matching game's DancerVideo, simplified for
-// shuffle-stop: one media item at a time, calls back when its beat ends.
-// ─────────────────────────────────────────────────────────────────────────
 const PHOTO_BEAT_MS = 3000;
 const VIDEO_PLACEHOLDER_MS = 6000;
 
 function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
   const vref = useRef(null);
   const [placeholderProgress, setPlaceholderProgress] = useState(0);
-
   const isPhoto = mediaType === "photo";
 
   useEffect(() => {
-    // Real <video> with a src drives its own onEnded; nothing to time here.
     if (!isPhoto && src) return;
-    // For photos OR for the no-src video placeholder, we run a timed beat.
     setPlaceholderProgress(0);
     const total = isPhoto ? PHOTO_BEAT_MS : VIDEO_PLACEHOLDER_MS;
     const step = 60;
@@ -210,23 +114,17 @@ function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
           {label}
         </div>
       )}
-      <div
-        style={{
-          position: "relative", width: "100%", aspectRatio: "4/3",
-          borderRadius: 16, overflow: "hidden",
-          background: `radial-gradient(ellipse at 50% 35%, ${student.color}26, ${C.stageDeep} 72%)`,
-          border: `2px solid ${student.color}`,
-          boxShadow: `0 0 80px ${student.color}55, 0 14px 34px #7a5a3a55`,
-        }}
-      >
+      <div style={{
+        position: "relative", width: "100%", aspectRatio: "4/3",
+        borderRadius: 16, overflow: "hidden",
+        background: `radial-gradient(ellipse at 50% 35%, ${student.color}26, ${C.stageDeep} 72%)`,
+        border: `2px solid ${student.color}`,
+        boxShadow: `0 0 80px ${student.color}55, 0 14px 34px #7a5a3a55`,
+      }}>
         {isPhoto && src ? (
-          // ── PHOTO branch: <img> + soft-timer progress bar at the bottom.
           <>
-            <img
-              src={src}
-              alt=""
-              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-            />
+            <img src={src} alt=""
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
             <div style={{ position: "absolute", left: 0, right: 0, bottom: 0,
               height: 4, background: "#00000033" }}>
               <div style={{ width: `${placeholderProgress * 100}%`, height: "100%",
@@ -234,14 +132,9 @@ function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
             </div>
           </>
         ) : src ? (
-          <video
-            ref={vref} src={src} autoPlay playsInline
-            onEnded={onEnded}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          />
+          <video ref={vref} src={src} autoPlay playsInline onEnded={onEnded}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
-          // Animated placeholder: a "performing" avatar that bobs, plus a
-          // progress bar so it clearly reads as a finite video that will end.
           <div style={{ position: "absolute", inset: 0, display: "flex",
             flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 18 }}>
             <style>{`@keyframes bob{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-10px) scale(1.04)}}`}</style>
@@ -262,33 +155,17 @@ function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// MIN_COMMENT_CHARS — the gate threshold. A comment must be at least this many
-// non-space characters before the student can return to the game. Small enough
-// not to frustrate, large enough that a single keystroke won't escape the gate.
 const MIN_COMMENT_CHARS = 8;
 
-// ProfileCard — the reveal after a video ends (analog of GroovR's RevealCard).
-// The comment box is now MANDATORY and CENTRAL: the student must write a
-// comment about this video before "Continue" unlocks. Each video gets exactly
-// one comment from this player; together the nine become the CSV sent to the
-// teacher at the end. Also: optional description video, favorite toggle, the
-// archive shelf, and the (dormant) classmate-peer-comments panel.
-// ─────────────────────────────────────────────────────────────────────────
 function ProfileCard({
-  student, isFav, onToggleFav, onWatchDescription, onContinue,
-  myComment, onSaveComment, comments, archiveOpen, onToggleArchive,
+  student, onWatchDescription, onContinue, myComment, onSaveComment,
 }) {
   const live = liveEntry(student);
-  const archive = archivedEntries(student);
   const hasDescription = !!(live && live.description);
   const [draft, setDraft] = useState(myComment || "");
-
   const trimmed = draft.trim();
   const meetsMin = trimmed.length >= MIN_COMMENT_CHARS;
 
-  // Keep the saved comment in sync as they type, so it's captured even if they
-  // navigate to the description video and come back (the draft is restored).
   useEffect(() => { setDraft(myComment || ""); }, [student.id]);
 
   const handleContinue = () => {
@@ -305,54 +182,30 @@ function ProfileCard({
       boxShadow: `0 0 60px ${student.color}33, 0 14px 34px #7a5a3a55`,
     }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
-        {/* PHOTO HERO — when the entry is a photo, show the photo itself as
-            the visual focus rather than a colored letter avatar. The photo
-            stays on screen the entire time the student is reading the
-            description and writing their comment. For non-photo entries
-            (videos, or no media) we fall back to the original Avatar circle. */}
         {(live && live.primary && live.mediaType === "photo") ? (
-          <img
-            src={live.primary}
-            alt=""
+          <img src={live.primary} alt=""
             style={{
               width: "100%", maxWidth: 380, aspectRatio: "4/3",
               objectFit: "cover", borderRadius: 16,
               border: `2px solid ${student.color}`,
               boxShadow: `0 0 40px ${student.color}55`,
               display: "block",
-            }}
-          />
+            }} />
         ) : (
           <Avatar student={student} size={84} lit />
         )}
         <h2 style={{ fontFamily: F, fontSize: 26, fontWeight: 800, color: C.text, margin: "14px 0 4px" }}>
           {student.name}
         </h2>
-        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.5, margin: "0 0 4px", maxWidth: 340 }}>
-          {student.bio}
-        </p>
         {live && live.descriptionText && (
           <p style={{ fontFamily: F, fontSize: 13, color: C.text, lineHeight: 1.6,
             margin: "10px 0 0", maxWidth: 360, fontStyle: "italic",
             borderLeft: `2px solid ${student.color}`, paddingLeft: 12, textAlign: "left" }}>
-            “{live.descriptionText}”
+            "{live.descriptionText}"
           </p>
         )}
-        <button
-          onClick={onToggleFav}
-          style={{
-            fontFamily: F, fontSize: 13, fontWeight: 600, marginTop: 10,
-            padding: "7px 16px", borderRadius: 30, cursor: "pointer",
-            background: isFav ? C.light + "22" : "transparent",
-            border: `1px solid ${isFav ? C.light : C.panelEdge}`,
-            color: isFav ? C.light : C.textDim,
-          }}
-        >
-          {isFav ? "★ Favorited" : "☆ Add to favorites"}
-        </button>
       </div>
 
-      {/* Optional description video button (only if the live entry has one) */}
       {hasDescription && (
         <button
           onClick={() => { onSaveComment(trimmed); onWatchDescription(); }}
@@ -366,16 +219,15 @@ function ProfileCard({
         </button>
       )}
 
-      {/* ── MANDATORY COMMENT — the heart of the game. Gates Continue. ── */}
       <div style={{ marginTop: 22 }}>
         <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
           display: "block", marginBottom: 7 }}>
-          Your comment on {student.name}'s video
+          Your comment on this photo
         </label>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={`What did you think of ${student.name}'s video? Write at least a sentence.`}
+          placeholder="What do you think? Write at least a sentence."
           rows={3}
           style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
             fontFamily: F, fontSize: 14, lineHeight: 1.5,
@@ -406,81 +258,11 @@ function ProfileCard({
       >
         Save comment & continue
       </button>
-
-      {/* ── Archive shelf — older videos, auto-archived, comment kept with each ── */}
-      {archive.length > 0 && (
-        <div style={{ marginTop: 20, borderTop: `1px solid ${C.panelEdge}`, paddingTop: 14 }}>
-          <button
-            onClick={onToggleArchive}
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              fontFamily: F, fontSize: 12, fontWeight: 600, color: C.textDim,
-              display: "flex", alignItems: "center", gap: 6, padding: 0,
-            }}
-          >
-            {archiveOpen ? "▾" : "▸"} Earlier videos ({archive.length})
-          </button>
-          {archiveOpen && (
-            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-              {archive.map((e, i) => (
-                <div key={i} style={{
-                  display: "flex", alignItems: "center", gap: 10,
-                  background: "#E8D3A8", borderRadius: 10, padding: "9px 12px",
-                  border: `1px solid ${C.panelEdge}`,
-                }}>
-                  <div style={{ fontSize: 18 }}>🎞️</div>
-                  <div style={{ flex: 1, textAlign: "left" }}>
-                    <div style={{ fontFamily: F, fontSize: 12, color: C.text }}>
-                      {e.primary ? "Video" : "Video (placeholder)"} · {e.uploadedAt}
-                    </div>
-                    <div style={{ fontFamily: F, fontSize: 11, color: C.textFaint }}>
-                      {e.description
-                        ? "has description video (kept with it)"
-                        : "no description video"}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Classmate peer comments — built now, dormant on desktop (SOCIAL gate).
-           In the teacher-hub design these are NOT shown to other students on
-           desktop; this display-only block exists for a future online build
-           where the teacher may choose to surface selected comments. ── */}
-      {SOCIAL && (comments || []).length > 0 && (
-        <div style={{ marginTop: 20, borderTop: `1px solid ${C.panelEdge}`, paddingTop: 14 }}>
-          <div style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.textDim, marginBottom: 8 }}>
-            Comments from classmates
-          </div>
-          {(comments || []).map((c, i) => (
-            <div key={i} style={{ padding: "6px 0", borderBottom: `1px solid ${C.panelEdge}` }}>
-              <span style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.light }}>{c.author}</span>
-              <span style={{ fontFamily: F, fontSize: 12, color: C.text, marginLeft: 6 }}>{c.text}</span>
-              {c.videoUrl && (
-                <span style={{ fontFamily: F, fontSize: 11, color: C.textFaint, marginLeft: 6 }}>🎥 video reply</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// StageGrid — the 3×3 of student tiles, scrambling while running.
-// "shown" students render as dimmed/checked and are out of play.
-//
-// Each tile shows the actual photo (square crop) if the entry has one;
-// otherwise it falls back to the colored letter avatar. The visible photo
-// is critical for an ESL audience — the student needs to recognize the
-// images so the spin/stop choice is something they engage with, not a
-// blind lottery.
-// ─────────────────────────────────────────────────────────────────────────
-function StageGrid({ order, shownIds, running, favorites }) {
+function StageGrid({ order, shownIds, running }) {
   return (
     <div style={{
       display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10,
@@ -503,20 +285,14 @@ function StageGrid({ order, shownIds, running, favorites }) {
             {shown && (
               <div style={{ position: "absolute", top: 7, right: 9, fontSize: 13, color: C.light }}>✓</div>
             )}
-            {favorites[s.id] && !shown && (
-              <div style={{ position: "absolute", top: 7, right: 9, fontSize: 12, color: C.light }}>★</div>
-            )}
             {hasPhoto ? (
-              <img
-                src={live.primary}
-                alt=""
+              <img src={live.primary} alt=""
                 style={{
                   width: "100%", aspectRatio: "1/1",
                   objectFit: "cover", borderRadius: 10,
                   border: `2px solid ${s.color}`,
                   display: "block",
-                }}
-              />
+                }} />
             ) : (
               <Avatar student={s} size={50} />
             )}
@@ -531,38 +307,307 @@ function StageGrid({ order, shownIds, running, favorites }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// APP
-//
-// initialStudents: the deck the engine plays. Defaults to the in-file
-// STUDENTS array so local dev without Supabase still works. The /play
-// Server Component fetches the DB-backed deck and passes it in; the engine
-// neither knows nor cares where the deck came from. The thin DB→engine
-// adapter (src/lib/deck.ts) is what shapes DB rows into this prop.
+// ReviewGrid — slightly smaller cells so the whole grid fits comfortably
+// on a single screen. Max-width tightened from 720 → 580; gap 12 → 8;
+// padding 10 → 7; comment text 12 → 11.
 // ─────────────────────────────────────────────────────────────────────────
+function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
+  return (
+    <div style={{
+      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8,
+      maxWidth: 580, margin: "0 auto",
+    }}>
+      {students.map((s) => {
+        const live = liveEntry(s);
+        const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
+        const isFav = favoriteId === s.id;
+        const comment = myComments[s.id] || "";
+        return (
+          <button
+            key={s.id}
+            onClick={() => onSelectFavorite(s.id)}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              background: isFav ? C.light + "22" : C.panel,
+              border: `2px solid ${isFav ? C.light : s.color + "55"}`,
+              borderRadius: 12,
+              padding: 7,
+              display: "flex", flexDirection: "column", gap: 6,
+              position: "relative",
+              transition: "all 0.18s ease",
+              boxShadow: isFav ? `0 0 20px ${C.light}66` : "none",
+              transform: isFav ? "scale(1.02)" : "scale(1)",
+            }}
+          >
+            {isFav && (
+              <div style={{
+                position: "absolute", top: -8, right: -8,
+                width: 28, height: 28, borderRadius: "50%",
+                background: C.light, color: "#fff",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                animation: "popIn 0.25s ease",
+              }}>★</div>
+            )}
+            {hasPhoto ? (
+              <img src={live.primary} alt=""
+                style={{
+                  width: "100%", aspectRatio: "1/1",
+                  objectFit: "cover", borderRadius: 8,
+                  display: "block",
+                }} />
+            ) : (
+              <div style={{ width: "100%", aspectRatio: "1/1",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: s.color + "33", borderRadius: 8 }}>
+                <Avatar student={s} size={42} />
+              </div>
+            )}
+            <div style={{ fontFamily: F, fontSize: 11, color: C.text,
+              lineHeight: 1.35, minHeight: 28, textAlign: "left",
+              wordBreak: "break-word" }}>
+              {comment || <span style={{ color: C.textFaint }}>(no comment)</span>}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function EnrollForm({ myComments, favoriteId, onBack }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [photo, setPhoto] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handlePhoto = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhoto(file);
+    setPhotoPreview(URL.createObjectURL(file));
+  };
+
+  const ready = !!name.trim() && !!email.trim() && !!photo;
+
+  const handleSubmit = async () => {
+    if (!ready || loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("name", name);
+      fd.append("email", email);
+      fd.append("photo", photo);
+      fd.append("comments", JSON.stringify(myComments));
+      fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
+      const result = await enrollStudent(fd);
+      if (result.ok) {
+        setDone(true);
+      } else {
+        setError(result.error);
+      }
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div style={{ textAlign: "center", padding: "2rem 1rem", maxWidth: 420, margin: "0 auto" }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>✉️</div>
+        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 10px" }}>
+          Check your email
+        </h2>
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.7, maxWidth: 360, margin: "0 auto" }}>
+          You'll get a Spotlight invitation (sent via Supabase). Click the link inside to join the class.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 420, margin: "0 auto", padding: "0.5rem 0" }}>
+      <div style={{ textAlign: "center", marginBottom: 22 }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>🎓</div>
+        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
+          Complete your profile
+        </h2>
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6, maxWidth: 340, margin: "0 auto" }}>
+          We'll email you an invitation. Click the link to join the class.
+        </p>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
+          display: "block", marginBottom: 6 }}>Your name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="First name is fine"
+          style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
+            fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
+            border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
+        />
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
+          display: "block", marginBottom: 6 }}>Your email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
+            fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
+            border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
+        />
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
+          display: "block", marginBottom: 6 }}>A photo of yourself</label>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          {photoPreview ? (
+            <img src={photoPreview} alt="preview"
+              style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover",
+                border: `2px solid ${C.light}` }} />
+          ) : (
+            <div style={{ width: 64, height: 64, borderRadius: "50%", background: C.panelEdge,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 24, color: C.textFaint }}>👤</div>
+          )}
+          <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, padding: "9px 18px",
+            background: C.panel, border: `1px solid ${C.panelEdge}`, borderRadius: 20,
+            cursor: "pointer", color: C.text }}>
+            {photo ? "Change photo" : "Choose photo"}
+            <input type="file" accept="image/jpeg,image/png,image/webp"
+              onChange={handlePhoto} style={{ display: "none" }} />
+          </label>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
+          background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
+          {error}
+        </div>
+      )}
+
+      <button
+        onClick={handleSubmit}
+        disabled={!ready || loading}
+        style={{ width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
+          background: (ready && !loading) ? C.light : C.panelEdge,
+          color: (ready && !loading) ? C.stageDeep : C.textFaint,
+          border: "none", borderRadius: 12,
+          cursor: (ready && !loading) ? "pointer" : "not-allowed",
+          letterSpacing: 0.5, marginBottom: 12 }}
+      >
+        {loading ? "Submitting…" : "Send my favorite to my new teacher →"}
+      </button>
+
+      <div style={{ textAlign: "center" }}>
+        <button onClick={onBack}
+          style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
+            border: "none", cursor: "pointer", textDecoration: "underline" }}>
+          ← Back to my photos
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DoneScreen — tighter header. Removed: emoji block, "9 of 9", "Nice work."
+// Kept only the prompt + the grid + the button.
+// ─────────────────────────────────────────────────────────────────────────
+function DoneScreen({
+  playerName, myComments, students, totalStudents, onPlayAgain,
+}) {
+  const [favoriteId, setFavoriteId] = useState(null);
+  const [donePhase, setDonePhase] = useState("review");
+
+  return (
+    <div style={{ textAlign: "center", animation: "fadeIn 0.5s ease", padding: "0.5rem 0" }}>
+      <style>{`@keyframes popIn{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}`}</style>
+
+      {donePhase === "review" && (
+        <>
+          <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 4px" }}>
+            Pick your favorite
+          </h2>
+          <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, margin: "0 auto 16px" }}>
+            Tap the photo you liked the most.
+          </p>
+
+          <ReviewGrid
+            students={students}
+            myComments={myComments}
+            favoriteId={favoriteId}
+            onSelectFavorite={setFavoriteId}
+          />
+
+          <div style={{ marginTop: 18, display: "flex", flexDirection: "column",
+            alignItems: "center", gap: 6 }}>
+            <button
+              onClick={() => setDonePhase("enroll")}
+              disabled={!favoriteId}
+              style={{
+                fontFamily: F, fontSize: 15, fontWeight: 700,
+                padding: "12px 34px",
+                background: favoriteId ? C.light : C.panelEdge,
+                color: favoriteId ? C.stageDeep : C.textFaint,
+                border: "none", borderRadius: 30,
+                cursor: favoriteId ? "pointer" : "not-allowed",
+                letterSpacing: 0.5,
+                boxShadow: favoriteId ? `0 8px 24px ${C.light}55` : "none",
+                transition: "all 0.2s ease",
+              }}
+            >
+              Join the class →
+            </button>
+            <button onClick={onPlayAgain}
+              style={{ fontFamily: F, fontSize: 12, color: C.textDim, background: "none",
+                border: "none", cursor: "pointer", textDecoration: "underline", marginTop: 4 }}>
+              No thanks — play again
+            </button>
+          </div>
+        </>
+      )}
+
+      {donePhase === "enroll" && (
+        <EnrollForm
+          myComments={myComments}
+          favoriteId={favoriteId}
+          onBack={() => setDonePhase("review")}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function App({ initialStudents = STUDENTS }) {
-  const [view, setView] = useState("splash"); // splash | game
-  // Phase within the game: idle (not scrambling) | running | playing | descr | reveal | done
+  const [view, setView] = useState("splash");
   const [phase, setPhase] = useState("idle");
   const [order, setOrder] = useState(initialStudents);
   const [shownIds, setShownIds] = useState(new Set());
   const [selected, setSelected] = useState(null);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-
-  // We keep a local mutable copy of students so simulate-upload can mutate.
   const [students, setStudents] = useState(initialStudents);
-
-  // Favorites (active) + the player's ONE comment per student (the data that
-  // becomes the CSV sent to the teacher). myComments = { studentId: "text" }.
-  const [favorites, setFavorites] = useState({});
   const [myComments, setMyComments] = useState({});
   const [playerName, setPlayerName] = useState("");
 
   const scrambleRef = useRef(null);
-
-  const remaining = students.filter((s) => !shownIds.has(s.id));
   const allShown = shownIds.size >= students.length;
 
-  // Scramble the grid order while running.
   useEffect(() => {
     if (phase !== "running") {
       clearInterval(scrambleRef.current);
@@ -577,7 +622,6 @@ export default function App({ initialStudents = STUDENTS }) {
   const startScramble = useCallback(() => {
     if (allShown) return;
     setSelected(null);
-    setArchiveOpen(false);
     setPhase("running");
   }, [allShown]);
 
@@ -586,109 +630,57 @@ export default function App({ initialStudents = STUDENTS }) {
     const pool = students.filter((s) => !shownIds.has(s.id));
     const pick = pool[Math.floor(Math.random() * pool.length)];
     setSelected(pick);
-    // For photo entries, the photo is now the visual hero of the reveal card
-    // itself — there's no separate "play the photo for 3 seconds" beat. Going
-    // straight to reveal keeps the photo on screen continuously until the
-    // student has written their comment, which is what we actually want for
-    // an ESL writing task. For video entries (Slice 2+), keep the "playing"
-    // phase so the actual video plays before the reveal.
     const live = liveEntry(pick);
     const isPhoto = live?.mediaType === "photo";
     setPhase(isPhoto ? "reveal" : "playing");
   }, [phase, students, shownIds]);
 
-  // Called when the (placeholder or real) video finishes.
-  const onVideoEnded = useCallback(() => {
-    setPhase("reveal");
-  }, []);
+  const onVideoEnded = useCallback(() => { setPhase("reveal"); }, []);
 
   const finishStudent = useCallback(() => {
     if (!selected) return;
-    // Build the next set explicitly, then set both pieces of state from it.
-    // No stale reads, no side-effects inside an updater.
     const next = new Set(shownIds);
     next.add(selected.id);
     setShownIds(next);
     setPhase(next.size >= students.length ? "done" : "idle");
     setSelected(null);
-    setArchiveOpen(false);
   }, [selected, shownIds, students.length]);
 
-  // Re-watch a video from the end-of-game review list. Plays the chosen
-  // student's video, then returns to the review screen ("done") — the student's
-  // edits to their comments are preserved (they live in myComments state).
-  const rewatch = useCallback((id) => {
-    const s = students.find((x) => x.id === id);
-    if (!s) return;
-    setSelected(s);
-    setPhase("rewatch");
-  }, [students]);
-
-  const toggleFav = useCallback((id) => {
-    setFavorites((f) => ({ ...f, [id]: !f[id] }));
-  }, []);
-
-  // Save THE player's comment for a student (one per student; overwrites).
   const saveComment = useCallback((id, text) => {
     setMyComments((c) => ({ ...c, [id]: text }));
   }, []);
 
-  // ── AUTOSAVE: persist progress whenever the saved data changes, but only
-  // while a game is actually underway (in the "game" view, not yet finished).
-  // Keyed by player name. Driven by an effect so it always reflects the latest
-  // committed state — no stale-closure risk from saving inside handlers. ──
   useEffect(() => {
     if (view !== "game") return;
-    if (phase === "done") return;            // finished sessions are cleared, not saved
+    if (phase === "done") return;
     if (!playerName.trim()) return;
     if (shownIds.size === 0 && Object.keys(myComments).length === 0) return;
-    saveProgress(playerName, { shownIds, myComments, favorites });
-  }, [view, phase, playerName, shownIds, myComments, favorites]);
+    saveProgress(playerName, { shownIds, myComments });
+  }, [view, phase, playerName, shownIds, myComments]);
 
-  // Resume a saved game for the current playerName.
   const resume = useCallback(() => {
     const p = loadProgress(playerName);
     if (!p) return;
     setPlayerName(p.playerName);
     setShownIds(p.shownIds);
     setMyComments(p.myComments);
-    setFavorites(p.favorites);
     setSelected(null);
-    setArchiveOpen(false);
     setOrder(shuffle(students));
-    // If everything was already done, land on the review screen; else the grid.
     setPhase(p.shownIds.size >= students.length ? "done" : "idle");
     setView("game");
   }, [playerName, students]);
 
-  // Simulate an upload (desktop stand-in for real upload). Adds a new live
-  // entry to a student via addEntry, auto-archiving the old one.
-  const simulateUpload = useCallback((id) => {
-    setStudents((sts) =>
-      sts.map((s) => (s.id === id ? addEntry(s, { primary: null, description: null }) : s))
-    );
-  }, []);
-
-  // Start a FRESH session — also clears any saved progress for this name.
   const resetAll = useCallback(() => {
     clearProgress(playerName);
     setShownIds(new Set());
     setSelected(null);
     setPhase("idle");
     setOrder(shuffle(students));
-    setArchiveOpen(false);
     setMyComments({});
-    setFavorites({});
   }, [students, playerName]);
 
-  const favCount = Object.values(favorites).filter(Boolean).length;
-
-  // Whether the currently-typed name has a saved, unfinished game to resume.
-  // Recomputed on each render (cheap: one localStorage read) so it appears the
-  // moment a returning student types their name on the splash.
   const canResume = view === "splash" && playerName.trim() && hasResumableProgress(playerName);
 
-  // ── SPLASH ──
   if (view === "splash") {
     return (
       <div style={{
@@ -702,7 +694,6 @@ export default function App({ initialStudents = STUDENTS }) {
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
           @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
           @keyframes beam{0%,100%{opacity:0.5}50%{opacity:0.9}}`}</style>
-        {/* spotlight beam */}
         <div style={{ position: "absolute", top: -80, left: "50%", transform: "translateX(-50%)",
           width: 360, height: 420,
           background: `conic-gradient(from 180deg at 50% 0%, transparent 78deg, ${C.light}26 90deg, transparent 102deg)`,
@@ -718,8 +709,7 @@ export default function App({ initialStudents = STUDENTS }) {
           </h1>
           <p style={{ fontFamily: F, fontSize: 15, fontWeight: 300, color: C.textDim,
             maxWidth: 360, margin: "0 auto 22px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
-            Nine classmates, nine videos. Hit stop, and one steps into the light.
-            Watch each one, write a comment, and favorite the ones you love.
+            Nine photos. Hit stop, look closely, and tell us what you see.
           </p>
           <input
             value={playerName}
@@ -731,7 +721,6 @@ export default function App({ initialStudents = STUDENTS }) {
               marginBottom: 18, animation: "fadeUp 1.0s ease", display: "block",
               marginLeft: "auto", marginRight: "auto" }}
           />
-          {/* If this name has a saved, unfinished game, offer to resume it. */}
           {canResume ? (
             <div style={{ animation: "fadeUp 1.1s ease" }}>
               <button
@@ -770,7 +759,9 @@ export default function App({ initialStudents = STUDENTS }) {
     );
   }
 
-  // ── GAME ──
+  // Game view: also trim header when in "done" phase (the review screen)
+  const isDone = allShown && phase === "done";
+
   return (
     <div style={{
       minHeight: 560, background: C.stage, borderRadius: 18,
@@ -780,27 +771,28 @@ export default function App({ initialStudents = STUDENTS }) {
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
         @keyframes fadeIn{from{opacity:0}to{opacity:1}}`}</style>
 
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button onClick={() => setView("splash")}
-            style={{ background: "none", border: "none", color: C.textDim, fontSize: 18, cursor: "pointer" }}>←</button>
-          <h2 style={{ fontFamily: F, fontSize: 20, fontWeight: 800, color: C.text, margin: 0 }}>Spotlight</h2>
-        </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <span style={{ fontFamily: F, fontSize: 12, color: C.textDim }}>★ {favCount}</span>
-          <span style={{ fontFamily: F, fontSize: 12, color: C.textDim }}>
-            ✎ {Object.values(myComments).filter((t) => t && t.trim()).length}/{students.length}
-          </span>
-        </div>
-      </div>
+      {/* Show the header only DURING the game, not on the review screen */}
+      {!isDone && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button onClick={() => setView("splash")}
+                style={{ background: "none", border: "none", color: C.textDim, fontSize: 18, cursor: "pointer" }}>←</button>
+              <h2 style={{ fontFamily: F, fontSize: 20, fontWeight: 800, color: C.text, margin: 0 }}>Spotlight</h2>
+            </div>
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <span style={{ fontFamily: F, fontSize: 12, color: C.textDim }}>
+                ✎ {Object.values(myComments).filter((t) => t && t.trim()).length}/{students.length}
+              </span>
+            </div>
+          </div>
 
-      {/* Progress */}
-      <div style={{ fontFamily: F, fontSize: 12, color: C.textDim, textAlign: "center", marginBottom: 16 }}>
-        {shownIds.size} of {students.length} have been in the spotlight
-      </div>
+          <div style={{ fontFamily: F, fontSize: 12, color: C.textDim, textAlign: "center", marginBottom: 16 }}>
+            {shownIds.size} of {students.length} have been in the spotlight
+          </div>
+        </>
+      )}
 
-      {/* ── PLAYING: the spotlight moment ── */}
       {phase === "playing" && selected && (
         <div style={{ animation: "fadeIn 0.4s ease" }}>
           <VideoStage student={selected} src={liveEntry(selected)?.primary || null}
@@ -809,7 +801,6 @@ export default function App({ initialStudents = STUDENTS }) {
         </div>
       )}
 
-      {/* ── DESCRIPTION video ── */}
       {phase === "descr" && selected && (
         <div style={{ animation: "fadeIn 0.4s ease" }}>
           <VideoStage student={selected} src={liveEntry(selected)?.description || null}
@@ -817,46 +808,21 @@ export default function App({ initialStudents = STUDENTS }) {
         </div>
       )}
 
-      {/* ── REVEAL: profile card ── */}
       {phase === "reveal" && selected && (
         <div style={{ animation: "fadeIn 0.4s ease" }}>
           <ProfileCard
             student={students.find((s) => s.id === selected.id) || selected}
-            isFav={!!favorites[selected.id]}
-            onToggleFav={() => toggleFav(selected.id)}
             onWatchDescription={() => setPhase("descr")}
             onContinue={finishStudent}
             myComment={myComments[selected.id] || ""}
             onSaveComment={(text) => saveComment(selected.id, text)}
-            comments={null}
-            archiveOpen={archiveOpen}
-            onToggleArchive={() => setArchiveOpen((o) => !o)}
           />
         </div>
       )}
 
-      {/* ── REWATCH: replay a video from the review list, return to done ── */}
-      {phase === "rewatch" && selected && (
-        <div style={{ animation: "fadeIn 0.4s ease" }}>
-          <VideoStage student={selected} src={liveEntry(selected)?.primary || null}
-            mediaType={liveEntry(selected)?.mediaType || "video"}
-            onEnded={() => { setSelected(null); setPhase("done"); }}
-            label={`Watching ${selected.name} again`} />
-          <div style={{ textAlign: "center", marginTop: 16 }}>
-            <button onClick={() => { setSelected(null); setPhase("done"); }}
-              style={{ fontFamily: F, fontSize: 13, fontWeight: 600, padding: "9px 20px",
-                background: "transparent", color: C.textDim, border: `1px solid ${C.panelEdge}`,
-                borderRadius: 30, cursor: "pointer" }}>
-              ← Back to my comments
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── IDLE / RUNNING: the grid + stop/start ── */}
       {(phase === "idle" || phase === "running") && !allShown && (
         <>
-          <StageGrid order={order} shownIds={shownIds} running={phase === "running"} favorites={favorites} />
+          <StageGrid order={order} shownIds={shownIds} running={phase === "running"} />
           <div style={{ textAlign: "center", marginTop: 24 }}>
             {phase === "idle" ? (
               <button onClick={startScramble}
@@ -877,159 +843,14 @@ export default function App({ initialStudents = STUDENTS }) {
         </>
       )}
 
-      {/* ── DONE — produce the single CSV deliverable for the teacher ── */}
-      {allShown && phase === "done" && (
+      {isDone && (
         <DoneScreen
           playerName={playerName}
-          favorites={favorites}
           myComments={myComments}
           students={students}
-          favCount={favCount}
           totalStudents={students.length}
-          onEditComment={saveComment}
-          onRewatch={rewatch}
           onPlayAgain={resetAll}
         />
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// DoneScreen — end of session. Shows the student's NINE comments as an editable
-// review list, each next to the video's creator, with a re-watch link (click
-// the name to replay that video). The student can fix their English before
-// downloading the single CSV deliverable to send to the teacher. Because local
-// downloads can be unreliable in some preview contexts, it also offers the CSV
-// on screen with a copy button as a fallback.
-// ─────────────────────────────────────────────────────────────────────────
-function DoneScreen({
-  playerName, favorites, myComments, students, favCount, totalStudents,
-  onEditComment, onRewatch, onPlayAgain,
-}) {
-  const state = { playerName, favorites, myComments };
-  const rows = buildSessionRows(state);
-  const csv = buildSessionCSV(state);
-  const filename = sessionFilename(state);
-  const [copied, setCopied] = useState(false);
-  const [showCsv, setShowCsv] = useState(false);
-
-  const download = () => {
-    try {
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) {
-      // If the download is blocked (some sandboxed previews), reveal the CSV
-      // so the student can still copy it manually.
-      setShowCsv(true);
-    }
-  };
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(csv);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      setShowCsv(true);
-    }
-  };
-
-  return (
-    <div style={{ textAlign: "center", animation: "fadeIn 0.5s ease", padding: "1rem 0" }}>
-      <div style={{ fontSize: 40, marginBottom: 8 }}>🎬</div>
-      <h2 style={{ fontFamily: F, fontSize: 26, fontWeight: 800, color: C.text, margin: "0 0 6px" }}>
-        Everyone's had their moment
-      </h2>
-      <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, maxWidth: 360, margin: "0 auto 8px", lineHeight: 1.6 }}>
-        You watched all {totalStudents} videos, wrote {rows.length} comments, and favorited {favCount}.
-      </p>
-      <p style={{ fontFamily: F, fontSize: 13, color: C.textFaint, maxWidth: 360, margin: "0 auto 22px", lineHeight: 1.6 }}>
-        Review and fix your comments below, then download the file and send it to {TEACHER.name}.
-      </p>
-
-      {/* ── Editable review list: each comment next to its video's creator. ── */}
-      <div style={{ textAlign: "left", maxWidth: 460, margin: "0 auto 22px",
-        display: "flex", flexDirection: "column", gap: 10 }}>
-        {students.map((s) => {
-          const text = myComments[s.id] || "";
-          return (
-            <div key={s.id} style={{ background: C.panel, border: `1px solid ${C.panelEdge}`,
-              borderRadius: 12, padding: "12px 14px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <Avatar student={s} size={34} />
-                <button
-                  onClick={() => onRewatch(s.id)}
-                  title="Watch this video again"
-                  style={{ fontFamily: F, fontSize: 14, fontWeight: 700, color: s.color,
-                    background: "none", border: "none", padding: 0, cursor: "pointer",
-                    textDecoration: "underline", textUnderlineOffset: 3 }}
-                >
-                  {s.name} ▶
-                </button>
-                {favorites[s.id] && <span style={{ fontSize: 12, color: C.light }}>★</span>}
-              </div>
-              <textarea
-                value={text}
-                onChange={(e) => onEditComment(s.id, e.target.value)}
-                rows={2}
-                style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px",
-                  fontFamily: F, fontSize: 13, lineHeight: 1.5, background: "#FFFDF7",
-                  color: C.text, border: `1px solid ${C.panelEdge}`, borderRadius: 8,
-                  outline: "none", resize: "vertical" }}
-              />
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-        <button onClick={download}
-          style={{ fontFamily: F, fontSize: 14, fontWeight: 700, padding: "12px 26px",
-            background: C.light, color: C.stageDeep, border: "none", borderRadius: 30,
-            cursor: "pointer" }}>
-          ⬇ Download my comments (.csv)
-        </button>
-        <button onClick={onPlayAgain}
-          style={{ fontFamily: F, fontSize: 14, fontWeight: 600, padding: "12px 24px",
-            background: "transparent", color: C.text, border: `1px solid ${C.panelEdge}`,
-            borderRadius: 30, cursor: "pointer" }}>
-          Play again
-        </button>
-      </div>
-
-      <div style={{ marginTop: 14 }}>
-        <button onClick={() => setShowCsv((s) => !s)}
-          style={{ fontFamily: F, fontSize: 12, color: C.textDim, background: "none",
-            border: "none", cursor: "pointer", textDecoration: "underline" }}>
-          {showCsv ? "Hide" : "Can't download? Show the text to copy"}
-        </button>
-      </div>
-
-      {showCsv && (
-        <div style={{ marginTop: 12, textAlign: "left", maxWidth: 460, margin: "12px auto 0" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontFamily: F, fontSize: 12, color: C.textDim }}>{filename}</span>
-            <button onClick={copy}
-              style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.light,
-                background: C.light + "1a", border: `1px solid ${C.light}44`,
-                borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
-              {copied ? "✓ Copied" : "Copy"}
-            </button>
-          </div>
-          <textarea readOnly value={csv} rows={Math.min(12, rows.length + 2)}
-            style={{ width: "100%", boxSizing: "border-box", fontFamily: "monospace",
-              fontSize: 12, padding: "10px 12px", background: "#FFFDF7", color: C.text,
-              border: `1px solid ${C.panelEdge}`, borderRadius: 10, resize: "vertical" }}
-          />
-        </div>
       )}
     </div>
   );
