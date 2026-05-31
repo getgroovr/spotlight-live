@@ -1,0 +1,168 @@
+============================================================
+SPOTLIGHT-LIVE — NEXT-CLAUDE STARTUP CHECKLIST (v4)
+============================================================
+
+Hi Claude. Mike will give you SOME of these but probably not all.
+Ask for whatever is missing before you start working.
+
+Dated 2026-05-30 (PM). Supersedes v3. Big change since v3: the
+magic-link round-trip is FIXED and verified, Profile v1 is built
+and COMMITTED, and the teacher dashboard is built + verified but
+likely still UNCOMMITTED. Next chat opens by confirming git state
+and committing the teacher dashboard, then building teacher-note
+write-back.
+
+------------------------------------------------------------
+PRIORITY 1 — REQUIRED, ASK FOR THESE FIRST
+------------------------------------------------------------
+
+[ ] SLICE_1B_HANDOFF_7.md
+    Mike has this. It's the source of truth for what's done,
+    decided, committed, and parked. READ IT FULLY before acting.
+
+[ ] Output of `git status` and `git log --oneline -5`
+    Critical this session: the teacher dashboard (two files under
+    src/app/teacher/students/) was built and verified but NOT
+    committed at last handoff. You need to know if Mike committed
+    it since. Also two copy-fix files may be modified.
+
+[ ] Repo link (reference only; bot can't fetch it)
+    https://github.com/getgroovr/spotlight-live.git
+
+[ ] DO NOT ask "what do you want to work on today?"
+    First: confirm git state and commit the teacher dashboard if
+    it's still uncommitted. Then: build teacher-note write-back
+    (the recruit mechanism — Parked A in the handoff). Then Round 2.
+
+------------------------------------------------------------
+PRIORITY 2 — ASK FOR ONLY IF THE WORK TOUCHES THESE FILES
+------------------------------------------------------------
+
+[ ] src/app/teacher/students/page.tsx
+    NEW this session. Cohort grid. Built + verified, maybe
+    uncommitted.
+
+[ ] src/app/teacher/students/[id]/page.tsx
+    NEW this session. Student detail / journey. Where teacher-note
+    write-back (Parked A) will be added. The note WRITE form is a
+    placeholder right now; the READ side is live.
+
+[ ] src/app/student/dashboard/page.tsx
+    The student PROFILE (renamed in spirit from "dashboard").
+    Incomplete state = finish-joining form; complete state =
+    per-round stack. Already READS teacher_comments ("From your
+    teacher" slot). Had a pending copy-only wording fix at session
+    end — verify the "what happens next" panel says "...up to N
+    students... comment on the other students' photos."
+
+[ ] src/app/play/actions.ts
+    enrollStudent (email-only now) + saveProfile (saves name,
+    screen_name, favorite_comment). Add writeTeacherComment here
+    for Parked A.
+
+[ ] src/game/spotlight.jsx
+    The game. Front door is now email-only (no name gate, no
+    self-photo). Had a pending copy-only fix at session end
+    ("Back to the photos").
+
+[ ] src/app/auth/confirm/route.ts
+    NEW this session. The magic-link fix — exchanges token_hash
+    for a session cookie, then redirects to the profile. Don't
+    touch unless auth flow changes.
+
+[ ] src/lib/supabase-server.ts
+    SSR Supabase client. Unchanged. Reads cookies for auth.
+
+[ ] src/app/teacher/deck/ (page.tsx, actions.ts, deck-client.tsx)
+    Slice 1A teacher deck. Unchanged. Will get pod assignment UI
+    later. NOTE: this is a DIFFERENT page.tsx from the new
+    teacher/students ones — don't confuse them.
+
+[ ] supabase/migrations/
+    Most recent: 20260530120000_slice1b_profile.sql (screen_name,
+    nullable name, favorite_comment, teacher_comments table).
+    Before that: 20260529200000_slice1b_students.sql.
+
+------------------------------------------------------------
+PRIORITY 3 — ASK FOR ONLY IF SOMETHING'S WEIRD
+------------------------------------------------------------
+
+[ ] Output of `git diff` for any specific file in question
+[ ] Screenshot of Supabase Auth Logs (Logs → Auth) when emails
+    aren't arriving. Free tier rate-limits magic links to ~3-4
+    per email per hour: "429: email rate limit exceeded".
+[ ] Screenshot of Supabase Table Editor (students / enrollments /
+    game_sessions / teacher_comments)
+[ ] Contents of .env.local (only if env misconfig suspected).
+    5 lines: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY, NEXT_PUBLIC_DEMO_CLASS_ID,
+    NEXT_PUBLIC_SITE_URL
+
+------------------------------------------------------------
+DO NOT ASK FOR THESE
+------------------------------------------------------------
+
+[ ] API keys, service role keys, JWT secrets — Mike holds these
+[ ] Mike's email/password/login info
+[ ] Personal info beyond what's already in handoffs
+
+------------------------------------------------------------
+KNOWN BUG (pre-existing, NOT ours) — REMEMBER THIS
+------------------------------------------------------------
+
+After signing in at /auth/login, the app redirects to /dashboard,
+which does NOT exist -> 404. The login still WORKED; only the
+redirect target is missing. WORKAROUND: after login, type the
+destination URL directly (/teacher/students, /teacher/deck, /play).
+This caused confusion this session (looked like a bad password; it
+wasn't). Teacher account: getgroovr@yahoo.com (already exists —
+sign in, don't re-signup). Fixing the redirect is a tiny parked
+slice (Parked D).
+
+------------------------------------------------------------
+TONE / WORKING NOTES (carry-over, still valid)
+------------------------------------------------------------
+
+- Deliver WHOLE FILES as DOWNLOADS, not pasted snippets and not
+  line-edits. Mike stages downloads on his Desktop, then copies
+  into the project at C:\Users\Myked\projects\spotlight-live.
+  The copy-into-project step is manual and CAN get skipped after a
+  break (happened this session). When you hand over a file:
+  (1) give the full destination path, (2) remind him it only takes
+  effect once it's in the PROJECT folder, not the Desktop staging
+  folder. There's a Desktop "spotlight-live" folder that is NOT the
+  project — ignore it.
+
+- ALWAYS give the full destination path, and for page.tsx say WHICH
+  folder. There are now several page.tsx files (play,
+  student/dashboard, teacher/deck, teacher/students,
+  teacher/students/[id]). Mixing them up broke /play once before.
+
+- Mike doesn't know JS/TS fluently. Point to the file in the VS Code
+  tree, not just the path. He IS confident at Supabase dashboard/SQL.
+
+- Screenshots first when something's weird. They're decisive.
+
+- Move to EVIDENCE fast; he gets frustrated spinning on hypotheticals.
+
+- His "what if..." / "do we even need..." asides are often the best
+  ideas — take them seriously even mid-task. The whole Profile v1
+  redesign came from one this session.
+
+- He'll tell you when to stop. Take it seriously. Watch his clock and
+  PIVOT TO WRITING THE HANDOFF before he runs out of energy — don't
+  get caught mid-debug with no handoff written.
+
+- Magic-link emails are RATE-LIMITED (free tier). Verify fixes by
+  reading code FIRST; spend an email only on a verified fix.
+
+------------------------------------------------------------
+ONE-LINE STATUS SUMMARY
+------------------------------------------------------------
+
+Magic link FIXED + verified. Profile v1 (email-only join,
+finish-joining form, per-round profile) COMPLETE + COMMITTED.
+Teacher dashboard (cohort grid + student detail) BUILT + VERIFIED
+but likely UNCOMMITTED. Next: confirm git state, commit teacher
+dashboard, build teacher-note write-back (the recruit mechanism),
+then Round 2.

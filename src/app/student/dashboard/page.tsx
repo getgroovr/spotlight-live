@@ -8,10 +8,11 @@
 //      favorite?") with the favorite photo in view. Submits to saveProfile.
 //
 //   2. COMPLETE — shows their profile as a per-round stack that grows
-//      downward. Round 1 holds: a "from your teacher" slot (empty until the
-//      teacher writes back), the favorite (photo + its description + the
+//      downward. Round 1 holds: the favorite (photo + its description + the
 //      comment they made during the game + the why-note), and all nine
-//      comments. Later rounds tack on below.
+//      comments. The teacher's notes now appear UNDER the specific photos they
+//      were written on — a photo with no note shows nothing extra (no empty
+//      slot). General/welcome notes (no photo) still show in a top section.
 //
 // Auth: the magic link set a session cookie (via /auth/confirm). We read it
 // with the SSR client; no session → /play.
@@ -35,6 +36,15 @@ const C = {
   textFaint: "#9A815E",
 };
 const F = "'Outfit',sans-serif";
+
+type Entry = {
+  id: string;
+  description_text: string | null;
+  publicUrl: string | null;
+  comment: string;
+  isFavorite: boolean;
+  teacherNote: string | null;
+};
 
 async function getProfileData() {
   const supabase = await createClient();
@@ -71,10 +81,7 @@ async function getProfileData() {
     : [];
   const favoriteId = favoriteIds[0] || null;
 
-  let entries: Array<{
-    id: string; description_text: string | null;
-    publicUrl: string | null; comment: string; isFavorite: boolean;
-  }> = [];
+  let entries: Entry[] = [];
 
   if (commentIds.length > 0) {
     const { data: rows } = await admin
@@ -96,18 +103,27 @@ async function getProfileData() {
           publicUrl,
           comment: session?.comments?.[r.id] || "",
           isFavorite: r.id === favoriteId,
+          teacherNote: null,
         };
       });
     }
   }
 
-  // Teacher notes for this student (empty for now — the teacher dashboard
-  // will write into this table in the next slice).
+  // Teacher notes for this student. Per-photo notes (entry_id set) attach to
+  // their photo below; general notes (entry_id null) show in the top section.
   const { data: teacherComments } = await admin
     .from("teacher_comments")
-    .select("body, round, created_at")
+    .select("body, round, entry_id, created_at")
     .eq("student_id", student.id)
     .order("created_at", { ascending: true });
+
+  const noteByEntry: Record<string, string> = {};
+  const generalNotes: Array<{ body: string; round: number | null }> = [];
+  for (const t of teacherComments || []) {
+    if (t.entry_id) noteByEntry[t.entry_id] = t.body;
+    else generalNotes.push({ body: t.body, round: t.round });
+  }
+  entries = entries.map((e) => ({ ...e, teacherNote: noteByEntry[e.id] ?? null }));
 
   return {
     student,
@@ -115,7 +131,7 @@ async function getProfileData() {
     favoriteComment: session?.favorite_comment || null,
     round: session?.round || 1,
     completedAt: session?.completed_at || null,
-    teacherComments: teacherComments || [],
+    generalNotes,
   };
 }
 
@@ -141,7 +157,7 @@ export default async function StudentProfile() {
     );
   }
 
-  const { student, entries, favoriteComment, round, completedAt, teacherComments } = data;
+  const { student, entries, favoriteComment, round, completedAt, generalNotes } = data;
   const favorite = entries.find((e) => e.isFavorite) || null;
   const isComplete = !!(student.name && student.screen_name && favoriteComment);
   const classSize = entries.length;
@@ -269,15 +285,16 @@ export default async function StudentProfile() {
           </div>
         </div>
 
-        {/* ── FROM YOUR TEACHER (slot — empty until the teacher writes back) ── */}
-        <section style={{ marginBottom: 36 }}>
-          <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-            color: C.light, marginBottom: 10 }}>
-            From your teacher
-          </h2>
-          {teacherComments.length > 0 ? (
+        {/* ── FROM YOUR TEACHER (general/welcome notes only; hidden when none —
+              per-photo notes live under the photos below, no empty slot) ── */}
+        {generalNotes.length > 0 && (
+          <section style={{ marginBottom: 36 }}>
+            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+              color: C.light, marginBottom: 10 }}>
+              From your teacher
+            </h2>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {teacherComments.map((t, i) => (
+              {generalNotes.map((t, i) => (
                 <div key={i} style={{ background: C.panel, border: `1px solid ${C.panelEdge}`,
                   borderRadius: 14, padding: "14px 16px" }}>
                   {t.round != null && (
@@ -289,13 +306,8 @@ export default async function StudentProfile() {
                 </div>
               ))}
             </div>
-          ) : (
-            <div style={{ background: C.panel, border: `1px dashed ${C.panelEdge}`,
-              borderRadius: 14, padding: "16px 18px", fontSize: 13, color: C.textDim, lineHeight: 1.6 }}>
-              Your teacher will read what you wrote and add a note here. Check back soon.
-            </div>
-          )}
-        </section>
+          </section>
+        )}
 
         {/* ── ROUND 1 ── */}
         <section style={{ marginBottom: 12 }}>
@@ -343,9 +355,20 @@ export default async function StudentProfile() {
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 4 }}>
                   Why it was your favorite:
                 </div>
-                <p style={{ fontSize: 14, color: C.text, margin: 0, lineHeight: 1.6 }}>
+                <p style={{ fontSize: 14, color: C.text, margin: "0 0 12px", lineHeight: 1.6 }}>
                   {favoriteComment}
                 </p>
+                {favorite.teacherNote && (
+                  <div style={{ background: C.light + "14", border: `1px solid ${C.light}55`,
+                    borderLeft: `3px solid ${C.light}`, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 11, color: C.light, fontWeight: 700, marginBottom: 3 }}>
+                      From your teacher
+                    </div>
+                    <p style={{ fontSize: 13, color: C.text, margin: 0, lineHeight: 1.5 }}>
+                      {favorite.teacherNote}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -379,6 +402,17 @@ export default async function StudentProfile() {
                   minHeight: 28, wordBreak: "break-word" }}>
                   {e.comment}
                 </div>
+                {e.teacherNote && (
+                  <div style={{ marginTop: 6, borderTop: `1px solid ${C.light}55`, paddingTop: 6 }}>
+                    <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase",
+                      color: C.light, fontWeight: 700, marginBottom: 2 }}>
+                      From your teacher
+                    </div>
+                    <div style={{ fontSize: 11, color: C.text, lineHeight: 1.4, wordBreak: "break-word" }}>
+                      {e.teacherNote}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -395,9 +429,10 @@ export default async function StudentProfile() {
           </h2>
           <p style={{ fontSize: 14, lineHeight: 1.7, color: C.text, margin: 0 }}>
             You're now part of a small class{classSize ? ` of up to ${classSize} students` : ""}. Your
-            teacher will read what you wrote and respond — their note shows up above. Each
-            new round, you'll add one of your own photos and comment on the other students'
-            photos. When round 2 opens, you'll get an email to come back and add yours.
+            teacher will read what you wrote and respond — their notes show up under the
+            photos they reply to. Each new round, you'll add one of your own photos and
+            comment on the other students' photos. When round 2 opens, you'll get an email
+            to come back and add yours.
           </p>
         </section>
       </div>

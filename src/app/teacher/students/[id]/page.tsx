@@ -1,19 +1,19 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/teacher/students/[id]/page.tsx — one student's full journey.
 //
-// Slice 1B-iii. The teacher's read of a single student: their favorite (photo
-// + the photo's own description + what the student wrote in-game + their
-// "why" note), then every photo they commented on with the comment beside it,
-// then the teacher's notes to this student so far.
+// Slice 1B-iii + Parked A. The teacher's read of a single student: their
+// favorite (photo + the photo's own description + what the student wrote
+// in-game + their "why" note), then every photo they commented on with the
+// comment beside it — and now a per-photo teacher note the teacher can write.
+//
+// Teacher-note write-back (Parked A): under each photo the teacher can add ONE
+// optional note. It saves to teacher_comments with that photo's entry_id and
+// then shows on the student's profile UNDER that photo. Photos with no note
+// stay clean — no empty slot — on the student's side.
 //
 // Built so adding rounds is "more sections," not a redesign: everything here
 // is scoped to the student's most recent session for now; round 2 will loop
 // over sessions.
-//
-// The teacher-note WRITE form is intentionally not wired yet — it's the first
-// job of the next slice (it needs a writeTeacherComment Server Action). The
-// read side is live so the moment that action exists, notes appear here and
-// on the student's profile.
 //
 // Auth: gated on the teacher owning the class this student is enrolled in.
 // ─────────────────────────────────────────────────────────────────────────
@@ -21,6 +21,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
+import { writeTeacherComment } from "./actions";
 
 const STARTER_BUCKET = "teacher-deck";
 const MEDIA_BUCKET = "media";
@@ -37,6 +38,15 @@ const C = {
   textFaint: "#9A815E",
 };
 const F = "'Outfit',sans-serif";
+
+type Entry = {
+  id: string;
+  description_text: string | null;
+  publicUrl: string | null;
+  comment: string;
+  isFavorite: boolean;
+  teacherNote: string | null;
+};
 
 async function getStudentJourney(studentId: string) {
   const supabase = await createClient();
@@ -88,10 +98,7 @@ async function getStudentJourney(studentId: string) {
     : [];
   const favoriteId = favoriteIds[0] || null;
 
-  let entries: Array<{
-    id: string; description_text: string | null;
-    publicUrl: string | null; comment: string; isFavorite: boolean;
-  }> = [];
+  let entries: Entry[] = [];
 
   if (commentIds.length > 0) {
     const { data: rows } = await admin
@@ -113,6 +120,7 @@ async function getStudentJourney(studentId: string) {
           publicUrl,
           comment: session?.comments?.[r.id] || "",
           isFavorite: r.id === favoriteId,
+          teacherNote: null,
         };
       });
     }
@@ -128,9 +136,18 @@ async function getStudentJourney(studentId: string) {
 
   const { data: teacherComments } = await admin
     .from("teacher_comments")
-    .select("body, round, created_at")
+    .select("id, entry_id, body, round, created_at")
     .eq("student_id", studentId)
     .order("created_at", { ascending: true });
+
+  // Map notes to their photos; collect any general (no-photo) notes separately.
+  const noteByEntry: Record<string, string> = {};
+  const generalNotes: Array<{ body: string; round: number | null }> = [];
+  for (const t of teacherComments || []) {
+    if (t.entry_id) noteByEntry[t.entry_id] = t.body;
+    else generalNotes.push({ body: t.body, round: t.round });
+  }
+  entries = entries.map((e) => ({ ...e, teacherNote: noteByEntry[e.id] ?? null }));
 
   return {
     student,
@@ -139,7 +156,8 @@ async function getStudentJourney(studentId: string) {
     favoriteComment: session?.favorite_comment || null,
     round: session?.round || enrollment.round || 1,
     completedAt: session?.completed_at || null,
-    teacherComments: teacherComments || [],
+    classId: enrollment.class_id as string,
+    generalNotes,
   };
 }
 
@@ -173,9 +191,61 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
     );
   }
 
-  const { student, studentPhotoUrl, entries, favoriteComment, round, completedAt, teacherComments } = data;
+  const { student, studentPhotoUrl, entries, favoriteComment, round, completedAt, classId, generalNotes } = data;
   const favorite = entries.find((e) => e.isFavorite) || null;
   const displayName = student.screen_name || student.name || student.email;
+
+  // Shared styles for the per-photo note form bits.
+  const taStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", fontFamily: F, fontSize: 13,
+    color: C.text, padding: 8, borderRadius: 8, border: `1px solid ${C.panelEdge}`,
+    background: "#fff", resize: "vertical",
+  };
+  const saveBtnStyle: React.CSSProperties = {
+    marginTop: 6, background: C.light, color: "#fff", border: "none",
+    borderRadius: 8, padding: "6px 14px", fontSize: 13, fontWeight: 600,
+    cursor: "pointer", fontFamily: F,
+  };
+
+  // The per-photo note UI (read + author), reused for each entry.
+  const noteBlock = (e: Entry) =>
+    e.teacherNote ? (
+      <div style={{ marginTop: 10, background: C.light + "14",
+        border: `1px solid ${C.light}55`, borderLeft: `3px solid ${C.light}`,
+        borderRadius: 8, padding: "8px 10px" }}>
+        <div style={{ fontSize: 11, color: C.light, fontWeight: 600, marginBottom: 3 }}>
+          Your note
+        </div>
+        <p style={{ fontSize: 13, color: C.text, margin: 0, lineHeight: 1.5 }}>{e.teacherNote}</p>
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ fontSize: 12, color: C.textDim, cursor: "pointer" }}>Edit</summary>
+          <form action={writeTeacherComment} style={{ marginTop: 8 }}>
+            <input type="hidden" name="studentId" value={student.id} />
+            <input type="hidden" name="classId" value={classId} />
+            <input type="hidden" name="entryId" value={e.id} />
+            <input type="hidden" name="round" value={String(round)} />
+            <textarea name="body" defaultValue={e.teacherNote} rows={2} style={taStyle} />
+            <button type="submit" style={saveBtnStyle}>Save</button>
+          </form>
+        </details>
+      </div>
+    ) : (
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ fontSize: 12, color: C.light, cursor: "pointer", fontWeight: 600 }}>
+          + Add a note
+        </summary>
+        <form action={writeTeacherComment} style={{ marginTop: 8 }}>
+          <input type="hidden" name="studentId" value={student.id} />
+          <input type="hidden" name="classId" value={classId} />
+          <input type="hidden" name="entryId" value={e.id} />
+          <input type="hidden" name="round" value={String(round)} />
+          <textarea name="body" rows={2}
+            placeholder={`Write a note to ${displayName} about this photo…`}
+            style={taStyle} />
+          <button type="submit" style={saveBtnStyle}>Save note</button>
+        </form>
+      </details>
+    );
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
@@ -215,7 +285,8 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
           </div>
         </div>
 
-        {/* FAVORITE — the highest-value writing sample */}
+        {/* FAVORITE — the highest-value writing sample (read-only highlight;
+            add a note to it down in "Everything they wrote", where it's starred) */}
         {favorite && (
           <section style={{ marginBottom: 32 }}>
             <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
@@ -263,12 +334,16 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
           </section>
         )}
 
-        {/* ALL COMMENTS — photo + what they wrote, side by side */}
+        {/* ALL COMMENTS — photo + what they wrote, plus an optional teacher note */}
         <section style={{ marginBottom: 32 }}>
           <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-            color: C.light, marginBottom: 10 }}>
+            color: C.light, marginBottom: 6 }}>
             Everything they wrote
           </h2>
+          <p style={{ fontSize: 12, color: C.textFaint, margin: "0 0 12px", lineHeight: 1.5 }}>
+            Add a note under any photo to write back. Only photos you write on
+            will show a note on {displayName}'s profile — the rest stay blank.
+          </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {entries.map((e) => (
               <div key={e.id} style={{ display: "flex", gap: 14, alignItems: "flex-start",
@@ -290,6 +365,7 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                   <p style={{ fontSize: 14, color: C.text, margin: 0, lineHeight: 1.5 }}>
                     {e.comment}
                   </p>
+                  {noteBlock(e)}
                 </div>
                 {e.isFavorite && (
                   <div style={{ color: C.light, fontSize: 18, flexShrink: 0 }}>★</div>
@@ -299,15 +375,15 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
           </div>
         </section>
 
-        {/* TEACHER NOTES — read side live; write form lands next slice */}
-        <section>
-          <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-            color: C.light, marginBottom: 10 }}>
-            Your notes to {displayName}
-          </h2>
-          {teacherComments.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-              {teacherComments.map((t, i) => (
+        {/* GENERAL NOTES — only shows if any non-photo notes exist */}
+        {generalNotes.length > 0 && (
+          <section>
+            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+              color: C.light, marginBottom: 10 }}>
+              General notes
+            </h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {generalNotes.map((t, i) => (
                 <div key={i} style={{ background: C.panel, border: `1px solid ${C.panelEdge}`,
                   borderRadius: 12, padding: "12px 14px" }}>
                   {t.round != null && (
@@ -317,14 +393,8 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                 </div>
               ))}
             </div>
-          )}
-          <div style={{ background: C.panel, border: `1px dashed ${C.panelEdge}`,
-            borderRadius: 12, padding: "16px 18px", fontSize: 13, color: C.textDim, lineHeight: 1.6 }}>
-            Writing notes back to your students is the next piece we'll build. When it's
-            wired, what you write here will appear on {displayName}'s profile under
-            "From your teacher" — this is where you'll recruit them into the next round.
-          </div>
-        </section>
+          </section>
+        )}
       </div>
     </div>
   );
