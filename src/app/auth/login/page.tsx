@@ -1,3 +1,10 @@
+// ─────────────────────────────────────────────────────────────────────────
+// src/app/auth/login/page.tsx — TEACHER password login.
+//
+// Parked D fix: post-login redirect now points at /teacher/students (a real
+// route — the cohort grid) instead of /dashboard (which 404'd). Login always
+// worked; only the landing was broken.
+// ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState } from "react";
@@ -36,7 +43,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/dashboard");
+    router.push("/teacher/students");
     router.refresh();
   };
 
