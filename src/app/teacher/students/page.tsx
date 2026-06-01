@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/teacher/students/page.tsx — the teacher's cohort grid.
+// DESTINATION: src/app/teacher/students/page.tsx   (REPLACES existing file)
 //
 // Slice 1B-iii. Shows every enrolled student in the teacher's class as a card:
 // screen name (falling back to real name), how many photos they commented on,
@@ -10,6 +10,10 @@
 // the session with the SSR client to get auth.uid(), then use the service
 // client for the joins — but every query is scoped to classes this teacher
 // owns, so a logged-in non-owner sees nothing.
+//
+// Parked I: added an "Export CSV" link in the header (shown only when the
+// class has students). It points at /teacher/students/export, a route handler
+// that streams the cohort as a .csv download. Plain <a> — no client JS needed.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -133,10 +137,19 @@ export default async function TeacherStudents() {
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between",
           marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>Your class</h1>
-          <Link href="/teacher/deck"
-            style={{ fontSize: 13, color: C.textDim, textDecoration: "underline" }}>
-            ← Back to deck
-          </Link>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap" }}>
+            {students.length > 0 && (
+              <a href="/teacher/students/export"
+                style={{ fontSize: 13, color: C.light, fontWeight: 600,
+                  textDecoration: "underline" }}>
+                ↓ Export CSV
+              </a>
+            )}
+            <Link href="/teacher/deck"
+              style={{ fontSize: 13, color: C.textDim, textDecoration: "underline" }}>
+              ← Back to deck
+            </Link>
+          </div>
         </div>
         <p style={{ fontSize: 14, color: C.textDim, margin: "0 0 28px" }}>
           {students.length} {students.length === 1 ? "student has" : "students have"} joined.
