@@ -1,17 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/play/actions.ts — Server Actions for the /play surface and profile
 //
+// Slice 1 (cohorts foundation):
+//   - enrollStudent now derives the class from the FAVORITED ENTRY rather
+//     than a hardcoded NEXT_PUBLIC_DEMO_CLASS_ID. The deck mixes starters
+//     across public classes; whichever pic the visitor favorited determines
+//     which cohort they join. The favorite's entry id is the key in the
+//     `favorites` map ({ "<entryId>": true }); we look up that entry's
+//     class_id and enroll there.
+//
 // Slice 1B (Profile v1):
 //   - enrollStudent : called at end of game when a student chooses to join.
-//                     Now collects EMAIL ONLY. Creates (or reuses) a student
-//                     row, an enrollment, and a round-1 game_session holding
-//                     the nine comments + the chosen favorite, then sends a
-//                     magic-link email. Name / screen name / the "why" note are
-//                     gathered later, on the profile.
+//                     Collects EMAIL ONLY. Creates (or reuses) a student row,
+//                     an enrollment, and a round-1 game_session holding the
+//                     nine comments + the chosen favorite, then sends a
+//                     magic-link email. Name / screen name / the "why" note
+//                     are gathered later, on the profile.
 //   - saveProfile   : called from the profile page's form once the student is
-//                     logged in. Saves real name + screen name onto the student
-//                     row and the "why was this your favorite?" note onto their
-//                     most recent game_session.
+//                     logged in. Saves real name + screen name onto the
+//                     student row and the "why was this your favorite?" note
+//                     onto their most recent game_session.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -48,10 +56,24 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     favorites = JSON.parse(favoritesRaw);
   } catch {}
 
-  const classId = process.env.NEXT_PUBLIC_DEMO_CLASS_ID;
-  if (!classId) {
-    return { ok: false, error: "No class configured on this server." };
+  // ── Resolve the class FROM THE FAVORITE ───────────────────────────────
+  // favorites is { "<entryId>": true }. The favorited entry's class_id is
+  // the cohort the visitor joins. (Multiple keys shouldn't happen given the
+  // single-favorite game flow, but if they do we take the first truthy one.)
+  const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
+  if (!favEntryId) {
+    return { ok: false, error: "No favorite was selected." };
   }
+
+  const { data: favEntry, error: favErr } = await admin
+    .from("entries")
+    .select("class_id")
+    .eq("id", favEntryId)
+    .maybeSingle();
+  if (favErr || !favEntry?.class_id) {
+    return { ok: false, error: "Could not resolve the favorited photo's class." };
+  }
+  const classId = favEntry.class_id;
 
   // ── Existing student? (reuse row; name fills in later on the profile) ──
   const { data: existing } = await admin

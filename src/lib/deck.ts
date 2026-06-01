@@ -1,17 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/lib/deck.ts — DB → engine adapter for the generic deck
 //
-// Slice 1A: switch /play from the static STUDENTS array to a live read of
-// the public class's entries. The engine (spotlight.jsx) doesn't know this
-// file exists; it just receives an array of student-shaped objects via the
-// `initialStudents` prop.
+// Slice 1 (cohorts foundation): the deck is no longer pinned to ONE class.
+// It now pulls starter entries across ALL public classes and mixes them, so
+// a visitor's favorite can drop them into whichever cohort that pic belongs
+// to. The engine (spotlight.jsx) still just receives an array of
+// student-shaped objects via `initialStudents`; it doesn't know any of this.
+//
+// (Slice 1A history: switched /play from the static STUDENTS array to a live
+// read of the public class's entries. This slice generalizes "the public
+// class" to "every public class.")
 //
 // SHAPE TRANSLATION (snake_case DB → camelCase engine)
 //   entries_public row                       engine entry
 //   ----------------------------             -------------------------------
 //   id                       (uuid)          (used as student.id, since each
 //                                             starter entry is presented as
-//                                             its own "student" in the deck)
+//                                             its own "student" in the deck.
+//                                             This id IS the entry id the
+//                                             favorite is keyed by, which is
+//                                             how enrollStudent later resolves
+//                                             the favorite's class.)
 //   media_url                (storage path)  primary (public URL)
 //   media_type               (enum)          mediaType ('photo'|'video')
 //   description_text         (text)          descriptionText
@@ -85,35 +94,31 @@ export async function loadGenericDeck(): Promise<DeckResult> {
   const supabase = await createClient();
   if (!supabase) return { ok: false, reason: "no-supabase", have: 0 };
 
-  // Resolve the public class. Prefer the pinned env id (predictable in dev
-  // and for the future /teacher/deck redirect target); fall back to "any
-  // public class," which is fine for a single-teacher install.
-  const pinnedId = process.env.NEXT_PUBLIC_DEMO_CLASS_ID;
-  let classId: string | null = pinnedId || null;
-  if (!classId) {
-    const { data: cls } = await supabase
-      .from("classes")
-      .select("id")
-      .eq("is_public", true)
-      .limit(1)
-      .maybeSingle();
-    classId = cls?.id ?? null;
-  }
-  if (!classId) return { ok: false, reason: "no-class", have: 0 };
+  // Resolve EVERY public class. The deck is the union of all public classes'
+  // starter entries — that's what makes the favorite-drops-you-into-a-cohort
+  // mechanic work across multiple cohorts. (Previously this resolved a single
+  // pinned/first class via NEXT_PUBLIC_DEMO_CLASS_ID; that env var is no
+  // longer load-bearing for /play.)
+  const { data: classes } = await supabase
+    .from("classes")
+    .select("id")
+    .eq("is_public", true);
 
-  // Pull starter entries for that class. We read entries_public (the column-
-  // safe view that omits teacher-only audio) — the engine should never see
-  // reading_audio_url even by accident.
+  const classIds = (classes ?? []).map((c) => c.id);
+  if (classIds.length === 0) return { ok: false, reason: "no-class", have: 0 };
+
+  // Pull starter entries across all those classes. We read entries_public
+  // (the column-safe view that omits teacher-only audio) — the engine should
+  // never see reading_audio_url even by accident.
   //
   // We don't filter by is_starter here because (a) it isn't in the view's
-  // column list, and (b) the public deck contains only starters by
-  // construction in Slice 1A. When Slice 2's class deck starts mixing
-  // student submissions in, this becomes a separate function on a non-
-  // public class anyway.
+  // column list, and (b) public classes contain only starters by
+  // construction at this stage. When a later slice mixes student submissions
+  // into a non-public class deck, that becomes a separate function anyway.
   const { data: rows, error } = await supabase
     .from("entries_public")
     .select("id, media_url, media_type, description_text, description_l1, uploaded_at")
-    .eq("class_id", classId)
+    .in("class_id", classIds)
     .eq("status", "live");
 
   if (error || !rows) return { ok: false, reason: "underfilled", have: 0 };
@@ -123,8 +128,9 @@ export async function loadGenericDeck(): Promise<DeckResult> {
     return { ok: false, reason: "underfilled", have: rows.length };
   }
 
-  // Pool > 9: pick 9 at random so repeat visits stay fresh. Fisher-Yates,
-  // truncated to DECK_SIZE.
+  // Pool > 9: pick 9 at random so repeat visits stay fresh AND so the mix
+  // spans cohorts rather than always front-loading one class's uploads.
+  // Fisher-Yates, truncated to DECK_SIZE.
   const pool = [...rows];
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
