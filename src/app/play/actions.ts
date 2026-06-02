@@ -2,24 +2,28 @@
 // src/app/play/actions.ts — Server Actions for the /play surface and profile
 //
 // Slice 1 (cohorts foundation):
-//   - enrollStudent now derives the class from the FAVORITED ENTRY rather
-//     than a hardcoded NEXT_PUBLIC_DEMO_CLASS_ID. The deck mixes starters
-//     across public classes; whichever pic the visitor favorited determines
-//     which cohort they join. The favorite's entry id is the key in the
-//     `favorites` map ({ "<entryId>": true }); we look up that entry's
-//     class_id and enroll there.
+//   - enrollStudent derives the class from the FAVORITED ENTRY (not a
+//     hardcoded NEXT_PUBLIC_DEMO_CLASS_ID). The deck mixes starters across
+//     public classes; whichever pic the visitor favorited determines which
+//     cohort they join. The favorite's entry id is the key in the `favorites`
+//     map ({ "<entryId>": true }); we look up that entry's class_id and
+//     enroll there.
+//
+// Slice 1 Part 2 guard (World B — "one active class at a time"):
+//   - Before creating a NEW enrollment, refuse if the student already has an
+//     ACTIVE enrollment in a DIFFERENT class. A student is in at most one live
+//     class; finished classes are status='completed' and become history.
+//     Re-enrolling in the SAME class is still fine (idempotent upsert).
+//     (Manual completion for now — nothing here flips active→completed yet;
+//     that's a later slice. The DB also has a partial unique index as a hard
+//     backstop, see migration 20260601180000.)
 //
 // Slice 1B (Profile v1):
-//   - enrollStudent : called at end of game when a student chooses to join.
-//                     Collects EMAIL ONLY. Creates (or reuses) a student row,
-//                     an enrollment, and a round-1 game_session holding the
-//                     nine comments + the chosen favorite, then sends a
-//                     magic-link email. Name / screen name / the "why" note
-//                     are gathered later, on the profile.
-//   - saveProfile   : called from the profile page's form once the student is
-//                     logged in. Saves real name + screen name onto the
-//                     student row and the "why was this your favorite?" note
-//                     onto their most recent game_session.
+//   - enrollStudent : end-of-game join. EMAIL ONLY. Creates/reuses a student,
+//     an enrollment, a round-1 game_session (nine comments + the favorite),
+//     then sends a magic link. Name/screen name/the "why" come later.
+//   - saveProfile   : profile-page form once logged in. Saves real name +
+//     screen name and the "why was this your favorite?" note.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -57,9 +61,9 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   } catch {}
 
   // ── Resolve the class FROM THE FAVORITE ───────────────────────────────
-  // favorites is { "<entryId>": true }. The favorited entry's class_id is
-  // the cohort the visitor joins. (Multiple keys shouldn't happen given the
-  // single-favorite game flow, but if they do we take the first truthy one.)
+  // favorites is { "<entryId>": true }. The favorited entry's class_id is the
+  // cohort the visitor joins. (Single-favorite flow; if multiple, take the
+  // first truthy one.)
   const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
   if (!favEntryId) {
     return { ok: false, error: "No favorite was selected." };
@@ -97,11 +101,34 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     studentId = newStudent.id;
   }
 
-  // ── Upsert enrollment ─────────────────────────────────────────────────
+  // ── GUARD: one ACTIVE class at a time (World B) ───────────────────────
+  // If the student already has an active enrollment in a DIFFERENT class,
+  // refuse. They must finish (status='completed') their current class before
+  // joining another. Re-joining the SAME class is allowed (handled by the
+  // upsert below). This is the friendly first line; the DB partial unique
+  // index (migration 20260601180000) is the hard backstop.
+  const { data: activeRows, error: activeErr } = await admin
+    .from("enrollments")
+    .select("class_id")
+    .eq("student_id", studentId)
+    .eq("status", "active");
+  if (activeErr) {
+    return { ok: false, error: `Could not check enrollment: ${activeErr.message}` };
+  }
+  const activeOther = (activeRows || []).find((r) => r.class_id !== classId);
+  if (activeOther) {
+    return {
+      ok: false,
+      error:
+        "You're already in a class. You can join a new one once your current class has finished.",
+    };
+  }
+
+  // ── Upsert enrollment (status defaults to 'active') ───────────────────
   const { error: enrollErr } = await admin
     .from("enrollments")
     .upsert(
-      { student_id: studentId, class_id: classId, round: 1 },
+      { student_id: studentId, class_id: classId, round: 1, status: "active" },
       { onConflict: "student_id,class_id" }
     );
   if (enrollErr) {
@@ -124,9 +151,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
 
   // ── Send magic link via signInWithOtp ─────────────────────────────────
-  // Uses an anon-key client so signInWithOtp actually emails the user.
-  // emailRedirectTo points at /auth/confirm, which exchanges the token_hash
-  // for a session cookie and forwards to the profile.
   const anon = createServiceClient(supabaseUrl, anonKey);
   const { error: otpErr } = await anon.auth.signInWithOtp({
     email,
@@ -148,16 +172,12 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// saveProfile — used as a <form action> on the profile page.
+// saveProfile — used as a <form action> on the profile page. (Unchanged.)
 //
 // Reads the logged-in user from the session cookie, then saves:
 //   • students.name        (real name — private, for the teacher)
 //   • students.screen_name (public — classmates see this in later rounds)
 //   • game_sessions.favorite_comment on their most recent round (the "why")
-//
-// The form enforces required + minLength in the browser; we re-check here so
-// nothing thin slips through. On success we revalidate so the page re-renders
-// in its completed state.
 // ─────────────────────────────────────────────────────────────────────────
 export async function saveProfile(formData: FormData): Promise<void> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
