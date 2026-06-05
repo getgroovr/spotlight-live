@@ -65,6 +65,13 @@ const STARTER_BUCKET = "teacher-deck";
 // What the engine expects (shape of a single "student" tile). Kept loose
 // because students.js doesn't export a type; this is documentation as much
 // as enforcement.
+//
+// isSelf (added in slice 1 engine-adaptation pass):
+//   true if this tile belongs to the currently-logged-in student, false
+//   otherwise. Set by class-deck.ts (the in-class adapter). The visitor
+//   deck (loadGenericDeck below) has no "self" — visitors aren't students —
+//   so it sets isSelf:false on every starter tile. The engine uses this to
+//   skip the current student's own tile during the comment cycle.
 export type EngineStudent = {
   id: string;
   name: string;
@@ -80,6 +87,7 @@ export type EngineStudent = {
     readingAudio: null;
   }>;
   peerComments: never[];
+  isSelf: boolean;
 };
 
 // Result of loadGenericDeck — discriminated so callers can branch on the
@@ -184,6 +192,10 @@ export async function loadGenericDeck(): Promise<DeckResult> {
         readingAudio: null,
       }],
       peerComments: [],
+      // Visitors aren't students — no "self" to mark in the visitor deck.
+      // Every starter tile gets isSelf:false. The engine then treats them
+      // all as "other people's tiles", which is the right default.
+      isSelf: false,
     };
   });
 
