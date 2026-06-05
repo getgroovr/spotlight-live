@@ -25,6 +25,14 @@
 //   - saveProfile   : profile-page form once logged in. Saves real name +
 //     screen name, an optional self-photo, and the "why was this your
 //     favorite?" note.
+//
+// Slice 1 engine-adaptation (#25):
+//   - addEntry     : dashboard form for adding ANOTHER photo after the
+//     first one (which saveProfile captures at finish-joining time). Same
+//     write path as saveProfile's entry block — uploads to PRIVATE `media`
+//     bucket, inserts `entries` row at status='pending' on the profiles
+//     track (entries.student_id = profiles.id = auth user.id). No limit
+//     on how many pending an account can have; teacher moderates.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -334,6 +342,94 @@ export async function saveProfile(formData: FormData): Promise<void> {
       .from("game_sessions")
       .update({ favorite_comment: why })
       .eq("id", session.id);
+  }
+
+  revalidatePath("/student/dashboard");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// addEntry — used as a <form action> on the dashboard.
+//
+// Adds ANOTHER own photo to the student's current class. saveProfile handled
+// the first one (at finish-joining time, alongside name + screen_name + the
+// why-note); this is the same write minus the profile fields. Identical
+// constraints:
+//   • Logged-in session required (reads user via SSR cookie client).
+//   • Current class resolves from profiles.class_id (the profiles track —
+//     matches the rest of saveProfile's entry block).
+//   • Uploads to PRIVATE `media` bucket via the service-role admin client
+//     (bypasses storage RLS — no policies needed).
+//   • Writes entries.media_url as the storage PATH (not a URL); read layer
+//     signs it at display time (deck.ts convention).
+//   • student_id is set to user.id (= profiles.id), NOT students.id. See
+//     student-archive.ts header for the TWO-TRACK STUDENT IDS explanation.
+//   • status defaults to 'pending'; teacher approves later.
+//
+// On success, revalidatePath('/student/dashboard') refreshes the dashboard
+// so the new entry (now the most-recent own) shows in the "Your photo"
+// section. Failure mode: console.error and the form silently no-ops; we
+// don't currently surface errors to the UI (matches saveProfile's pattern;
+// worth revisiting when there's an error-surface UX in place).
+// ─────────────────────────────────────────────────────────────────────────
+export async function addEntry(formData: FormData): Promise<void> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return;
+
+  const supabase = await createClient();
+  if (!supabase) return;
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !user.email) return;
+
+  const entryPhoto = formData.get("entry_photo");
+  const entryDescription = String(formData.get("entry_description") || "").trim();
+
+  // Form already enforces these; defense in depth.
+  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) return;
+  if (!entryDescription) return;
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // Resolve current class via profiles.class_id (profiles track — same
+  // source saveProfile uses for the entry's class_id).
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("class_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  const entryClassId = profile?.class_id ?? null;
+  if (!entryClassId) {
+    console.error("addEntry: no current class on profile; skipped write.");
+    return;
+  }
+
+  // Upload to PRIVATE `media` bucket. Path layout matches saveProfile:
+  // <classId>/<userId>-<timestamp>.<ext>
+  const ext =
+    entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
+  const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
+  const { error: upErr } = await admin.storage
+    .from("media")
+    .upload(entryPath, entryPhoto, {
+      contentType: entryPhoto.type || "image/jpeg",
+      upsert: true,
+    });
+  if (upErr) {
+    console.error("addEntry photo upload failed:", upErr.message);
+    return;
+  }
+
+  const { error: entryErr } = await admin.from("entries").insert({
+    student_id: user.id,       // profiles(id) — NOT students.id
+    class_id: entryClassId,
+    media_url: entryPath,
+    media_type: "photo",
+    description_text: entryDescription,
+    // status defaults to 'pending'; is_starter to false; uploaded_at to now()
+  });
+  if (entryErr) {
+    console.error("addEntry insert failed:", entryErr.message);
+    return;
   }
 
   revalidatePath("/student/dashboard");

@@ -26,7 +26,7 @@ import { redirect } from "next/navigation";
 import { getStudentArchive } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
 import PhotoField from "./PhotoField";
-import { saveProfile } from "@/app/play/actions";
+import { saveProfile, addEntry } from "@/app/play/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -313,6 +313,61 @@ export default async function StudentProfile() {
                   </p>
                 )}
               </div>
+            </div>
+
+            {/* ── ADD ANOTHER PHOTO ──
+                Added in slice 1 engine-adaptation pass (#25). The student
+                can upload additional photos anytime, not just at finish-
+                joining. New uploads land in the same `entries` table at
+                status='pending' for the same current class; teacher approves
+                via the moderation surface. The most-recent upload becomes
+                the photo shown above on next page load (revalidatePath in
+                addEntry handles the refresh).
+
+                For now we only show ONE own photo on the dashboard (the
+                most recent). Surfacing the full stack of own entries is a
+                separate layout pass — see handoff #25 "earlier photos"
+                note. */}
+            <div style={{ marginTop: 22, paddingTop: 18,
+              borderTop: `1px solid ${C.panelEdge}` }}>
+              <h3 style={{ fontSize: 13, letterSpacing: 1.5,
+                textTransform: "uppercase", color: C.light,
+                marginTop: 0, marginBottom: 12 }}>
+                Add another photo
+              </h3>
+              <form action={addEntry}>
+                <PhotoField
+                  name="entry_photo"
+                  label="Photo"
+                  helper="something you'd like classmates to see and comment on"
+                  required
+                  previewSize={160}
+                />
+                <label style={{ fontSize: 13, fontWeight: 600, display: "block",
+                  marginTop: 12, marginBottom: 6, color: C.text }}>
+                  Tell us about it
+                </label>
+                <textarea
+                  name="entry_description"
+                  required
+                  rows={3}
+                  placeholder="What is it? Why did you pick it?"
+                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
+                    fontFamily: F, fontSize: 14, lineHeight: 1.5,
+                    background: "#FFFDF7", color: C.text,
+                    border: `1px solid ${C.panelEdge}`, borderRadius: 12, outline: "none",
+                    resize: "vertical" }}
+                />
+                <button
+                  type="submit"
+                  style={{ width: "100%", padding: "11px", fontFamily: F,
+                    fontSize: 14, fontWeight: 700, background: C.light,
+                    color: "#fff", border: "none", borderRadius: 10,
+                    cursor: "pointer", letterSpacing: 0.5, marginTop: 12 }}
+                >
+                  Add to the class →
+                </button>
+              </form>
             </div>
           </section>
         )}
