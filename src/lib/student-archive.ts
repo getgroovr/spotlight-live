@@ -47,6 +47,20 @@
 //     the teacher approves it, with status so the page can label it.
 //   - Scoped to the CURRENT class (profiles.class_id). Past-class own
 //     entries are deliberately not surfaced — those classes are done.
+//
+// TWO-TRACK STUDENT IDS — read this before changing the entry query:
+//   This codebase has two distinct UUIDs per student, and they are NOT the
+//   same value:
+//     • students.id     — generated when the student row is inserted
+//                         (enrollStudent in actions.ts). Used by
+//                         enrollments, game_sessions, submissions,
+//                         teacher_comments — the "students track."
+//     • profiles.id     — equals auth.users.id (the magic-link auth user).
+//                         Used by entries.student_id — the "profiles track."
+//   saveProfile writes entries with student_id = user.id (= profiles.id).
+//   So when we read entries back, we must join on profiles.id, NOT
+//   students.id. The earlier version of this file joined on students.id
+//   and silently returned ownEntry=null even when an entry existed.
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
@@ -238,13 +252,18 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
   // Skipped if there's no current class. Both 'live' and 'pending' are
   // surfaced (pending matters most — that's what motivates return visits
   // while waiting for approval). Newest first; we take one.
+  //
+  // CRITICAL — see TWO-TRACK STUDENT IDS comment at the top of this file.
+  // entries.student_id holds profiles.id (= auth user.id), NOT students.id.
+  // The previous version of this query used student.id and silently returned
+  // null; the fix is to use user.id below.
   let ownEntry: OwnEntry | null = null;
   if (currentClassId) {
     const { data: ownRows } = await admin
       .from("entries")
       .select("id, media_url, description_text, status, uploaded_at")
       .eq("class_id", currentClassId)
-      .eq("student_id", student.id)
+      .eq("student_id", user.id)
       .eq("is_starter", false)
       .in("status", ["live", "pending"])
       .order("uploaded_at", { ascending: false })
