@@ -325,11 +325,12 @@ export default async function StudentProfile() {
         <ProfileArchive classes={classes} />
 
         {/* ── WHAT HAPPENS NEXT ──
-            Revised in slice 1 engine-adaptation pass: the old copy implied
-            students had to wait for a new round before adding another photo,
-            which isn't true — they can add anytime. The email is reframed
-            as a heads-up about classmates' new photos, not as permission
-            to add their own. */}
+            Softened again: the prior copy promised an email when a new round
+            opens, but the round-timing/notification feature doesn't exist
+            yet, so the promise wasn't true. New copy stays accurate to the
+            current behavior — when there's new stuff from classmates, you'll
+            see it next time you visit. When round-timing lands and we DO send
+            emails / show a countdown, this paragraph gets revisited. */}
         <section style={{
           background: C.panel, border: `1px solid ${C.panelEdge}`,
           borderRadius: 16, padding: "20px 22px", marginTop: 28,
@@ -340,9 +341,8 @@ export default async function StudentProfile() {
           </h2>
           <p style={{ fontSize: 14, lineHeight: 1.7, color: C.text, margin: 0 }}>
             Your teacher will read what you wrote and respond — their notes show up under the
-            photos they reply to. You can add another photo whenever you want. When a new round
-            opens, you&apos;ll get an email so you can come back and see what your classmates
-            have added.
+            photos they reply to. You can add another photo whenever you want. When new
+            classmate photos are ready, you&apos;ll see them next time you visit.
           </p>
         </section>
       </div>
