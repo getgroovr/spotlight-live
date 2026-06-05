@@ -47,9 +47,27 @@ function shuffle(a) {
   return b;
 }
 
-// Round 1 is anonymous now — progress is saved per browser under a single
-// key, so a player can hit Resume without ever typing a name.
-const SAVE_KEY = "spotlight:progress:anon";
+// Progress is saved per browser so a player can hit Resume without typing a name.
+//
+// PER-ROUTE STORAGE KEYS (added in slice 1 engine-adaptation pass):
+//   The single static key broke the in-class flow: a visitor who played /play
+//   (writing under one key), then enrolled and later returned, would see a
+//   stale "Resume" offer pointing at their old visitor game. Worse, in-class
+//   progress at /student/play would overwrite or be overwritten by visitor
+//   progress.
+//
+//   Fix: derive the key from window.location.pathname so /play and
+//   /student/play never see each other's progress. They're conceptually
+//   different games (cross-class starters vs your own class) and shouldn't
+//   share state. SSR safety: when window is undefined (server render), fall
+//   back to the visitor key so existing keys continue to be readable. All
+//   real reads/writes happen client-side anyway.
+function saveKey() {
+  if (typeof window === "undefined") return "spotlight:progress:visitor";
+  return window.location.pathname.startsWith("/student")
+    ? "spotlight:progress:student"
+    : "spotlight:progress:visitor";
+}
 function saveProgress(data) {
   try {
     const payload = {
@@ -57,12 +75,12 @@ function saveProgress(data) {
       myComments: data.myComments,
       savedAt: new Date().toISOString(),
     };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+    localStorage.setItem(saveKey(), JSON.stringify(payload));
   } catch (e) {}
 }
 function loadProgress() {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(saveKey());
     if (!raw) return null;
     const p = JSON.parse(raw);
     return {
@@ -72,7 +90,7 @@ function loadProgress() {
     };
   } catch (e) { return null; }
 }
-function clearProgress() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
+function clearProgress() { try { localStorage.removeItem(saveKey()); } catch (e) {} }
 function hasResumableProgress() {
   const p = loadProgress();
   return !!(p && p.shownIds.size > 0);
@@ -414,6 +432,12 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
       fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
       const result = await enrollStudent(fd);
       if (result.ok) {
+        // Wipe visitor progress on successful enrollment. Otherwise this
+        // localStorage key persists and a later return to /play would offer
+        // Resume from the old game the visitor just enrolled out of. (Per-
+        // route saveKey() above ensures we're targeting the visitor key here,
+        // not the student key.)
+        clearProgress();
         setDone(true);
       } else {
         setError(result.error);

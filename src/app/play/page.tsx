@@ -12,6 +12,24 @@
 //   3. Supabase not configured (local dev with no .env): falls back to the
 //      static STUDENTS array via the engine's default prop, so /play stays
 //      playable without a backend.
+//
+// REDIRECT-IF-ENROLLED (added in slice 1 engine-adaptation pass):
+//   Visitors who have already enrolled don't belong on /play — their real
+//   home is /student/dashboard, and re-entering the visitor flow would offer
+//   them a stale "Resume" from a game they enrolled out of. Before loading
+//   the deck, we check the session; if there's a logged-in user AND a row
+//   in `students` for their email, we 307 over to /student/dashboard. The
+//   `students` lookup is the truth for "is this person actually enrolled"
+//   (sessions can exist without enrollment, e.g. mid-magic-link flow).
+//
+//   This pairs with two changes in spotlight.jsx: per-route saveKey() (so
+//   /play and /student/play don't share localStorage) and clearProgress()
+//   on successful enrollment (so the visitor key is wiped at the moment
+//   they transition away). All three together kill the resume-stuck-on-
+//   old-game bug.
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase-server";
+import { createClient as createServiceClient } from "@supabase/supabase-js";
 import GameShell from "@/game/shell";
 import { loadGenericDeck } from "@/lib/deck";
 
@@ -24,6 +42,30 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function PlayPage() {
+  // Step 1: if this visitor is actually an enrolled student, send them to
+  // their dashboard. Safe to run on every /play visit — two cheap reads
+  // when there's a session, zero when there isn't.
+  const ssr = await createClient();
+  if (ssr) {
+    const { data: { user } } = await ssr.auth.getUser();
+    if (user?.email) {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (supabaseUrl && serviceKey) {
+        const admin = createServiceClient(supabaseUrl, serviceKey);
+        const { data: student } = await admin
+          .from("students")
+          .select("id")
+          .eq("email", user.email.toLowerCase())
+          .maybeSingle();
+        if (student) {
+          redirect("/student/dashboard");
+        }
+      }
+    }
+  }
+
+  // Step 2: anonymous or not-yet-enrolled — render the visitor deck as before.
   const deck = await loadGenericDeck();
 
   if (deck.ok) {
