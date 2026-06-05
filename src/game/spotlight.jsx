@@ -583,6 +583,16 @@ export default function App({ initialStudents = STUDENTS }) {
   const [students, setStudents] = useState(initialStudents);
   const [myComments, setMyComments] = useState({});
 
+  // SSR hydration gate: anything that depends on localStorage (canResume,
+  // below) must NOT be evaluated during the server render or the first
+  // client render — otherwise server sees "no resume" (no window) and the
+  // hydrating client sees "yes resume" (saved progress in localStorage),
+  // and React throws a hydration mismatch. We flip `mounted` to true in a
+  // post-mount effect so the resume branch only renders after hydration
+  // is safely past.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   const scrambleRef = useRef(null);
   const allShown = shownIds.size >= students.length;
 
@@ -655,7 +665,9 @@ export default function App({ initialStudents = STUDENTS }) {
     setMyComments({});
   }, [students]);
 
-  const canResume = view === "splash" && hasResumableProgress();
+  // Gated on `mounted` — see the SSR hydration comment above. Before mount
+  // we always render the "Enter the stage" branch, matching the server.
+  const canResume = mounted && view === "splash" && hasResumableProgress();
 
   if (view === "splash") {
     return (

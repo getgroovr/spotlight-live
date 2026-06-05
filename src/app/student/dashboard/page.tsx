@@ -238,7 +238,7 @@ export default async function StudentProfile() {
 
         {/* ── GO TO THE GAME ── */}
         <a
-          href="/play"
+          href="/student/play"
           style={{ display: "block", textAlign: "center", textDecoration: "none",
             width: "100%", boxSizing: "border-box", padding: "13px",
             fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
