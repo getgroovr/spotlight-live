@@ -1,8 +1,8 @@
-# SLICE 1 HANDOFF #25 — Engine adaptation pass on `spotlight.jsx` LANDED end-to-end (skip-self in comment cycle + dynamic intro copy + solo-self state). Resume-after-enrollment bug FIXED with three-part patch (route-aware `saveKey()`, `clearProgress()` on enrollment, `/play` redirects enrolled users). Dashboard gains a "Your photo" card surfacing the student's own current-class entry; supporting `ownEntry` add to `student-archive.ts` had a TWO-TRACK STUDENT IDS bug (joined `students.id` instead of `profiles.id`) — FIXED and documented in the file header. "WHAT HAPPENS NEXT" text revised twice; current copy doesn't promise the round-timing email we haven't built. NEXT (Mike's call): (a) solo-self splash redesign — render the 3×3 grid with placeholder tiles + disabled spin button instead of the "waiting for classmates" text ("it's the game, just not populated yet"), (b) upload-from-dashboard feature, OR (c) round-timing (still parked, still Mike's interest — countdown-to-deadline now part of the spec).
+# SLICE 1 HANDOFF #25 — Engine adaptation pass on `spotlight.jsx` LANDED end-to-end (skip-self + dynamic intro + solo-self state, then redesigned solo-self splash to show a 3×3 preview grid with disabled spin button instead of waiting text). Resume-after-enrollment bug FIXED with three-part patch (route-aware `saveKey()`, `clearProgress()` on enrollment, `/play` redirects enrolled users). Dashboard gains a "Your photo" card surfacing the student's own current-class entry (via new `ownEntry` field on `getStudentArchive`); supporting query had a TWO-TRACK STUDENT IDS bug — FIXED and documented. "WHAT HAPPENS NEXT" text revised twice — current copy doesn't promise the round-timing email we haven't built. New `addEntry` server action + form section on the dashboard let the student upload additional photos anytime, not only at finish-joining. NEXT (Mike's call): (a) round-timing feature (still parked, still active interest — countdown-to-deadline now part of spec), (b) display the full stack of own entries on the dashboard, not just the most recent (V2 of upload feature), (c) the smaller items list.
 
-**Date written:** 2026-06-05
+**Date written:** 2026-06-05 (revised in-session after adding solo-self splash redesign + upload-from-dashboard V1)
 **Picking up from:** #24 (engine adaptation list captured; Option A chosen; not yet built)
-**This session:** Built the entire engine-adaptation pass from #24's plan. Then chased a real bug Mike hit during testing (Resume offering stale visitor game after enrollment) → three-part fix. Then a design improvement (own-photo on dashboard) → which surfaced a real data bug (`student_id` join on the wrong table) → diagnostic SQL pinned it → one-line fix. Plus two iterations on the "WHAT HAPPENS NEXT" copy. Mike confirmed the design direction for solo-self next.
+**This session:** Built the entire engine-adaptation pass from #24's plan. Then chased a real bug Mike hit during testing (Resume offering stale visitor game after enrollment) → three-part fix. Then a design improvement (own-photo on dashboard) → which surfaced a real data bug (`student_id` join on the wrong table) → diagnostic SQL pinned it → one-line fix. Plus two iterations on the "WHAT HAPPENS NEXT" copy. Then a redesign of the solo-self splash (Mike's "make it look like the game, just not populated yet" idea — 3×3 preview grid + disabled Enter button + own tile centered). Then upload-from-dashboard V1 (new `addEntry` server action + form section on the dashboard).
 **Next model:** Opus 4.7 (this session). Same agreement: whole-file downloads via `present_files`, one copy-clip per command, ask for files before guessing, read screenshots. Use whatever model is current.
 **Destination:** `docs/handoffs/`
 
@@ -32,7 +32,7 @@ These are not preferences to honor when convenient. They are the working agreeme
    - **`students.id`** — generated when the student row inserts (in `enrollStudent`). Used by `enrollments`, `game_sessions`, `submissions`, `submission_comments`, `submission_favorites`, `teacher_comments`. Call this the "students track."
    - **`profiles.id`** — equals `auth.users.id` (the magic-link auth user). Used by `entries.student_id`. Call this the "profiles track."
 
-   `saveProfile` writes entries with `student_id = user.id` (= profiles.id). When reading entries back, you MUST join on `profiles.id` / `user.id`, NEVER on `students.id`. The first `ownEntry` query in `student-archive.ts` used `students.id` and silently returned null for every test — Mike correctly suspected a bug, diagnostic SQL pinned it, one-line fix. **The file header of `student-archive.ts` now documents this seam explicitly. Read it before touching any entry query.**
+   `saveProfile` AND `addEntry` write entries with `student_id = user.id` (= profiles.id). When reading entries back, you MUST join on `profiles.id` / `user.id`, NEVER on `students.id`. The first `ownEntry` query in `student-archive.ts` used `students.id` and silently returned null for every test — Mike correctly suspected a bug, diagnostic SQL pinned it, one-line fix. **The file header of `student-archive.ts` now documents this seam explicitly. Read it before touching any entry query.**
 
 9. **Don't `DELETE FROM students` to reset test state. (NEW #25.)** Mike was doing this and unknowingly nuking his own photos. The `students` table has SIX foreign keys with `ON DELETE CASCADE`: `enrollments`, `game_sessions`, `submission_comments`, `submission_favorites`, `submissions`, `teacher_comments`. (Notably NOT entries — entries cascade off `profiles`, not `students`. But everything else goes.) For non-destructive retesting, use **Gmail plus-addressing**: `myked70og+test1@gmail.com`, `+test2`, etc. — all route to the same `myked70og@gmail.com` inbox but Supabase treats each as a separate student. Test-and-delete the `+testN` accounts freely; the real Mike account keeps its history.
 
@@ -49,7 +49,7 @@ src/app/auth/login/page.tsx                ← TEACHER sign-in (password)
 src/app/auth/signup/page.tsx
 src/app/play/page.tsx                       ← VISITOR play; #25 added redirect-if-enrolled
 src/app/student/dashboard/export/route.ts   ← per-class CSV export
-src/app/student/dashboard/page.tsx          ← PROFILE; #25 added "Your photo" card + text revisions
+src/app/student/dashboard/page.tsx          ← PROFILE; #25 added "Your photo" card + "Add another photo" form + text revisions
 src/app/student/login/page.tsx              ← returning-student magic-link
 src/app/student/play/page.tsx               ← in-class game, signed-in (#24)
 src/app/teacher/deck/page.tsx
@@ -60,7 +60,7 @@ src/app/teacher/students/page.tsx
 src/app/page.tsx
 ```
 
-Non-routable but relevant: `src/game/{shell.jsx, spotlight.jsx (#25: engine adaptation + per-route saveKey + clearProgress-on-enroll), students.js}`; `src/lib/{deck.ts (visitor; #25: isSelf:false on starters), class-deck.ts (#25: isSelf:true on current student), student-archive.ts (#25: ownEntry surfaced + bug fixed), supabase-server.ts}`; `src/app/student/dashboard/{ProfileArchive.tsx, PhotoField.tsx}`.
+Non-routable but relevant: `src/game/{shell.jsx, spotlight.jsx (#25: engine adaptation + per-route saveKey + clearProgress-on-enroll + solo-self preview grid), students.js}`; `src/lib/{deck.ts (visitor; #25: isSelf:false on starters), class-deck.ts (#25: isSelf:true on current student), student-archive.ts (#25: ownEntry surfaced + two-track bug fixed), supabase-server.ts}`; `src/app/play/actions.ts (#25: new addEntry server action)`; `src/app/student/dashboard/{ProfileArchive.tsx, PhotoField.tsx}`.
 
 **Key route distinction (unchanged but worth restating):** `/play` is the cross-class VISITOR demo with the ≥9-photo guard, using PUBLIC `teacher-deck` starters via `getPublicUrl`. **#25: `/play` now redirects to `/student/dashboard` when there's a logged-in user with a matching `students` row.** `/student/play` is the auth-gated CLASS view that handles any N, using PRIVATE `media` entries via `createSignedUrl`. They are NOT interchangeable; they read different tables and different buckets and now also write different `localStorage` keys.
 
@@ -127,50 +127,44 @@ order by ordinal_position;
 
 ## ✅ WHAT SHIPPED THIS SESSION
 
-Eight commits landed (one outstanding at write-time — the `ownEntry` query fix). All in Outgoing; Mike will push when ready.
+Eleven commits landed (one outstanding at write-time — handoff #25 itself). All in Outgoing; Mike will push when ready.
 
 **1. Engine adaptation pass on `spotlight.jsx` (commit `Engine adaptation: skip self in spotlight, dynamic intro, solo-self state`).** From #24's list:
    - **Skip self in spotlight cycle.** Added `isSelf: boolean` to `EngineStudent` type (in `deck.ts`); `class-deck.ts` sets `isSelf: true` for the matching `user.id`, `deck.ts` sets `isSelf: false` on all visitor starters. In `spotlight.jsx`, derived `playableStudents = students.filter(s => !s.isSelf)` and `playableCount` at the top of the App component. Threaded through everywhere the engine previously read `students.length` for "is the game done" / progress purposes: `allShown`, `finishStudent` done check, `resume` done check, header progress display, comment counter, `DoneScreen` review grid. The `stop()` selection pool now excludes `isSelf`. Self stays in the rendered grid (visible) but never lands in the spotlight, never counts toward "done," and never appears as a favorite-pickable tile.
-   - **Dynamic intro copy.** Splash now branches: visitor → `"{N} photos. Hit stop, look closely, and tell us what you see."` (drops the hardcoded "Nine"); in-class with classmates → `"{N} classmates to meet. Hit stop…"`; solo-self → `"Your photo is in the queue. Classmates' photos will appear here as they join the game."`
-   - **Solo-self state.** When `playableCount === 0 && hasSelf`, the splash replaces the Enter/Resume button with a calm `"Check back once at least one classmate's photo is approved."` line. No reload button — didn't want to imply polling.
+   - **Dynamic intro copy.** Splash now branches: visitor → `"{N} photos. Hit stop, look closely, and tell us what you see."` (drops the hardcoded "Nine"); in-class with classmates → `"{N} classmates to meet. Hit stop…"`; solo-self → (see commit #2 below for the redesigned version).
+   - **Solo-self state (v1).** Initial implementation: when `playableCount === 0 && hasSelf`, splash showed `"Your photo is in the queue. Classmates' photos will appear here as they join the game."` + a small `"Check back once at least one classmate's photo is approved."` line in place of the Enter/Resume button. Text-only; superseded by the preview-grid redesign below.
    - **Favorite-locking-per-round (decided, not implemented).** Comment block above `DoneScreen` records the decision: students can change their favorite freely while round is LIVE, but cannot change across rounds; cross-round lock enforced server-side when round-timing lands.
 
-**2. Three-part fix for the stale-Resume-after-enrollment bug (commit `Fix stale Resume after enrollment (three-part fix)`).** Mike hit this in testing: after enrolling at `/play`, clicking the email link, finishing joining, then later returning to `/play`, the splash offered Resume from the visitor game he'd already enrolled out of. Three patches together:
+**2. Solo-self splash redesigned to show a preview grid (commit `spotlight: solo-self splash now shows preview grid + disabled button`).** Mike's direction during #25 testing: *"I don't mind if this screen looked more like the game — blank spots for future pics, the spin (and stop) button… right? this is the game, afterall… it's just not populated yet."* Replaced the text-only solo-self branch with:
+   - A small 3×3 grid (240px max-width). The student's own tile sits in the center (index 4) with a solid `C.light` border and either their signed-URL photo or, on null, a colored fallback block with their first initial. The other 8 tiles are dashed-border placeholders at 45% opacity — visually "reserved, not yet filled."
+   - A disabled "Enter the stage" button beneath the grid, styled the same as the live button but greyed out and `cursor: not-allowed`.
+   - A one-line subtle caption: *"Waiting on classmates. The game starts once at least one classmate's photo is approved."*
+   - Updated intro copy to match the visual: *"Here you are. Classmates' photos will appear in the empty spots as they join."*
+   - The button doesn't fire — purely a preview. When a classmate's photo gets approved and the page reloads, `soloSelf` flips false, the regular splash renders, the real button works.
+
+**3. Three-part fix for the stale-Resume-after-enrollment bug (commit `Fix stale Resume after enrollment (three-part fix)`).** Mike hit this in testing: after enrolling at `/play`, clicking the email link, finishing joining, then later returning to `/play`, the splash offered Resume from the visitor game he'd already enrolled out of. Three patches together:
    - **`spotlight.jsx`: per-route `saveKey()`.** Replaced static `SAVE_KEY = "spotlight:progress:anon"` with a function deriving the key from `window.location.pathname`: `/student/*` → `"spotlight:progress:student"`, else → `"spotlight:progress:visitor"`. All four storage helpers (`saveProgress`, `loadProgress`, `clearProgress`, `hasResumableProgress`) now call `saveKey()`. The two routes no longer share or overwrite each other's localStorage.
    - **`spotlight.jsx`: `clearProgress()` on successful enrollment.** In `EnrollForm`'s success branch (after `enrollStudent(...)` returns ok), wipe the visitor key so it isn't sitting around to be re-offered later.
    - **`/play/page.tsx`: redirect-if-enrolled.** At the top of the route, if there's an auth session AND a matching row in `students`, 307 over to `/student/dashboard`. Belt-and-suspenders for the case where someone returns to `/play` after enrolling — they don't even get the chance to see stale state.
 
-**3. Dashboard "Your photo" card** (commits `Dashboard: show student's own current-class entry` + `Fix ownEntry query: join on profiles.id, not students.id`). Adds `ownEntry: OwnEntry | null` to `getStudentArchive`'s result, queries the student's most-recent live OR pending entry in their current class (signed URL from PRIVATE `media` bucket). Dashboard renders a new section between "Go to the game" and the history strip showing the photo + description + an `AWAITING APPROVAL` badge when `status === "pending"`. **First version had a bug:** the query joined on `students.id`, but `entries.student_id` holds `profiles.id` (= `auth.users.id`) — see HOW TO WORK WITH MIKE #8. Silently returned null for every test. Diagnostic SQL through `auth.users` confirmed Mike had 5 pending entries; one-line fix to use `user.id`. The file header of `student-archive.ts` now documents the two-track seam.
+**4. Dashboard "Your photo" card** (commits `Dashboard: show student's own current-class entry` + `Fix ownEntry query: join on profiles.id, not students.id`). Adds `ownEntry: OwnEntry | null` to `getStudentArchive`'s result, queries the student's most-recent live OR pending entry in their current class (signed URL from PRIVATE `media` bucket). Dashboard renders a new section between "Go to the game" and the history strip showing the photo + description + an `AWAITING APPROVAL` badge when `status === "pending"`. **First version had a bug:** the query joined on `students.id`, but `entries.student_id` holds `profiles.id` (= `auth.users.id`) — see HOW TO WORK WITH MIKE #8. Silently returned null for every test. Diagnostic SQL through `auth.users` confirmed Mike had 5 pending entries; one-line fix to use `user.id`. The file header of `student-archive.ts` now documents the two-track seam.
 
-**4. Dashboard text revisions (two commits):**
+**5. Upload-from-dashboard V1 (commit `Dashboard: add upload form for additional own photos`).** Students can now add more photos from the dashboard, not only at finish-joining time. Two-file change:
+   - **`src/app/play/actions.ts`**: new `addEntry` server action, sibling to `saveProfile`. Same write path as `saveProfile`'s entry block (PRIVATE `media` upload, `entries` insert at `status='pending'` on the profiles track), no profile fields touched. `revalidatePath` refreshes the dashboard so the new upload becomes the most-recent shown.
+   - **`src/app/student/dashboard/page.tsx`**: new form section inserted inside the "Your photo" section, beneath the photo-status block, separated by a thin divider. Heading: "ADD ANOTHER PHOTO." Uses the existing `PhotoField` component + a textarea for description + "Add to the class →" button. Server action wired to `addEntry`.
+   - The dashboard still shows only the MOST RECENT own entry. Surfacing the full stack of own entries (so the student can see all their pending + live uploads) is a V2 layout pass — see NEXT SESSION'S BUILDS (b).
+
+**6. Dashboard text revisions (two commits):**
    - `revised text in dashboard to allow any time uploading of student pics` — the old copy said *"Each new round, you'll add one of your own photos and comment on the other students' photos. When round 2 opens, you'll get an email to come back and add yours,"* implying students had to wait for round 2 to add a photo. They don't. New copy says they can add anytime.
-   - `Dashboard: drop email promise from WHAT HAPPENS NEXT` — the round-timing/notification feature doesn't exist yet, so promising an email wasn't true. Current copy: *"Your teacher will read what you wrote and respond — their notes show up under the photos they reply to. You can add another photo whenever you want. When new classmate photos are ready, you'll see them next time you visit."* To be revised AGAIN when round-timing lands (see Mike's preferred copy below in NEXT SESSION'S BUILDS).
+   - `Dashboard: drop email promise from WHAT HAPPENS NEXT` — the round-timing/notification feature doesn't exist yet, so promising an email wasn't true. Current copy: *"Your teacher will read what you wrote and respond — their notes show up under the photos they reply to. You can add another photo whenever you want. When new classmate photos are ready, you'll see them next time you visit."* To be revised AGAIN when round-timing lands.
 
-**5. Recovery commit (commit `Fix isSelf flag: restore full files, add type + visitor-deck handling`).** Earlier in the session, the first delivery of the `isSelf` change shipped as snippet-only files for `students.js` and `class-deck.ts` (violation of HOW TO WORK WITH MIKE #1). Mike committed them; both files were destroyed; `loadClassDeck` export disappeared; build broke. Recovery required reconstructing `students.js` from a UTF-16-LE-mangled `git show HEAD~1` extraction (Python ftfy-style cp437 decoding — the script worked first try once the encoding was right), then restoring both files with the isSelf changes properly added. Diff verification via `git diff HEAD~1 -- ...` confirmed clean restoration. **Bake the whole-file rule in by default. The cost of NOT doing so is documented above.**
+**7. Recovery commit (commit `Fix isSelf flag: restore full files, add type + visitor-deck handling`).** Earlier in the session, the first delivery of the `isSelf` change shipped as snippet-only files for `students.js` and `class-deck.ts` (violation of HOW TO WORK WITH MIKE #1). Mike committed them; both files were destroyed; `loadClassDeck` export disappeared; build broke. Recovery required reconstructing `students.js` from a UTF-16-LE-mangled `git show HEAD~1` extraction (Python ftfy-style cp437 decoding — the script worked first try once the encoding was right), then restoring both files with the isSelf changes properly added. Diff verification via `git diff HEAD~1 -- ...` confirmed clean restoration. **Bake the whole-file rule in by default. The cost of NOT doing so is documented above.**
 
 ---
 
 ## 🎯 NEXT SESSION'S BUILDS (Mike's call which order)
 
-### (a) Solo-self splash redesign — Mike's preferred direction (NEW from #25 testing)
-
-Currently when the student is alone in the class (only their own pending entry, no approved classmate entries yet), the `/student/play` splash shows:
-
-> Spotlight
-> Your photo is in the queue. Classmates' photos will appear here as they join the game.
-> Check back once at least one classmate's photo is approved.
-
-Mike's quote: *"I don't mind if this screen looked more like the game — blank spots for future pics, the spin (and stop) button… right? this is the game, afterall… it's just not populated yet."*
-
-Build: render the 3×3 grid with the student's own photo in one of the tiles and the other 8 as visually-distinct placeholder tiles (dashed border? muted color? a faint "waiting" glyph?). Spin button present but disabled. Maybe a small subtitle like "waiting on classmates" beneath the disabled button. Idea is to make the game surface feel real and concrete — *the stage is set, the actors just haven't shown up yet* — instead of a different screen entirely. Implementation likely lives in `spotlight.jsx`'s splash branch (currently the `soloSelf ? ... : ...` conditional). Tile placeholders likely need a small change to the StageGrid component too.
-
-### (b) Upload-from-dashboard feature (Mike's "hopefully we can get to that soon")
-
-The finish-joining form has the upload UI for the first entry. There's no way to add another photo from the dashboard once joined. Mike wants one: a section (probably near "Your photo") with a small upload form that lets the student add additional entries to their current class. Each upload becomes another `entries` row at `status='pending'`. The `PhotoField` component is already reusable from `src/app/student/dashboard/PhotoField.tsx`. The server action would be a new sibling to `saveProfile` (probably `addEntry`) since `saveProfile` does too many things to extend.
-
-Design choices to make: (i) one pending upload at a time, or stack them? (ii) where exactly does the form sit on the dashboard? (iii) what does the "Your photo" section show when there are multiple owns — most recent? all of them? a stack?
-
-### (c) Round-timing feature (still parked, still Mike's active interest)
+### (a) Round-timing feature (still parked, still Mike's active interest)
 
 Unchanged spec from #23/#24, with one new wrinkle from #25 — Mike floated: *"a count down would be cool."*
 
@@ -184,19 +178,29 @@ Unchanged spec from #23/#24, with one new wrinkle from #25 — Mike floated: *"a
 - No teacher class-settings UI exists — extend `/teacher/deck` or build a new settings screen.
 - Once this lands, the WHAT HAPPENS NEXT copy gets revisited — and when it does, **don't hardcode round counts** (Mike: *"no need to hardwire the number of rounds at 5, if not necessary"*).
 
-### (d) Smaller items Mike raised, captured here so they don't fall on the floor
+### (b) Upload-from-dashboard V2 — display the full stack of own entries
+
+V1 (this session) added the upload form but the dashboard still only renders the MOST RECENT own entry. V2: show all own entries (pending + live) on the dashboard so the student can see their full contribution stack and remember what they've uploaded.
+
+Design choices to make:
+- Layout: most-recent prominent + earlier ones smaller below? Or a uniform grid of all? Mike has noted he "still balks a little about the size of the pics" — favor smaller for older.
+- Per-entry status indicators (pending vs live) — already in the data, need a compact visual.
+- `student-archive.ts` change: return `ownEntries: OwnEntry[]` (drop the `.limit(1)`), keep `ownEntry` (most recent) for backward-compatible rendering of the prominent card. Or rename / refactor — designer's call.
+
+### (c) Smaller items Mike raised, captured here so they don't fall on the floor
 
 - **History strip redesign**: collapse past rounds into buttons at the bottom of the dashboard (intro round, round 1, round 2…). Mike's intuition: smaller buttons for older rounds keeps the dashboard focused on what's current.
 - **Reduce thumbnail size in the history grid**: Mike "still balks a little about the size of the pics" in the per-class history grid (the 3×3 of comments). Tied to the history-collapse above.
 - **Add classmates' comments under own photo** (after approval): on the dashboard, show what classmates wrote about the student's photo once those comments exist. Schema-wise: `submission_comments` keyed by the entry id, filtered to non-self authors, only when entry status='live'.
 - **Student profile look more like teacher's view of the student**: Mike said the teacher's per-student page (`/teacher/students/[id]/page.tsx` — see image 4 from session 25) reads better than the current student dashboard. Worth a look at that file as a design reference if/when doing dashboard polish.
 - **"Reset this test student" teacher button** — a real (small) feature that gives Mike a non-destructive way to wipe a test enrollment without the cascade footgun. Lower priority than the Gmail plus-addressing workaround (which solves the problem today, no code).
+- **Surface errors from `addEntry` / `saveProfile` to the user**: both server actions currently `console.error` on failure and the form silently no-ops. Mike won't notice an upload failed until he checks the dashboard and sees the new photo isn't there. Worth a small UX pass once there's a general error-surface pattern in place.
 
 ---
 
 ## 📌 OPEN / CARRIED FROM #24 (still unresolved)
 
-- **Bridge students↔profiles seam** — for the teacher CSV's own-photo column to populate, and any mixed `game_sessions` ↔ `entries` view to work. Map via `students.email` → `auth.users` → `profiles.id`. Decide whether to denormalize a `profile_id` onto `students`. **(#25 partially mitigated this for the dashboard read path by documenting the two-track seam in `student-archive.ts`, but the seam itself still exists. Anything new that joins entries-to-anything-else needs to navigate it.)**
+- **Bridge students↔profiles seam** — for the teacher CSV's own-photo column to populate, and any mixed `game_sessions` ↔ `entries` view to work. Map via `students.email` → `auth.users` → `profiles.id`. Decide whether to denormalize a `profile_id` onto `students`. **(#25 partially mitigated this for the dashboard read path by documenting the two-track seam in `student-archive.ts`, but the seam itself still exists. Anything new that joins entries-to-anything-else needs to navigate it. `addEntry` follows the same convention — entries.student_id = user.id = profiles.id.)**
 - **entries-vs-submissions mismatch** — reveal RPCs (`class_grand_totals`, `class_round_winners`, `tally_round`) read `submissions` + `submission_favorites`, but upload/review flow targets `entries`. Resolve BEFORE building reveal.
 - **"Game over" representation** — needed for CSV button gate on student profile. Assume `enrollment` flips to `status='completed'`; confirm against schema.
 - ~~**`student-archive.ts` bug**~~ — flagged in #24 ("reads entry ids from `game_sessions.comments`, not from `entries` directly — so a fresh `pending` entry won't show on the student's own profile"). **#25: addressed for the own-entry case** — the new `ownEntry` field queries `entries` directly. The classmates-entries path still reads via session comments, which is correct (those are scored entries from a completed game), so the original concern is now scoped to own-entries only and resolved.
@@ -208,15 +212,17 @@ Unchanged spec from #23/#24, with one new wrinkle from #25 — Mike floated: *"a
 ## 🔎 NEW CONFIRMED FACTS (so the next model doesn't re-derive)
 
 - **`students` CASCADE radius:** Six FKs cascade on delete from `students`: `enrollments_student_id_fkey`, `game_sessions_student_id_fkey`, `submission_comments_author_student_id_fkey`, `submission_favorites_voter_student_id_fkey`, `submissions_student_id_fkey`, `teacher_comments_student_id_fkey`. Notably **NOT entries** — entries cascades off `profiles`, not `students`. (This is the two-track seam in action.) `DELETE FROM public.students WHERE email = '...'` will wipe all of those. Don't recommend it; use Gmail plus-addressing instead (HOW TO WORK WITH MIKE #9).
-- **Two-track student IDs:** `students.id` ≠ `profiles.id` (= `auth.users.id`). `entries.student_id` is on the profiles track; everything else listed in the CASCADE above is on the students track. Documented in the header of `src/lib/student-archive.ts`. (HOW TO WORK WITH MIKE #8.)
+- **Two-track student IDs:** `students.id` ≠ `profiles.id` (= `auth.users.id`). `entries.student_id` is on the profiles track; everything else listed in the CASCADE above is on the students track. Documented in the header of `src/lib/student-archive.ts`. (HOW TO WORK WITH MIKE #8.) Two server actions follow the convention for entries: `saveProfile` (first upload at finish-joining) and `addEntry` (subsequent uploads from dashboard).
 - **`EngineStudent` now has `isSelf: boolean`** — set in `class-deck.ts` (true for the row matching `user.id`), set in `deck.ts` (always false for visitor starters). Engine code in `spotlight.jsx` derives `playableStudents`, `playableCount`, `hasSelf`, `soloSelf` from it. Skipping self in the comment cycle is "filter out isSelf in the `stop()` pool and count playable for done-checks"; visualizing self is "render all of `students` in the grid as before."
 - **Spotlight engine state machine (updated):** All references to `students.length` in done-detection / progress-counting code now use `playableCount` (= non-self count). The visitor flow has `playableCount === students.length` (no self), so behavior is unchanged. Specifically: `allShown`, `finishStudent`'s done check, `resume`'s done check, the header `{shownIds.size} of {playableCount}` line, and the comment counter `{...}/{playableCount}`. `DoneScreen` receives `playableStudents` so the student can't pick their own tile as a favorite (no-op for visitor).
 - **`saveKey()` is route-aware:** `spotlight.jsx` derives the localStorage key from `window.location.pathname`. `/student/*` → `spotlight:progress:student`. Else → `spotlight:progress:visitor`. SSR-safe fallback (when `window` is undefined) is the visitor key. All four storage helpers (`saveProgress`, `loadProgress`, `clearProgress`, `hasResumableProgress`) now call `saveKey()` instead of using a constant.
 - **`/play` redirects enrolled users:** New block at the top of `src/app/play/page.tsx` — if there's an auth session and the email matches a `students` row, 307 → `/student/dashboard`. Anonymous or not-yet-enrolled users get the visitor flow as before. Defense-in-depth with the per-route saveKey + clearProgress-on-enroll above.
 - **Magic-link session cookie persists across `DELETE FROM students`.** The `students` row is in your DB; the auth session cookie is in the browser. Deleting one doesn't sign the other out. To go truly anonymous: DevTools → Application → Cookies → `localhost:3000` → delete all. (Mike used this successfully in #25 testing.)
 - **`ownEntry` shape on `getStudentArchive` result:** `{ id, description_text, signedUrl, status: 'pending'|'live', uploadedAt } | null`. Scoped to the current class (`profiles.class_id`), most recent, joined on `user.id` (profiles track — see two-track seam). Both `pending` and `live` surfaced; signed URL from PRIVATE `media` bucket with 1-hour TTL.
-- **Dashboard's "Your photo" placement:** between the "Go to the game →" CTA and the "YOUR CLASS" history strip. Hidden entirely when `ownEntry === null` (no current class or no own entry yet). Shows the photo + description + "AWAITING APPROVAL" badge (when pending) + a one-line context message.
-- **Eight commits this session (in Outgoing — needs a `git push` when Mike's ready):**
+- **Dashboard's "Your photo" placement:** between the "Go to the game →" CTA and the "YOUR CLASS" history strip. Hidden entirely when `ownEntry === null` (no current class or no own entry yet). Shows the photo + description + "AWAITING APPROVAL" badge (when pending) + a one-line context message. **Below it (inside the same section, separated by a thin divider):** the "ADD ANOTHER PHOTO" form posting to the `addEntry` server action.
+- **`addEntry` server action:** sibling to `saveProfile` in `src/app/play/actions.ts`. Reads logged-in user via SSR cookie client, resolves current class from `profiles.class_id`, uploads photo to PRIVATE `media` bucket via service-role admin client, inserts `entries` row at `status='pending'` with `student_id = user.id` (profiles track). `revalidatePath('/student/dashboard')` on success. Failure modes are `console.error` + silent no-op (no UI error surface yet — see smaller items list).
+- **Solo-self splash renders a preview grid (NEW #25):** when `soloSelf === true` (i.e. `students.length === 1` and that one student is `isSelf`), the splash inside `spotlight.jsx` renders a 3×3 grid (240px max-width) with the student's own tile in the center (signed-URL photo or fallback initial block) and dashed-border placeholders in the other 8 slots. Disabled "Enter the stage" button below + a one-line caption. The button doesn't fire — preview only. Lives entirely in the splash branch of `spotlight.jsx`; doesn't touch StageGrid or the game state machine.
+- **Eleven commits this session (in Outgoing — needs a `git push` when Mike's ready):**
   - `Add isSelf flag to EngineStudent to mark current user` (the broken snippet commit — see recovery)
   - `Fix isSelf flag: restore full files, add type + visitor-deck handling` (recovery)
   - `Engine adaptation: skip self in spotlight, dynamic intro, solo-self state`
@@ -224,9 +230,12 @@ Unchanged spec from #23/#24, with one new wrinkle from #25 — Mike floated: *"a
   - `Dashboard: show student's own current-class entry`
   - `Fix stale Resume after enrollment (three-part fix)`
   - `Dashboard: drop email promise from WHAT HAPPENS NEXT`
-  - `Fix ownEntry query: join on profiles.id, not students.id` (outstanding at write-time; staged but not committed yet)
+  - `Fix ownEntry query: join on profiles.id, not students.id`
+  - `docs: add slice 1 handoff #25` (initial version of this file)
+  - `spotlight: solo-self splash now shows preview grid + disabled button`
+  - `Dashboard: add upload form for additional own photos`
 
-This handoff (#25) will be a 9th commit (`docs: add slice 1 handoff #25`).
+This handoff (#25 — revised in place) will be a 12th commit (`docs: revise slice 1 handoff #25 with grid-preview + upload-V1 additions`).
 
 ---
 
@@ -240,7 +249,9 @@ This handoff (#25) will be a 9th commit (`docs: add slice 1 handoff #25`).
   - ✅ engine-adaptation pass on `spotlight.jsx` (#25): skip self, dynamic intro, solo-self state, playable-count threading
   - ✅ Resume-bug three-part fix (#25): per-route saveKey, clearProgress on enroll, /play redirect
   - ✅ Dashboard "Your photo" card surfacing student's own current-class entry (#25)
-  - ▶️ **NEXT** (Mike's call): solo-self splash redesign (3×3 grid + placeholders + disabled spin), OR upload-from-dashboard, OR round-timing.
+  - ✅ Solo-self splash redesigned to render preview grid + disabled button (#25)
+  - ✅ Upload-from-dashboard V1: `addEntry` server action + form section on dashboard (#25)
+  - ▶️ **NEXT** (Mike's call): round-timing feature, OR upload-from-dashboard V2 (full stack display), OR smaller items list.
 - **Step 1** — completion transition (active→completed). Unblocks CSV "game over" gate.
 - **Step 2** — reveal RPC(s) — BUT FIRST resolve entries-vs-submissions mismatch.
 - **Step 3** — teacher close-game action; parked teacher condensed-view.
@@ -258,9 +269,9 @@ Mike holds editor/dashboard/keys/pushes. SQL editor = one result set per run. `s
 **Step one: read the "HOW TO WORK WITH MIKE" block and follow it.** Whole-file replacements as DOWNLOADABLE FILES via `present_files` — never paste long files into chat. One command per copy-clip. PowerShell goes in the VS Code terminal, not Supabase. Read screenshots. Don't inflate scope. Mind the two-track student ID seam (`#8`). Don't recommend `DELETE FROM students` for resets (`#9`). Keep the three pinned blocks at the TOP of the NEXT handoff too.
 
 **Step two: ask Mike which build first.**
-- **(a) Solo-self splash redesign** — render the `/student/play` splash as a 3×3 grid with the student's own tile filled in and the rest as placeholder tiles (dashed border / muted) with a disabled spin button. "It's the game, just not populated yet." Lives in `spotlight.jsx`'s `soloSelf` branch (currently a text-only `<div>`). May need a small tweak to the StageGrid component for placeholder tiles. Smallest of the three.
-- **(b) Upload-from-dashboard feature** — let the student add additional photos after the finish-joining form. New `addEntry` server action (sibling to `saveProfile`); reuse `PhotoField` component; surface near "Your photo" on the dashboard. Design choices: one pending at a time vs stack, where the form sits, how "Your photo" handles multiples.
-- **(c) Round-timing feature** — teacher sets per-round duration, student sees deadline + countdown, agree-gate on "Go to the game" button. From scratch; needs `classes` schema migration. Mike's active interest, parked three times now. New #25 wrinkle: live countdown to deadline.
+- **(a) Round-timing feature** — teacher sets per-round duration, student sees deadline + countdown, agree-gate on "Go to the game" button. From scratch; needs `classes` schema migration. Mike's active interest, parked three times now. New #25 wrinkle: live countdown to deadline.
+- **(b) Upload-from-dashboard V2 — full stack of own entries on dashboard.** V1 (this session) added the upload form but the dashboard still only renders the MOST RECENT own entry. V2: surface all of them so the student can see their pending + live uploads stacked up. Needs a `student-archive.ts` shape change (`ownEntries: OwnEntry[]` vs current single `ownEntry`) and a small dashboard layout pass.
+- **(c) Smaller items** — history-strip collapse, thumbnail size, classmate-comments-under-own-photo, error surfacing for server actions. Each is its own small piece of work. Good "warm-up" tasks to ease into a session.
 
 **Don't re-open:** §"WHAT'S LOCKED" from #21/#22/#23 (two-track schema, entries lifecycle pending → live → archived, two distinct photos self vs entry, etc.). **Resolve before reveal:** entries-vs-submissions mismatch + students↔profiles seam (partially mitigated #25 for the dashboard read path; the seam itself still exists). **Don't add:** storage policies (service role bypasses RLS).
 
