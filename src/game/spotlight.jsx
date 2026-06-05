@@ -583,6 +583,31 @@ export default function App({ initialStudents = STUDENTS }) {
   const [students, setStudents] = useState(initialStudents);
   const [myComments, setMyComments] = useState({});
 
+  // ─────────────────────────────────────────────────────────────────────
+  // isSelf-derived view of the deck (added in slice 1 engine-adaptation):
+  //   playableStudents = everyone EXCEPT the current student. The
+  //                      spotlight cycle uses this — you don't comment on
+  //                      yourself, so your own tile is shown in the grid
+  //                      but never lands in the spotlight.
+  //   playableCount    = how many tiles the player actually plays. Used
+  //                      everywhere we previously read `students.length`
+  //                      for "is the game done" / progress counters.
+  //   hasSelf          = true when this is the in-class flow (class-deck
+  //                      sets isSelf:true on one tile). False for the
+  //                      visitor deck where nobody is "self".
+  //   soloSelf         = the edge case: a freshly-joined student whose
+  //                      only tile is their own pending entry. There's
+  //                      nobody else to comment on yet, so the splash
+  //                      shows a "waiting for classmates" message
+  //                      instead of the Enter-the-stage button.
+  // For the visitor deck (no isSelf flags), playableStudents === students,
+  // so all the in-class adjustments below are no-ops there.
+  // ─────────────────────────────────────────────────────────────────────
+  const playableStudents = students.filter((s) => !s.isSelf);
+  const playableCount = playableStudents.length;
+  const hasSelf = students.length > playableCount;
+  const soloSelf = hasSelf && playableCount === 0;
+
   // SSR hydration gate: anything that depends on localStorage (canResume,
   // below) must NOT be evaluated during the server render or the first
   // client render — otherwise server sees "no resume" (no window) and the
@@ -594,7 +619,9 @@ export default function App({ initialStudents = STUDENTS }) {
   useEffect(() => { setMounted(true); }, []);
 
   const scrambleRef = useRef(null);
-  const allShown = shownIds.size >= students.length;
+  // Game ends when every PLAYABLE tile has been in the spotlight. Self is
+  // never picked (see stop()), so it doesn't count toward "all shown".
+  const allShown = shownIds.size >= playableCount;
 
   useEffect(() => {
     if (phase !== "running") {
@@ -615,7 +642,10 @@ export default function App({ initialStudents = STUDENTS }) {
 
   const stop = useCallback(() => {
     if (phase !== "running") return;
-    const pool = students.filter((s) => !shownIds.has(s.id));
+    // Exclude the student's own tile from the pool — you don't comment on
+    // yourself. In the visitor deck nobody is isSelf, so this is a no-op
+    // there and the pool is the same as before.
+    const pool = students.filter((s) => !shownIds.has(s.id) && !s.isSelf);
     const pick = pool[Math.floor(Math.random() * pool.length)];
     setSelected(pick);
     const live = liveEntry(pick);
@@ -630,9 +660,9 @@ export default function App({ initialStudents = STUDENTS }) {
     const next = new Set(shownIds);
     next.add(selected.id);
     setShownIds(next);
-    setPhase(next.size >= students.length ? "done" : "idle");
+    setPhase(next.size >= playableCount ? "done" : "idle");
     setSelected(null);
-  }, [selected, shownIds, students.length]);
+  }, [selected, shownIds, playableCount]);
 
   const saveComment = useCallback((id, text) => {
     setMyComments((c) => ({ ...c, [id]: text }));
@@ -652,9 +682,9 @@ export default function App({ initialStudents = STUDENTS }) {
     setMyComments(p.myComments);
     setSelected(null);
     setOrder(shuffle(students));
-    setPhase(p.shownIds.size >= students.length ? "done" : "idle");
+    setPhase(p.shownIds.size >= playableCount ? "done" : "idle");
     setView("game");
-  }, [students]);
+  }, [students, playableCount]);
 
   const resetAll = useCallback(() => {
     clearProgress();
@@ -697,9 +727,23 @@ export default function App({ initialStudents = STUDENTS }) {
           </h1>
           <p style={{ fontFamily: F, fontSize: 15, fontWeight: 300, color: C.textDim,
             maxWidth: 360, margin: "0 auto 24px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
-            Nine photos. Hit stop, look closely, and tell us what you see.
+            {soloSelf
+              ? "Your photo is in the queue. Classmates' photos will appear here as they join the game."
+              : hasSelf
+                ? `${playableCount} ${playableCount === 1 ? "classmate" : "classmates"} to meet. Hit stop, look closely, and tell us what you see.`
+                : `${students.length} photos. Hit stop, look closely, and tell us what you see.`}
           </p>
-          {canResume ? (
+          {soloSelf ? (
+            // No game to play yet — only the student's own pending tile exists.
+            // Show a calm waiting note in place of the Enter / Resume buttons.
+            // (No reload button: when a classmate joins, /student/play will
+            // re-fetch on the next visit. We don't want to imply polling.)
+            <div style={{ animation: "fadeUp 1.1s ease",
+              fontFamily: F, fontSize: 13, color: C.textFaint,
+              maxWidth: 320, margin: "0 auto", lineHeight: 1.7 }}>
+              Check back once at least one classmate's photo is approved.
+            </div>
+          ) : canResume ? (
             <div style={{ animation: "fadeUp 1.1s ease" }}>
               <button
                 onClick={resume}
@@ -758,13 +802,13 @@ export default function App({ initialStudents = STUDENTS }) {
             </div>
             <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
               <span style={{ fontFamily: F, fontSize: 12, color: C.textDim }}>
-                ✎ {Object.values(myComments).filter((t) => t && t.trim()).length}/{students.length}
+                ✎ {Object.values(myComments).filter((t) => t && t.trim()).length}/{playableCount}
               </span>
             </div>
           </div>
 
           <div style={{ fontFamily: F, fontSize: 12, color: C.textDim, textAlign: "center", marginBottom: 16 }}>
-            {shownIds.size} of {students.length} have been in the spotlight
+            {shownIds.size} of {playableCount} have been in the spotlight
           </div>
         </>
       )}
@@ -820,9 +864,20 @@ export default function App({ initialStudents = STUDENTS }) {
       )}
 
       {isDone && (
+        // NOTE on favorite locking (slice-1 decision, future implementation):
+        // Students can change their favorite freely while the round is LIVE,
+        // but cannot change it across rounds. Today there's no round-state
+        // concept in spotlight.jsx — within a single play session, the user
+        // can re-tap a different tile in the ReviewGrid until they submit.
+        // The cross-round lock will be enforced server-side once the
+        // round-timing feature lands.
+        //
+        // Pass playableStudents (not students) so the student can't pick
+        // their own tile as a favorite. In the visitor flow this is a
+        // no-op since nobody is isSelf there.
         <DoneScreen
           myComments={myComments}
-          students={students}
+          students={playableStudents}
           totalStudents={students.length}
           onPlayAgain={resetAll}
         />
