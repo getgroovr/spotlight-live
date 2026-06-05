@@ -752,20 +752,90 @@ export default function App({ initialStudents = STUDENTS }) {
           <p style={{ fontFamily: F, fontSize: 15, fontWeight: 300, color: C.textDim,
             maxWidth: 360, margin: "0 auto 24px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
             {soloSelf
-              ? "Your photo is in the queue. Classmates' photos will appear here as they join the game."
+              ? "Here you are. Classmates' photos will appear in the empty spots as they join."
               : hasSelf
                 ? `${playableCount} ${playableCount === 1 ? "classmate" : "classmates"} to meet. Hit stop, look closely, and tell us what you see.`
                 : `${students.length} photos. Hit stop, look closely, and tell us what you see.`}
           </p>
           {soloSelf ? (
-            // No game to play yet — only the student's own pending tile exists.
-            // Show a calm waiting note in place of the Enter / Resume buttons.
-            // (No reload button: when a classmate joins, /student/play will
-            // re-fetch on the next visit. We don't want to imply polling.)
-            <div style={{ animation: "fadeUp 1.1s ease",
-              fontFamily: F, fontSize: 13, color: C.textFaint,
-              maxWidth: 320, margin: "0 auto", lineHeight: 1.7 }}>
-              Check back once at least one classmate's photo is approved.
+            // No game to play yet — only the student's own tile exists. Render
+            // a small 3×3 preview grid with their photo in the center and
+            // dashed-border placeholders where classmates' photos will land,
+            // plus a disabled "Enter the stage" button beneath. Mike's
+            // direction (#25 testing): make the page feel like the game just
+            // not yet populated, instead of a separate "waiting" screen. The
+            // button doesn't fire — it's purely a preview of what the game
+            // will look like once the deck fills up.
+            <div style={{ animation: "fadeUp 1.1s ease" }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 6,
+                maxWidth: 240,
+                margin: "0 auto 20px",
+              }}>
+                {Array.from({ length: 9 }).map((_, i) => {
+                  // Put the student's own tile in the center (index 4) — it's
+                  // the visual focal point and matches where the spotlight
+                  // beam from the splash header is already pointing.
+                  if (i === 4) {
+                    const own = students[0];
+                    const ownPhoto = own?.entries?.[0]?.primary || null;
+                    return (
+                      <div key={i} style={{
+                        aspectRatio: "1",
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        border: `2px solid ${C.light}`,
+                        background: own?.color || C.panelEdge,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#fff",
+                        fontWeight: 800,
+                        fontSize: 22,
+                      }}>
+                        {ownPhoto ? (
+                          <img src={ownPhoto} alt="" style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                          }} />
+                        ) : (
+                          (own?.name?.[0] || "?").toUpperCase()
+                        )}
+                      </div>
+                    );
+                  }
+                  // Placeholder slot for a classmate not yet here. Dashed
+                  // border + low opacity = "this spot is reserved, somebody
+                  // will fill it later."
+                  return (
+                    <div key={i} style={{
+                      aspectRatio: "1",
+                      borderRadius: 8,
+                      border: `2px dashed ${C.panelEdge}`,
+                      opacity: 0.45,
+                    }} />
+                  );
+                })}
+              </div>
+              <button
+                disabled
+                style={{ fontFamily: F, fontSize: 16, fontWeight: 700, padding: "14px 44px",
+                  background: C.panelEdge, color: "#fff", border: "none", borderRadius: 50,
+                  cursor: "not-allowed", letterSpacing: 1, opacity: 0.5,
+                  display: "block", marginLeft: "auto", marginRight: "auto", marginBottom: 10 }}
+              >
+                Enter the stage
+              </button>
+              <div style={{
+                fontFamily: F, fontSize: 12, color: C.textFaint,
+                lineHeight: 1.6, maxWidth: 320, margin: "0 auto",
+              }}>
+                Waiting on classmates. The game starts once at least one
+                classmate&apos;s photo is approved.
+              </div>
             </div>
           ) : canResume ? (
             <div style={{ animation: "fadeUp 1.1s ease" }}>
