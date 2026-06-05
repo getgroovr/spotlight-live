@@ -4,20 +4,20 @@
 // Landing page after the magic link. Two states:
 //
 //   1. INCOMPLETE — they've just clicked the link but haven't finished
-//      joining. Shows a form (real name, screen name, and "why was this your
-//      favorite?") with the favorite photo in view. Submits to saveProfile.
-//      (Unchanged from before — uses their NEWEST class to populate it.)
+//      joining. Shows the finish-joining form: real name, screen name, an
+//      OPTIONAL self-photo, the "why was this your favorite?" note, and the
+//      REQUIRED first game entry (a photo of their own + a description) that
+//      becomes their first `entries` row so the class has content right away.
+//      Submits to saveProfile.
 //
-//   2. COMPLETE — shows their profile as a HISTORY STRIP: one collapsible
-//      tile per class they've ever enrolled in, newest first. The newest is
-//      expanded; older ones collapse to a tile (favorite pic + class + date)
-//      and expand on click into that class's full Round-1 archive. Each
-//      expanded class offers a per-class CSV download to hand to a new teacher.
+//   2. COMPLETE — shows their profile as a HISTORY STRIP (one collapsible
+//      tile per class, newest first) plus a "Go to the game →" button. Read +
+//      per-class scoping live in src/lib/student-archive.ts; the strip UI in
+//      ./ProfileArchive.tsx.
 //
-//   This is the Slice 1 Part 2 change: the profile spans EVERY class the
-//   student has been in, not just the most-recent session. Read + per-class
-//   scoping live in src/lib/student-archive.ts; the strip UI in
-//   ./ProfileArchive.tsx.
+//   Two distinct photos live on this form, do not conflate them:
+//     • self-photo      → students.photo_url (optional, the profile face)
+//     • first entry pic → entries.media_url  (required, classmate-facing)
 //
 // Auth: the magic link set a session cookie (via /auth/confirm). We read it
 // with the SSR client; no session → /play.
@@ -25,6 +25,7 @@
 import { redirect } from "next/navigation";
 import { getStudentArchive } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
+import PhotoField from "./PhotoField";
 import { saveProfile } from "@/app/play/actions";
 
 export const dynamic = "force-dynamic";
@@ -123,6 +124,15 @@ export default async function StudentProfile() {
               />
             </div>
 
+            <div style={{ marginBottom: 16 }}>
+              <PhotoField
+                name="photo"
+                label="A photo of yourself"
+                helper="optional, shown on your profile"
+                previewSize={120}
+              />
+            </div>
+
             {newestFavorite && (
               <div style={{ marginBottom: 16 }}>
                 <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>
@@ -158,6 +168,33 @@ export default async function StudentProfile() {
               </div>
             )}
 
+            {/* ── FIRST GAME ENTRY (required) — becomes their first entries row ── */}
+            <div style={{ marginTop: 8, marginBottom: 16, paddingTop: 18,
+              borderTop: `1px solid ${C.panelEdge}` }}>
+              <PhotoField
+                name="entry_photo"
+                label="Add your first photo"
+                helper="this is your own photo for the class to see and comment on"
+                required
+                previewSize={200}
+              />
+              <label style={{ fontSize: 13, fontWeight: 600, display: "block",
+                marginTop: 12, marginBottom: 6 }}>
+                Tell us about your photo
+              </label>
+              <textarea
+                name="entry_description"
+                required
+                rows={3}
+                placeholder="What is it? Why did you pick it?"
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
+                  fontFamily: F, fontSize: 14, lineHeight: 1.5,
+                  background: "#FFFDF7", color: C.text,
+                  border: `1px solid ${C.panelEdge}`, borderRadius: 12, outline: "none",
+                  resize: "vertical" }}
+              />
+            </div>
+
             <button
               type="submit"
               style={{ width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
@@ -181,7 +218,7 @@ export default async function StudentProfile() {
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
 
         {/* ── HEADER ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
           <div style={{ width: 64, height: 64, borderRadius: "50%",
             background: C.panelEdge, display: "flex", alignItems: "center",
             justifyContent: "center", fontSize: 28, color: "#fff" }}>
@@ -198,6 +235,18 @@ export default async function StudentProfile() {
             </div>
           </div>
         </div>
+
+        {/* ── GO TO THE GAME ── */}
+        <a
+          href="/play"
+          style={{ display: "block", textAlign: "center", textDecoration: "none",
+            width: "100%", boxSizing: "border-box", padding: "13px",
+            fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
+            color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+            marginBottom: 28 }}
+        >
+          Go to the game →
+        </a>
 
         {/* ── YOUR CLASSES (history strip) ── */}
         <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",

@@ -23,7 +23,8 @@
 //     an enrollment, a round-1 game_session (nine comments + the favorite),
 //     then sends a magic link. Name/screen name/the "why" come later.
 //   - saveProfile   : profile-page form once logged in. Saves real name +
-//     screen name and the "why was this your favorite?" note.
+//     screen name, an optional self-photo, and the "why was this your
+//     favorite?" note.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -172,12 +173,30 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// saveProfile — used as a <form action> on the profile page. (Unchanged.)
+// saveProfile — used as a <form action> on the profile page.
 //
 // Reads the logged-in user from the session cookie, then saves:
 //   • students.name        (real name — private, for the teacher)
 //   • students.screen_name (public — classmates see this in later rounds)
+//   • students.photo_url    (OPTIONAL self-photo — the profile face)
 //   • game_sessions.favorite_comment on their most recent round (the "why")
+//   • entries row            (REQUIRED first game entry — see note below)
+//
+// TWO DISTINCT PHOTOS — do not conflate:
+//   • Self-photo (form field "photo"): a picture OF the student. OPTIONAL.
+//     Uploaded to the PUBLIC 'profile-photos' bucket; we store the public URL
+//     in students.photo_url (directly usable in <img src>). If none provided,
+//     we leave any existing photo_url untouched.
+//   • First game entry (fields "entry_photo" + "entry_description"): the
+//     student's OWN contribution that classmates see and comment on. REQUIRED.
+//     Uploaded to the PRIVATE 'media' bucket. Per src/lib/deck.ts convention,
+//     entries.media_url stores the storage PATH (not a URL) — the read layer
+//     builds a (signed, for the private bucket) URL at display time. We write
+//     an entries row at status='pending' (the default), attached to the
+//     student's ACTIVE class.
+//
+// All uploads use the service-role `admin` client, which bypasses storage
+// RLS — so NO storage policy is needed for either bucket here.
 // ─────────────────────────────────────────────────────────────────────────
 export async function saveProfile(formData: FormData): Promise<void> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -192,6 +211,9 @@ export async function saveProfile(formData: FormData): Promise<void> {
   const name = String(formData.get("name") || "").trim();
   const screenName = String(formData.get("screen_name") || "").trim();
   const why = String(formData.get("favorite_comment") || "").trim();
+  const photo = formData.get("photo");
+  const entryPhoto = formData.get("entry_photo");
+  const entryDescription = String(formData.get("entry_description") || "").trim();
 
   // Defensive — the form already enforces these.
   if (!name || !screenName || why.length < 15) return;
@@ -205,10 +227,99 @@ export async function saveProfile(formData: FormData): Promise<void> {
     .maybeSingle();
   if (!student) return;
 
+  // ── Self-photo (optional) ─────────────────────────────────────────────
+  // Only attempt an upload when a real file came through. An unselected file
+  // input still yields a File here, but with size 0 — skip those.
+  let photoUrl: string | null = null;
+  if (photo instanceof File && photo.size > 0) {
+    const ext =
+      photo.name.includes(".") ? photo.name.split(".").pop() : "jpg";
+    const path = `${student.id}/${Date.now()}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from("profile-photos")
+      .upload(path, photo, {
+        contentType: photo.type || "image/jpeg",
+        upsert: true,
+      });
+    if (upErr) {
+      console.error("Profile photo upload failed:", upErr.message);
+    } else {
+      const { data: pub } = admin.storage
+        .from("profile-photos")
+        .getPublicUrl(path);
+      photoUrl = pub.publicUrl;
+    }
+  }
+
+  const update: { name: string; screen_name: string; photo_url?: string } = {
+    name,
+    screen_name: screenName,
+  };
+  if (photoUrl) update.photo_url = photoUrl;
+
   await admin
     .from("students")
-    .update({ name, screen_name: screenName })
+    .update(update)
     .eq("id", student.id);
+
+  // ── First game entry (required) ───────────────────────────────────────
+  // The student's own photo + description, written as an `entries` row at
+  // status='pending'. IMPORTANT: entries lives on the PROFILES track, not the
+  // students track — entries.student_id is a FK to profiles(id) (= the auth
+  // user id), and the class lives on profiles.class_id. (This is distinct from
+  // students.id / enrollments, which the rest of saveProfile uses — that seam
+  // is why the earlier students.id version threw a FK violation.) Photo goes to
+  // the PRIVATE 'media' bucket; we store the storage PATH in media_url
+  // (deck.ts convention — the read layer signs it at display time). Only write
+  // when a real file came through and a class resolves.
+  if (entryPhoto instanceof File && entryPhoto.size > 0) {
+    // Class for the entry: prefer profiles.class_id (profiles track); fall back
+    // to the student's active enrollment only if the profile's is somehow unset.
+    const { data: profile } = await admin
+      .from("profiles")
+      .select("class_id")
+      .eq("id", user.id)
+      .maybeSingle();
+    let entryClassId: string | null = profile?.class_id ?? null;
+    if (!entryClassId) {
+      const { data: enrollment } = await admin
+        .from("enrollments")
+        .select("class_id")
+        .eq("student_id", student.id)
+        .eq("status", "active")
+        .maybeSingle();
+      entryClassId = enrollment?.class_id ?? null;
+    }
+
+    if (entryClassId) {
+      const ext =
+        entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
+      const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
+      const { error: upErr } = await admin.storage
+        .from("media")
+        .upload(entryPath, entryPhoto, {
+          contentType: entryPhoto.type || "image/jpeg",
+          upsert: true,
+        });
+      if (upErr) {
+        console.error("Entry photo upload failed:", upErr.message);
+      } else {
+        const { error: entryErr } = await admin.from("entries").insert({
+          student_id: user.id,       // profiles(id) — NOT students.id
+          class_id: entryClassId,
+          media_url: entryPath,
+          media_type: "photo",
+          description_text: entryDescription,
+          // status defaults to 'pending'; is_starter to false; uploaded_at to now()
+        });
+        if (entryErr) {
+          console.error("Entry insert failed:", entryErr.message);
+        }
+      }
+    } else {
+      console.error("No class resolved for student; skipped entry write.");
+    }
+  }
 
   // Attach the why-note to their most recent session.
   const { data: session } = await admin

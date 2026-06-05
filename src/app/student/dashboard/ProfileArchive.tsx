@@ -8,8 +8,10 @@
 // it into that class's full Round-1 archive (favorite block, all comments,
 // teacher notes) — the SAME layout the dashboard always showed, now per class.
 //
-// Each expanded class carries a "Download this class (CSV)" link → the
-// per-class student export route, which the student can hand to a new teacher.
+// (CSV export removed from the student profile per the #23 decision: the
+// "download this class" CSV moves to the TEACHER side, one per student, so the
+// teacher can assemble a whole-class spreadsheet. The student-facing
+// "send to a new teacher" download is gone for now.)
 //
 // All visual tokens (C, F) and the archive JSX are matched to the existing
 // dashboard so the strip reads as the same product, not a bolt-on.
@@ -65,7 +67,6 @@ function fmtDate(s: string | null): string {
 // single-class profile.
 function ClassBody({ a }: { a: ClassArchive }) {
   const favorite = a.entries.find((e) => e.isFavorite) || null;
-  const classSize = a.entries.length;
 
   return (
     <div>
@@ -199,24 +200,6 @@ function ClassBody({ a }: { a: ClassArchive }) {
             </div>
           ))}
         </div>
-      </section>
-
-      {/* ── SEND TO A NEW TEACHER (per-class CSV) ── */}
-      <section style={{ borderTop: `1px solid ${C.panelEdge}`, paddingTop: 16 }}>
-        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>
-          Moving to a new teacher? Download this class as a spreadsheet and send it to them —
-          it saves them gathering all this by hand.
-        </div>
-        <a
-          href={`/student/dashboard/export?class_id=${encodeURIComponent(a.classId)}`}
-          style={{
-            display: "inline-block", textDecoration: "none",
-            background: C.light, color: "#fff", fontFamily: F, fontSize: 13, fontWeight: 700,
-            padding: "9px 16px", borderRadius: 10,
-          }}
-        >
-          Download this class (CSV)
-        </a>
       </section>
     </div>
   );
