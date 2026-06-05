@@ -63,7 +63,7 @@ export default async function StudentProfile() {
     );
   }
 
-  const { student, classes } = data;
+  const { student, classes, ownEntry } = data;
   const displayName = student.screen_name || student.name || "there";
 
   // The newest class drives the finish-joining form (the one they just joined).
@@ -247,6 +247,75 @@ export default async function StudentProfile() {
         >
           Go to the game →
         </a>
+
+        {/* ── YOUR PHOTO ──
+            Added in slice 1 engine-adaptation pass. Shows the student's own
+            most-recent entry in their current class — photo + the description
+            they wrote — so the dashboard has something personal to anchor on.
+            No comment box: their own contribution isn't something they comment
+            on (their classmates do that, in the game).
+
+            When status === "pending", a small "awaiting approval" badge and
+            a one-line explanation tell them what to expect. This is the main
+            motivator to come back: they uploaded, the teacher reviews, then
+            the photo goes live for classmates to see in the game.
+
+            Hidden entirely when there's no own entry yet (e.g. no current
+            class), so the dashboard still reads cleanly. */}
+        {ownEntry && (
+          <section style={{
+            background: C.panel, border: `1px solid ${C.panelEdge}`,
+            borderRadius: 16, padding: "20px 22px", marginBottom: 28,
+          }}>
+            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+              color: C.light, marginBottom: 14, marginTop: 0,
+              display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span>Your photo</span>
+              {ownEntry.status === "pending" && (
+                <span style={{
+                  fontSize: 10, letterSpacing: 1.5, fontWeight: 600,
+                  background: C.panelEdge, color: "#fff",
+                  padding: "3px 8px", borderRadius: 999,
+                }}>
+                  AWAITING APPROVAL
+                </span>
+              )}
+            </h2>
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+              {ownEntry.signedUrl ? (
+                <img src={ownEntry.signedUrl} alt=""
+                  style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 12,
+                    border: `2px solid ${C.light}`, flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 160, height: 160, borderRadius: 12,
+                  border: `2px dashed ${C.panelEdge}`, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 12, color: C.textFaint, textAlign: "center", padding: 8 }}>
+                  photo unavailable
+                </div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {ownEntry.description_text && (
+                  <p style={{ fontSize: 14, color: C.text, fontStyle: "italic",
+                    lineHeight: 1.6, margin: "0 0 10px",
+                    borderLeft: `2px solid ${C.light}`, paddingLeft: 12 }}>
+                    &quot;{ownEntry.description_text}&quot;
+                  </p>
+                )}
+                {ownEntry.status === "pending" ? (
+                  <p style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6, margin: 0 }}>
+                    Your teacher will review this soon. Once approved, your
+                    classmates will see it in the game.
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6, margin: 0 }}>
+                    Approved and live — your classmates see this in the game.
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* ── YOUR CLASSES (history strip) ── */}
         <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",

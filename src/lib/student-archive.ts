@@ -30,12 +30,31 @@
 // SHAPE
 //   Returns the SAME Entry/archive shape the page already renders, so the
 //   complete-state JSX can be reused per class with no translation.
+//
+// ownEntry (added in slice 1 engine-adaptation pass):
+//   Surfaces the student's OWN most-recent entry in their current class,
+//   so the dashboard can render a "your photo" card next to the history
+//   strip. This is data the student already supplied at finish-joining
+//   time (entries.media_url + description_text), but the original archive
+//   only exposed CLASSMATES' entries (via session.comments). Showing
+//   their own back to them gives the dashboard something concrete to
+//   open with, and motivates a return visit (e.g. waiting for approval,
+//   or after the teacher's comment lands).
+//
+//   - Pulled from the PRIVATE `media` bucket (same as class-deck.ts), so
+//     a signed URL is required. teacher-deck's getPublicUrl wouldn't work.
+//   - Includes pending entries: a freshly-uploaded photo shows up before
+//     the teacher approves it, with status so the page can label it.
+//   - Scoped to the CURRENT class (profiles.class_id). Past-class own
+//     entries are deliberately not surfaced — those classes are done.
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 
 const STARTER_BUCKET = "teacher-deck";
+const MEDIA_BUCKET = "media";
+const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour — same as class-deck.ts
 
 export type ArchiveEntry = {
   id: string;
@@ -61,10 +80,22 @@ export type ClassArchive = {
   favoriteThumb: string | null;
 };
 
+// The student's OWN current-class entry, surfaced for the dashboard's
+// "your photo" card. Null when the student has no entry yet (e.g. they
+// just enrolled but haven't uploaded), or when there's no current class.
+export type OwnEntry = {
+  id: string;
+  description_text: string | null;
+  signedUrl: string | null;
+  status: "pending" | "live" | string;
+  uploadedAt: string | null;
+};
+
 export type ArchiveResult =
   | { error: "no-session" | "not-enrolled" | "Server not configured." }
   | { student: { id: string; name: string | null; screen_name: string | null; email: string | null };
-      classes: ClassArchive[] };
+      classes: ClassArchive[];
+      ownEntry: OwnEntry | null };
 
 export async function getStudentArchive(): Promise<ArchiveResult> {
   const supabase = await createClient();
@@ -106,7 +137,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     .order("enrolled_at", { ascending: false });
 
   if (!enrollments || enrollments.length === 0) {
-    return { student, classes: [] };
+    return { student, classes: [], ownEntry: null };
   }
 
   // Preload ALL of this student's teacher notes once, then bucket per class.
@@ -203,5 +234,54 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     return 0; // preserve newest-first within each group
   });
 
-  return { student, classes };
+  // ── ownEntry: the student's most-recent own entry in the CURRENT class.
+  // Skipped if there's no current class. Both 'live' and 'pending' are
+  // surfaced (pending matters most — that's what motivates return visits
+  // while waiting for approval). Newest first; we take one.
+  let ownEntry: OwnEntry | null = null;
+  if (currentClassId) {
+    const { data: ownRows } = await admin
+      .from("entries")
+      .select("id, media_url, description_text, status, uploaded_at")
+      .eq("class_id", currentClassId)
+      .eq("student_id", student.id)
+      .eq("is_starter", false)
+      .in("status", ["live", "pending"])
+      .order("uploaded_at", { ascending: false })
+      .limit(1);
+
+    const row = ownRows?.[0];
+    if (row) {
+      let signedUrl: string | null = null;
+      if (row.media_url) {
+        try {
+          const { data, error } = await admin.storage
+            .from(MEDIA_BUCKET)
+            .createSignedUrl(row.media_url as string, SIGNED_URL_TTL_SECONDS);
+          if (error) {
+            console.error(
+              `[student-archive] createSignedUrl failed for own entry ${row.id}`,
+              error,
+            );
+          } else {
+            signedUrl = data?.signedUrl ?? null;
+          }
+        } catch (e) {
+          console.error(
+            `[student-archive] createSignedUrl threw for own entry ${row.id}`,
+            e,
+          );
+        }
+      }
+      ownEntry = {
+        id: row.id as string,
+        description_text: (row.description_text as string | null) ?? null,
+        signedUrl,
+        status: (row.status as string) ?? "pending",
+        uploadedAt: (row.uploaded_at as string | null) ?? null,
+      };
+    }
+  }
+
+  return { student, classes, ownEntry };
 }
