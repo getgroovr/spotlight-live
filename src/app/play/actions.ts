@@ -33,6 +33,21 @@
 //     bucket, inserts `entries` row at status='pending' on the profiles
 //     track (entries.student_id = profiles.id = auth user.id). No limit
 //     on how many pending an account can have; teacher moderates.
+//
+// Error surfacing (#26):
+//   - saveProfile AND addEntry now return ActionResult (previously
+//     Promise<void> with console.error + silent no-op). The dashboard
+//     wraps each form in a client component (FinishJoiningForm /
+//     AddEntryForm) that calls useFormState against the action and
+//     renders an error banner above the submit on failure.
+//   - The OPTIONAL self-photo upload inside saveProfile stays a SOFT fail
+//     (logs and continues without photo_url) — the rest of the profile
+//     still saves; the self-photo can be retried via a future edit-profile
+//     feature. The REQUIRED entry upload/insert paths are HARD fails: if
+//     any step fails, the action returns ok:false with a specific error
+//     so the student knows their photo didn't land and can retry.
+//   - Signatures take a leading prevState arg (ignored) per the
+//     useFormState contract: (prevState, formData) => Promise<NewState>.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -42,6 +57,12 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 
 export type EnrollResult =
   | { ok: true; message: string }
+  | { ok: false; error: string };
+
+// Generic shape for server actions whose success-side payload is just
+// "the page revalidated, look there." Used by saveProfile + addEntry.
+export type ActionResult =
+  | { ok: true }
   | { ok: false; error: string };
 
 export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
@@ -111,11 +132,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
 
   // ── GUARD: one ACTIVE class at a time (World B) ───────────────────────
-  // If the student already has an active enrollment in a DIFFERENT class,
-  // refuse. They must finish (status='completed') their current class before
-  // joining another. Re-joining the SAME class is allowed (handled by the
-  // upsert below). This is the friendly first line; the DB partial unique
-  // index (migration 20260601180000) is the hard backstop.
   const { data: activeRows, error: activeErr } = await admin
     .from("enrollments")
     .select("class_id")
@@ -181,14 +197,15 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// saveProfile — used as a <form action> on the profile page.
+// saveProfile — used as a <form action> on the dashboard (INCOMPLETE state),
+// wrapped by FinishJoiningForm.tsx via useFormState.
 //
 // Reads the logged-in user from the session cookie, then saves:
 //   • students.name        (real name — private, for the teacher)
 //   • students.screen_name (public — classmates see this in later rounds)
-//   • students.photo_url    (OPTIONAL self-photo — the profile face)
+//   • students.photo_url   (OPTIONAL self-photo — soft fail if upload fails)
 //   • game_sessions.favorite_comment on their most recent round (the "why")
-//   • entries row            (REQUIRED first game entry — see note below)
+//   • entries row           (REQUIRED first game entry — hard fail)
 //
 // TWO DISTINCT PHOTOS — do not conflate:
 //   • Self-photo (form field "photo"): a picture OF the student. OPTIONAL.
@@ -206,15 +223,33 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 // All uploads use the service-role `admin` client, which bypasses storage
 // RLS — so NO storage policy is needed for either bucket here.
 // ─────────────────────────────────────────────────────────────────────────
-export async function saveProfile(formData: FormData): Promise<void> {
+export async function saveProfile(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
 
   const supabase = await createClient();
-  if (!supabase) return;
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !user.email) return;
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
 
   const name = String(formData.get("name") || "").trim();
   const screenName = String(formData.get("screen_name") || "").trim();
@@ -224,7 +259,13 @@ export async function saveProfile(formData: FormData): Promise<void> {
   const entryDescription = String(formData.get("entry_description") || "").trim();
 
   // Defensive — the form already enforces these.
-  if (!name || !screenName || why.length < 15) return;
+  if (!name || !screenName || why.length < 15) {
+    return {
+      ok: false,
+      error:
+        "Please fill in your name, screen name, and a why-note of at least 15 characters.",
+    };
+  }
 
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
@@ -233,11 +274,18 @@ export async function saveProfile(formData: FormData): Promise<void> {
     .select("id")
     .eq("email", user.email.toLowerCase())
     .maybeSingle();
-  if (!student) return;
+  if (!student) {
+    return {
+      ok: false,
+      error: "We couldn't find your enrollment. Try the play page and re-join.",
+    };
+  }
 
-  // ── Self-photo (optional) ─────────────────────────────────────────────
+  // ── Self-photo (optional — SOFT fail) ─────────────────────────────────
   // Only attempt an upload when a real file came through. An unselected file
-  // input still yields a File here, but with size 0 — skip those.
+  // input still yields a File here, but with size 0 — skip those. Upload
+  // errors are logged and swallowed: the profile still saves, just without
+  // photo_url. A future edit-profile feature can let the student retry.
   let photoUrl: string | null = null;
   if (photo instanceof File && photo.size > 0) {
     const ext =
@@ -270,66 +318,73 @@ export async function saveProfile(formData: FormData): Promise<void> {
     .update(update)
     .eq("id", student.id);
 
-  // ── First game entry (required) ───────────────────────────────────────
+  // ── First game entry (REQUIRED — HARD fail) ───────────────────────────
   // The student's own photo + description, written as an `entries` row at
   // status='pending'. IMPORTANT: entries lives on the PROFILES track, not the
   // students track — entries.student_id is a FK to profiles(id) (= the auth
   // user id), and the class lives on profiles.class_id. (This is distinct from
   // students.id / enrollments, which the rest of saveProfile uses — that seam
-  // is why the earlier students.id version threw a FK violation.) Photo goes to
-  // the PRIVATE 'media' bucket; we store the storage PATH in media_url
-  // (deck.ts convention — the read layer signs it at display time). Only write
-  // when a real file came through and a class resolves.
-  if (entryPhoto instanceof File && entryPhoto.size > 0) {
-    // Class for the entry: prefer profiles.class_id (profiles track); fall back
-    // to the student's active enrollment only if the profile's is somehow unset.
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("class_id")
-      .eq("id", user.id)
-      .maybeSingle();
-    let entryClassId: string | null = profile?.class_id ?? null;
-    if (!entryClassId) {
-      const { data: enrollment } = await admin
-        .from("enrollments")
-        .select("class_id")
-        .eq("student_id", student.id)
-        .eq("status", "active")
-        .maybeSingle();
-      entryClassId = enrollment?.class_id ?? null;
-    }
-
-    if (entryClassId) {
-      const ext =
-        entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
-      const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
-      const { error: upErr } = await admin.storage
-        .from("media")
-        .upload(entryPath, entryPhoto, {
-          contentType: entryPhoto.type || "image/jpeg",
-          upsert: true,
-        });
-      if (upErr) {
-        console.error("Entry photo upload failed:", upErr.message);
-      } else {
-        const { error: entryErr } = await admin.from("entries").insert({
-          student_id: user.id,       // profiles(id) — NOT students.id
-          class_id: entryClassId,
-          media_url: entryPath,
-          media_type: "photo",
-          description_text: entryDescription,
-          // status defaults to 'pending'; is_starter to false; uploaded_at to now()
-        });
-        if (entryErr) {
-          console.error("Entry insert failed:", entryErr.message);
-        }
-      }
-    } else {
-      console.error("No class resolved for student; skipped entry write.");
-    }
+  // is why the earlier students.id version threw a FK violation.)
+  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
+    return { ok: false, error: "Please add your first photo." };
   }
 
-  // Attach the why-note to their most recent session.
+  // Class for the entry: prefer profiles.class_id (profiles track); fall back
+  // to the student's active enrollment only if the profile's is somehow unset.
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("class_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  let entryClassId: string | null = profile?.class_id ?? null;
+  if (!entryClassId) {
+    const { data: enrollment } = await admin
+      .from("enrollments")
+      .select("class_id")
+      .eq("student_id", student.id)
+      .eq("status", "active")
+      .maybeSingle();
+    entryClassId = enrollment?.class_id ?? null;
+  }
+  if (!entryClassId) {
+    return {
+      ok: false,
+      error: "We couldn't find your class. Please tell your teacher.",
+    };
+  }
+
+  const ext =
+    entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
+  const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
+  const { error: upErr } = await admin.storage
+    .from("media")
+    .upload(entryPath, entryPhoto, {
+      contentType: entryPhoto.type || "image/jpeg",
+      upsert: true,
+    });
+  if (upErr) {
+    return {
+      ok: false,
+      error: `Your photo didn't upload. Please try again. (${upErr.message})`,
+    };
+  }
+
+  const { error: entryErr } = await admin.from("entries").insert({
+    student_id: user.id,       // profiles(id) — NOT students.id
+    class_id: entryClassId,
+    media_url: entryPath,
+    media_type: "photo",
+    description_text: entryDescription,
+    // status defaults to 'pending'; is_starter to false; uploaded_at to now()
+  });
+  if (entryErr) {
+    return {
+      ok: false,
+      error: `We couldn't save your photo. Please try again. (${entryErr.message})`,
+    };
+  }
+
+  // ── Attach the why-note to their most recent session (soft) ───────────
   const { data: session } = await admin
     .from("game_sessions")
     .select("id")
@@ -345,10 +400,13 @@ export async function saveProfile(formData: FormData): Promise<void> {
   }
 
   revalidatePath("/student/dashboard");
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// addEntry — used as a <form action> on the dashboard.
+// addEntry — used as a <form action> on the dashboard (COMPLETE state, in
+// the "Your photo → Add another photo" section), wrapped by AddEntryForm.tsx
+// via useFormState.
 //
 // Adds ANOTHER own photo to the student's current class. saveProfile handled
 // the first one (at finish-joining time, alongside name + screen_name + the
@@ -365,28 +423,49 @@ export async function saveProfile(formData: FormData): Promise<void> {
 //     student-archive.ts header for the TWO-TRACK STUDENT IDS explanation.
 //   • status defaults to 'pending'; teacher approves later.
 //
-// On success, revalidatePath('/student/dashboard') refreshes the dashboard
-// so the new entry (now the most-recent own) shows in the "Your photo"
-// section. Failure mode: console.error and the form silently no-ops; we
-// don't currently surface errors to the UI (matches saveProfile's pattern;
-// worth revisiting when there's an error-surface UX in place).
+// All paths are HARD fails since this action has no soft-optional fields —
+// every step matters. On success, revalidatePath('/student/dashboard')
+// refreshes the dashboard so the new entry (now the most-recent own) shows
+// in the "Your photo" section.
 // ─────────────────────────────────────────────────────────────────────────
-export async function addEntry(formData: FormData): Promise<void> {
+export async function addEntry(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
 
   const supabase = await createClient();
-  if (!supabase) return;
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !user.email) return;
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
 
   const entryPhoto = formData.get("entry_photo");
   const entryDescription = String(formData.get("entry_description") || "").trim();
 
   // Form already enforces these; defense in depth.
-  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) return;
-  if (!entryDescription) return;
+  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
+    return { ok: false, error: "Please choose a photo." };
+  }
+  if (!entryDescription) {
+    return { ok: false, error: "Please write a short description." };
+  }
 
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
@@ -399,8 +478,10 @@ export async function addEntry(formData: FormData): Promise<void> {
     .maybeSingle();
   const entryClassId = profile?.class_id ?? null;
   if (!entryClassId) {
-    console.error("addEntry: no current class on profile; skipped write.");
-    return;
+    return {
+      ok: false,
+      error: "We couldn't find your class. Please tell your teacher.",
+    };
   }
 
   // Upload to PRIVATE `media` bucket. Path layout matches saveProfile:
@@ -415,8 +496,10 @@ export async function addEntry(formData: FormData): Promise<void> {
       upsert: true,
     });
   if (upErr) {
-    console.error("addEntry photo upload failed:", upErr.message);
-    return;
+    return {
+      ok: false,
+      error: `Your photo didn't upload. Please try again. (${upErr.message})`,
+    };
   }
 
   const { error: entryErr } = await admin.from("entries").insert({
@@ -428,9 +511,12 @@ export async function addEntry(formData: FormData): Promise<void> {
     // status defaults to 'pending'; is_starter to false; uploaded_at to now()
   });
   if (entryErr) {
-    console.error("addEntry insert failed:", entryErr.message);
-    return;
+    return {
+      ok: false,
+      error: `We couldn't save your photo. Please try again. (${entryErr.message})`,
+    };
   }
 
   revalidatePath("/student/dashboard");
+  return { ok: true };
 }

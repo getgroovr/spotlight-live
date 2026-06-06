@@ -8,25 +8,33 @@
 //      OPTIONAL self-photo, the "why was this your favorite?" note, and the
 //      REQUIRED first game entry (a photo of their own + a description) that
 //      becomes their first `entries` row so the class has content right away.
-//      Submits to saveProfile.
+//      Form lives in ./FinishJoiningForm.tsx (client) which wraps
+//      saveProfile via useFormState so any error is surfaced in-form.
 //
 //   2. COMPLETE — shows their profile as a HISTORY STRIP (one collapsible
 //      tile per class, newest first) plus a "Go to the game →" button. Read +
 //      per-class scoping live in src/lib/student-archive.ts; the strip UI in
-//      ./ProfileArchive.tsx.
+//      ./ProfileArchive.tsx. The "Add another photo" form lives in
+//      ./AddEntryForm.tsx (client) which wraps addEntry via useFormState
+//      for the same error-surfacing reason.
 //
-//   Two distinct photos live on this form, do not conflate them:
+//   Two distinct photos live on the finish-joining form, do not conflate:
 //     • self-photo      → students.photo_url (optional, the profile face)
 //     • first entry pic → entries.media_url  (required, classmate-facing)
 //
 // Auth: the magic link set a session cookie (via /auth/confirm). We read it
 // with the SSR client; no session → /play.
+//
+// Error surfacing (#26): the two forms used to be inline here with
+// <form action={saveProfile}> / <form action={addEntry}>. They silently
+// no-op'd on any failure. Now they're extracted into client components
+// that capture the ActionResult and render an error banner above submit.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { getStudentArchive } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
-import PhotoField from "./PhotoField";
-import { saveProfile, addEntry } from "@/app/play/actions";
+import FinishJoiningForm from "./FinishJoiningForm";
+import AddEntryForm from "./AddEntryForm";
 
 export const dynamic = "force-dynamic";
 
@@ -91,119 +99,14 @@ export default async function StudentProfile() {
             time. First, a couple of things:
           </p>
 
-          <form action={saveProfile}>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
-                Your name <span style={{ color: C.textFaint, fontWeight: 400 }}>— your teacher sees this</span>
-              </label>
-              <input
-                name="name"
-                type="text"
-                required
-                defaultValue={student.name || ""}
-                placeholder="First name is fine"
-                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                  fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-                  border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
-                Screen name <span style={{ color: C.textFaint, fontWeight: 400 }}>— what classmates see</span>
-              </label>
-              <input
-                name="screen_name"
-                type="text"
-                required
-                defaultValue={student.screen_name || ""}
-                placeholder="A name for the class to see"
-                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                  fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-                  border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <PhotoField
-                name="photo"
-                label="A photo of yourself"
-                helper="optional, shown on your profile"
-                previewSize={120}
-              />
-            </div>
-
-            {newestFavorite && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>
-                  Why was this your favorite? What did you like about it?
-                </label>
-                <div style={{ display: "flex", gap: 14, alignItems: "flex-start",
-                  background: C.panel, border: `1px solid ${C.panelEdge}`,
-                  borderRadius: 14, padding: 12, marginBottom: 10 }}>
-                  {newestFavorite.publicUrl && (
-                    <img src={newestFavorite.publicUrl} alt=""
-                      style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 10,
-                        border: `2px solid ${C.light}`, flexShrink: 0 }} />
-                  )}
-                  {newestFavorite.description_text && (
-                    <p style={{ fontSize: 13, color: C.text, fontStyle: "italic",
-                      lineHeight: 1.5, margin: 0, borderLeft: `2px solid ${C.light}`, paddingLeft: 10 }}>
-                      &quot;{newestFavorite.description_text}&quot;
-                    </p>
-                  )}
-                </div>
-                <textarea
-                  name="favorite_comment"
-                  required
-                  minLength={15}
-                  rows={4}
-                  placeholder="Tell your teacher what drew you to this one (at least 15 characters)."
-                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                    fontFamily: F, fontSize: 14, lineHeight: 1.5,
-                    background: "#FFFDF7", color: C.text,
-                    border: `1px solid ${C.panelEdge}`, borderRadius: 12, outline: "none",
-                    resize: "vertical" }}
-                />
-              </div>
-            )}
-
-            {/* ── FIRST GAME ENTRY (required) — becomes their first entries row ── */}
-            <div style={{ marginTop: 8, marginBottom: 16, paddingTop: 18,
-              borderTop: `1px solid ${C.panelEdge}` }}>
-              <PhotoField
-                name="entry_photo"
-                label="Add your first photo"
-                helper="this is your own photo for the class to see and comment on"
-                required
-                previewSize={200}
-              />
-              <label style={{ fontSize: 13, fontWeight: 600, display: "block",
-                marginTop: 12, marginBottom: 6 }}>
-                Tell us about your photo
-              </label>
-              <textarea
-                name="entry_description"
-                required
-                rows={3}
-                placeholder="What is it? Why did you pick it?"
-                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                  fontFamily: F, fontSize: 14, lineHeight: 1.5,
-                  background: "#FFFDF7", color: C.text,
-                  border: `1px solid ${C.panelEdge}`, borderRadius: 12, outline: "none",
-                  resize: "vertical" }}
-              />
-            </div>
-
-            <button
-              type="submit"
-              style={{ width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
-                background: C.light, color: "#fff", border: "none", borderRadius: 12,
-                cursor: "pointer", letterSpacing: 0.5, marginTop: 4 }}
-            >
-              Finish joining →
-            </button>
-          </form>
+          <FinishJoiningForm
+            studentName={student.name}
+            studentScreenName={student.screen_name}
+            newestFavorite={newestFavorite ? {
+              publicUrl: newestFavorite.publicUrl,
+              description_text: newestFavorite.description_text,
+            } : null}
+          />
         </div>
       </div>
     );
@@ -327,7 +230,10 @@ export default async function StudentProfile() {
                 For now we only show ONE own photo on the dashboard (the
                 most recent). Surfacing the full stack of own entries is a
                 separate layout pass — see handoff #25 "earlier photos"
-                note. */}
+                note.
+
+                Form extracted into ./AddEntryForm.tsx (#26) so failures
+                surface as an in-form banner instead of silently no-op'ing. */}
             <div style={{ marginTop: 22, paddingTop: 18,
               borderTop: `1px solid ${C.panelEdge}` }}>
               <h3 style={{ fontSize: 13, letterSpacing: 1.5,
@@ -335,39 +241,7 @@ export default async function StudentProfile() {
                 marginTop: 0, marginBottom: 12 }}>
                 Add another photo
               </h3>
-              <form action={addEntry}>
-                <PhotoField
-                  name="entry_photo"
-                  label="Photo"
-                  helper="something you'd like classmates to see and comment on"
-                  required
-                  previewSize={160}
-                />
-                <label style={{ fontSize: 13, fontWeight: 600, display: "block",
-                  marginTop: 12, marginBottom: 6, color: C.text }}>
-                  Tell us about it
-                </label>
-                <textarea
-                  name="entry_description"
-                  required
-                  rows={3}
-                  placeholder="What is it? Why did you pick it?"
-                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                    fontFamily: F, fontSize: 14, lineHeight: 1.5,
-                    background: "#FFFDF7", color: C.text,
-                    border: `1px solid ${C.panelEdge}`, borderRadius: 12, outline: "none",
-                    resize: "vertical" }}
-                />
-                <button
-                  type="submit"
-                  style={{ width: "100%", padding: "11px", fontFamily: F,
-                    fontSize: 14, fontWeight: 700, background: C.light,
-                    color: "#fff", border: "none", borderRadius: 10,
-                    cursor: "pointer", letterSpacing: 0.5, marginTop: 12 }}
-                >
-                  Add to the class →
-                </button>
-              </form>
+              <AddEntryForm />
             </div>
           </section>
         )}
