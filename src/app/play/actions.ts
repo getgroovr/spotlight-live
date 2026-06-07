@@ -48,6 +48,31 @@
 //     so the student knows their photo didn't land and can retry.
 //   - Signatures take a leading prevState arg (ignored) per the
 //     useFormState contract: (prevState, formData) => Promise<NewState>.
+//
+// Slice 1 round assignment (#27):
+//   - entries.round_number is now NOT NULL. Every insert must set it.
+//   - saveProfile's first-entry insert is always round_number = 1.
+//     Finish-joining is by definition pre-game (the student JUST joined),
+//     so their first photo is round 1.
+//   - addEntry resolves a target round number:
+//       * If the form passes a round_number (the slot-grid UI in pass 2),
+//         that value is validated and used.
+//       * Otherwise (today's "Add another photo" form, which has no slot
+//         picker yet), addEntry finds the lowest unlocked + unfilled slot.
+//     Rejects if the target round is locked, already filled by this
+//     student, out of range (> total_rounds), or if the game is over.
+//   - NEW removeEntry action: deletes an entry the student owns, but only
+//     if the entry's round is not yet locked. Used by the pass-2 slot grid
+//     for the remove-and-re-upload flow on unlocked slots.
+//
+// Lock semantics (#27 — Mike's call):
+//   Round N is LOCKED the moment round N STARTS, i.e.,
+//     now >= game_starts_at + (N - 1) * round_duration_hours.
+//   Equivalently, N is locked iff N <= currentRound. Pre-game (no timing
+//   set, or now < game_starts_at), no round is locked; the student can
+//   stage their entire queue ahead of time. When the game starts, slot 1
+//   locks. When round 2 starts, slot 2 locks. And so on. After the last
+//   round starts, every slot is locked — the game is effectively over.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -60,11 +85,95 @@ export type EnrollResult =
   | { ok: false; error: string };
 
 // Generic shape for server actions whose success-side payload is just
-// "the page revalidated, look there." Used by saveProfile + addEntry.
+// "the page revalidated, look there." Used by saveProfile, addEntry,
+// and (new #27) removeEntry.
 export type ActionResult =
   | { ok: true }
   | { ok: false; error: string };
 
+// ── Class-timing helpers (#27) ─────────────────────────────────────────────
+// Centralized lock/timing math. Both addEntry and removeEntry read these.
+// When the teacher UI lands (#28) and we add a setClassTiming action, that
+// action's validation will live alongside these helpers.
+type ClassTiming = {
+  total_rounds: number | null;
+  game_starts_at: string | null;       // ISO timestamp
+  round_duration_hours: number | null; // CHECK IN (1, 24, 168) per migration #26
+};
+
+// "Current round" — the round in flight RIGHT NOW.
+//   - 0 if pre-game (no timing configured, or now < game_starts_at).
+//   - N if now is inside round N's window
+//     (game_starts_at + (N-1)*hours  ≤  now  <  game_starts_at + N*hours).
+//   - total_rounds + 1 if the game is over (capped, so callers don't see
+//     unbounded values).
+function computeCurrentRound(timing: ClassTiming, now: Date = new Date()): number {
+  const { game_starts_at, round_duration_hours, total_rounds } = timing;
+  if (!game_starts_at || !round_duration_hours) return 0;
+  const start = new Date(game_starts_at);
+  if (now < start) return 0;
+  const elapsedMs = now.getTime() - start.getTime();
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  const computed = Math.floor(elapsedHours / round_duration_hours) + 1;
+  if (total_rounds !== null && computed > total_rounds) return total_rounds + 1;
+  return computed;
+}
+
+// A round is LOCKED once it has started.  Round N is locked iff N ≤ currentRound.
+function isRoundLocked(roundNumber: number, timing: ClassTiming, now: Date = new Date()): boolean {
+  return roundNumber <= computeCurrentRound(timing, now);
+}
+
+function isGameOver(timing: ClassTiming, now: Date = new Date()): boolean {
+  if (timing.total_rounds === null) return false;
+  return computeCurrentRound(timing, now) > timing.total_rounds;
+}
+
+// Resolve an unspecified target round → the lowest unlocked + unfilled slot.
+// Used when the form doesn't pass round_number explicitly (today's
+// "Add another photo" form, pre slot-grid).  Returns null if nothing's
+// available (everything filled, everything locked, or game over).
+//
+// Note: when total_rounds is NULL (game not configured yet), the only valid
+// slot is round 1.  Pre-configuration uploads stack on round 1; once the
+// teacher configures total_rounds, additional uploads spread to later slots.
+async function findFirstAvailableRound(
+  admin: ReturnType<typeof createServiceClient>,
+  userId: string,
+  classId: string,
+  timing: ClassTiming,
+  now: Date = new Date(),
+): Promise<number | null> {
+  if (isGameOver(timing, now)) return null;
+  // When total_rounds is NULL (teacher hasn't configured yet), the student
+  // can still stage uploads — each one claims the next sequential round
+  // number. Cap at 100 to match the CHECK constraint on classes.total_rounds.
+  const maxRound = timing.total_rounds ?? 100;
+
+  const { data: existing } = await admin
+    .from("entries")
+    .select("round_number")
+    .eq("student_id", userId)
+    .eq("class_id", classId);
+  const filled = new Set<number>(
+    (existing || []).map((e: { round_number: number }) => e.round_number),
+  );
+
+  for (let r = 1; r <= maxRound; r++) {
+    if (filled.has(r)) continue;
+    if (isRoundLocked(r, timing, now)) continue;
+    return r;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// enrollStudent — UNCHANGED from #26.  No round_number involvement: it
+// writes to enrollments + game_sessions, neither of which has a round_number
+// column on the entries side.  (game_sessions.round exists but is unrelated
+// to entries.round_number — that's the session sequence number, not the
+// round-assignment slot.)
+// ─────────────────────────────────────────────────────────────────────────
 export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -91,9 +200,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   } catch {}
 
   // ── Resolve the class FROM THE FAVORITE ───────────────────────────────
-  // favorites is { "<entryId>": true }. The favorited entry's class_id is the
-  // cohort the visitor joins. (Single-favorite flow; if multiple, take the
-  // first truthy one.)
   const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
   if (!favEntryId) {
     return { ok: false, error: "No favorite was selected." };
@@ -161,7 +267,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
 
   // ── Save the round-1 game session (the nine comments + the favorite) ──
-  // favorite_comment (the "why") is added later, from the profile.
   const { error: sessionErr } = await admin
     .from("game_sessions")
     .insert({
@@ -186,7 +291,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   });
   if (otpErr) {
     console.error("Magic link send failed:", otpErr.message);
-    // Non-fatal — enrollment succeeded; student can request another link later.
   }
 
   revalidatePath("/play");
@@ -205,7 +309,7 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 //   • students.screen_name (public — classmates see this in later rounds)
 //   • students.photo_url   (OPTIONAL self-photo — soft fail if upload fails)
 //   • game_sessions.favorite_comment on their most recent round (the "why")
-//   • entries row           (REQUIRED first game entry — hard fail)
+//   • entries row           (REQUIRED first game entry — hard fail, round 1)
 //
 // TWO DISTINCT PHOTOS — do not conflate:
 //   • Self-photo (form field "photo"): a picture OF the student. OPTIONAL.
@@ -218,7 +322,8 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 //     entries.media_url stores the storage PATH (not a URL) — the read layer
 //     builds a (signed, for the private bucket) URL at display time. We write
 //     an entries row at status='pending' (the default), attached to the
-//     student's ACTIVE class.
+//     student's ACTIVE class.  ALWAYS round_number = 1 (#27): finish-joining
+//     is by definition pre-game.
 //
 // All uploads use the service-role `admin` client, which bypasses storage
 // RLS — so NO storage policy is needed for either bucket here.
@@ -282,10 +387,6 @@ export async function saveProfile(
   }
 
   // ── Self-photo (optional — SOFT fail) ─────────────────────────────────
-  // Only attempt an upload when a real file came through. An unselected file
-  // input still yields a File here, but with size 0 — skip those. Upload
-  // errors are logged and swallowed: the profile still saves, just without
-  // photo_url. A future edit-profile feature can let the student retry.
   let photoUrl: string | null = null;
   if (photo instanceof File && photo.size > 0) {
     const ext =
@@ -320,17 +421,12 @@ export async function saveProfile(
 
   // ── First game entry (REQUIRED — HARD fail) ───────────────────────────
   // The student's own photo + description, written as an `entries` row at
-  // status='pending'. IMPORTANT: entries lives on the PROFILES track, not the
-  // students track — entries.student_id is a FK to profiles(id) (= the auth
-  // user id), and the class lives on profiles.class_id. (This is distinct from
-  // students.id / enrollments, which the rest of saveProfile uses — that seam
-  // is why the earlier students.id version threw a FK violation.)
+  // status='pending'.  entries lives on the PROFILES track (student_id FKs
+  // to profiles, not students), and the class lives on profiles.class_id.
   if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
     return { ok: false, error: "Please add your first photo." };
   }
 
-  // Class for the entry: prefer profiles.class_id (profiles track); fall back
-  // to the student's active enrollment only if the profile's is somehow unset.
   const { data: profile } = await admin
     .from("profiles")
     .select("class_id")
@@ -375,6 +471,7 @@ export async function saveProfile(
     media_url: entryPath,
     media_type: "photo",
     description_text: entryDescription,
+    round_number: 1,            // #27: finish-joining is always pre-game
     // status defaults to 'pending'; is_starter to false; uploaded_at to now()
   });
   if (entryErr) {
@@ -404,29 +501,22 @@ export async function saveProfile(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// addEntry — used as a <form action> on the dashboard (COMPLETE state, in
-// the "Your photo → Add another photo" section), wrapped by AddEntryForm.tsx
-// via useFormState.
+// addEntry — used as a <form action> on the dashboard (COMPLETE state).
+// Today wrapped by AddEntryForm.tsx (the single "Add another photo" form).
+// In pass 2, the dashboard becomes a slot grid; each slot's upload form
+// passes a round_number hidden input and addEntry uses that exact value.
 //
-// Adds ANOTHER own photo to the student's current class. saveProfile handled
-// the first one (at finish-joining time, alongside name + screen_name + the
-// why-note); this is the same write minus the profile fields. Identical
-// constraints:
-//   • Logged-in session required (reads user via SSR cookie client).
-//   • Current class resolves from profiles.class_id (the profiles track —
-//     matches the rest of saveProfile's entry block).
-//   • Uploads to PRIVATE `media` bucket via the service-role admin client
-//     (bypasses storage RLS — no policies needed).
-//   • Writes entries.media_url as the storage PATH (not a URL); read layer
-//     signs it at display time (deck.ts convention).
-//   • student_id is set to user.id (= profiles.id), NOT students.id. See
-//     student-archive.ts header for the TWO-TRACK STUDENT IDS explanation.
-//   • status defaults to 'pending'; teacher approves later.
+// Behavior matrix:
+//   form passes round_number?     →  validate + use
+//   no round_number on form       →  auto-resolve: lowest unlocked +
+//                                    unfilled slot (or round 1 pre-game)
 //
-// All paths are HARD fails since this action has no soft-optional fields —
-// every step matters. On success, revalidatePath('/student/dashboard')
-// refreshes the dashboard so the new entry (now the most-recent own) shows
-// in the "Your photo" section.
+// Reject conditions:
+//   • game over (now past last round's start time)
+//   • target round > total_rounds (when set)
+//   • target round is locked (now ≥ that round's start time)
+//   • target round already has an entry from this student
+//     (use removeEntry to clear it first)
 // ─────────────────────────────────────────────────────────────────────────
 export async function addEntry(
   _prevState: ActionResult | null,
@@ -459,7 +549,6 @@ export async function addEntry(
   const entryPhoto = formData.get("entry_photo");
   const entryDescription = String(formData.get("entry_description") || "").trim();
 
-  // Form already enforces these; defense in depth.
   if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
     return { ok: false, error: "Please choose a photo." };
   }
@@ -469,8 +558,7 @@ export async function addEntry(
 
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
-  // Resolve current class via profiles.class_id (profiles track — same
-  // source saveProfile uses for the entry's class_id).
+  // ── Resolve current class (profiles track) ───────────────────────────
   const { data: profile } = await admin
     .from("profiles")
     .select("class_id")
@@ -484,8 +572,74 @@ export async function addEntry(
     };
   }
 
-  // Upload to PRIVATE `media` bucket. Path layout matches saveProfile:
-  // <classId>/<userId>-<timestamp>.<ext>
+  // ── Read class timing (#27) ──────────────────────────────────────────
+  const { data: classRow } = await admin
+    .from("classes")
+    .select("total_rounds, game_starts_at, round_duration_hours")
+    .eq("id", entryClassId)
+    .maybeSingle();
+  const timing: ClassTiming = {
+    total_rounds: classRow?.total_rounds ?? null,
+    game_starts_at: classRow?.game_starts_at ?? null,
+    round_duration_hours: classRow?.round_duration_hours ?? null,
+  };
+
+  // Early reject if game is over.
+  if (isGameOver(timing)) {
+    return { ok: false, error: "The game has ended. No more photos can be added." };
+  }
+
+  // ── Resolve target round ─────────────────────────────────────────────
+  let targetRound: number;
+  const requestedRoundRaw = formData.get("round_number");
+  if (requestedRoundRaw !== null && String(requestedRoundRaw).trim() !== "") {
+    const parsed = parseInt(String(requestedRoundRaw), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return { ok: false, error: "That round isn't valid." };
+    }
+    targetRound = parsed;
+  } else {
+    const resolved = await findFirstAvailableRound(admin, user.id, entryClassId, timing);
+    if (resolved === null) {
+      return {
+        ok: false,
+        error:
+          "There aren't any open slots left for you. Remove an existing photo to upload a new one, or wait for your teacher to extend the game.",
+      };
+    }
+    targetRound = resolved;
+  }
+
+  // ── Validate target round ────────────────────────────────────────────
+  if (timing.total_rounds !== null && targetRound > timing.total_rounds) {
+    return {
+      ok: false,
+      error: `Round ${targetRound} doesn't exist in this game (only ${timing.total_rounds} round${timing.total_rounds === 1 ? "" : "s"}).`,
+    };
+  }
+  if (isRoundLocked(targetRound, timing)) {
+    return {
+      ok: false,
+      error: `Round ${targetRound} has already started — that slot is locked.`,
+    };
+  }
+
+  // Already filled? Caller must remove first.
+  const { data: existingInRound } = await admin
+    .from("entries")
+    .select("id")
+    .eq("student_id", user.id)
+    .eq("class_id", entryClassId)
+    .eq("round_number", targetRound)
+    .maybeSingle();
+  if (existingInRound) {
+    return {
+      ok: false,
+      error: `You already have a photo in round ${targetRound}. Remove it first to upload a new one.`,
+    };
+  }
+
+  // ── Upload to PRIVATE media bucket ───────────────────────────────────
   const ext =
     entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
   const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
@@ -503,18 +657,127 @@ export async function addEntry(
   }
 
   const { error: entryErr } = await admin.from("entries").insert({
-    student_id: user.id,       // profiles(id) — NOT students.id
+    student_id: user.id,
     class_id: entryClassId,
     media_url: entryPath,
     media_type: "photo",
     description_text: entryDescription,
-    // status defaults to 'pending'; is_starter to false; uploaded_at to now()
+    round_number: targetRound,
   });
   if (entryErr) {
     return {
       ok: false,
       error: `We couldn't save your photo. Please try again. (${entryErr.message})`,
     };
+  }
+
+  revalidatePath("/student/dashboard");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// removeEntry — NEW in #27.  Deletes an entry the student owns, but only
+// if the entry's round has not yet started (i.e., the slot is unlocked).
+// Used by the slot grid's ✕ button to clear an unlocked slot before
+// re-uploading.
+//
+// Form fields: entry_id (the id of the row to remove).
+//
+// Storage cleanup: best-effort.  We try to remove the underlying media
+// file from the 'media' bucket, but a storage failure does NOT block the
+// row deletion — an orphaned file is harmless (private bucket, never
+// served).  The row deletion is the source of truth.
+//
+// Authorization: we verify entry.student_id === user.id ourselves rather
+// than relying on RLS, because addEntry/saveProfile also use the service-
+// role admin client which bypasses RLS.  Pattern stays consistent.
+// ─────────────────────────────────────────────────────────────────────────
+export async function removeEntry(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
+
+  const supabase = await createClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
+
+  const entryId = String(formData.get("entry_id") || "").trim();
+  if (!entryId) {
+    return { ok: false, error: "Missing entry id." };
+  }
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // ── Load entry; verify ownership ─────────────────────────────────────
+  const { data: entry, error: entryFetchErr } = await admin
+    .from("entries")
+    .select("id, student_id, class_id, round_number, media_url")
+    .eq("id", entryId)
+    .maybeSingle();
+  if (entryFetchErr) {
+    return { ok: false, error: `Could not load entry: ${entryFetchErr.message}` };
+  }
+  if (!entry) {
+    return { ok: false, error: "That photo no longer exists." };
+  }
+  if (entry.student_id !== user.id) {
+    return { ok: false, error: "You can't remove a photo that isn't yours." };
+  }
+
+  // ── Lock check ───────────────────────────────────────────────────────
+  const { data: classRow } = await admin
+    .from("classes")
+    .select("total_rounds, game_starts_at, round_duration_hours")
+    .eq("id", entry.class_id)
+    .maybeSingle();
+  const timing: ClassTiming = {
+    total_rounds: classRow?.total_rounds ?? null,
+    game_starts_at: classRow?.game_starts_at ?? null,
+    round_duration_hours: classRow?.round_duration_hours ?? null,
+  };
+  if (isRoundLocked(entry.round_number, timing)) {
+    return {
+      ok: false,
+      error: `Round ${entry.round_number} has already started — this photo is locked in.`,
+    };
+  }
+
+  // ── Storage delete (soft) ────────────────────────────────────────────
+  if (entry.media_url) {
+    const { error: storageErr } = await admin.storage
+      .from("media")
+      .remove([entry.media_url]);
+    if (storageErr) {
+      console.error("Storage delete failed (continuing):", storageErr.message);
+    }
+  }
+
+  // ── Row delete (hard) ────────────────────────────────────────────────
+  const { error: delErr } = await admin
+    .from("entries")
+    .delete()
+    .eq("id", entry.id);
+  if (delErr) {
+    return { ok: false, error: `Could not remove the photo. (${delErr.message})` };
   }
 
   revalidatePath("/student/dashboard");

@@ -31,22 +31,31 @@
 //   Returns the SAME Entry/archive shape the page already renders, so the
 //   complete-state JSX can be reused per class with no translation.
 //
-// ownEntry (added in slice 1 engine-adaptation pass):
-//   Surfaces the student's OWN most-recent entry in their current class,
-//   so the dashboard can render a "your photo" card next to the history
-//   strip. This is data the student already supplied at finish-joining
-//   time (entries.media_url + description_text), but the original archive
-//   only exposed CLASSMATES' entries (via session.comments). Showing
-//   their own back to them gives the dashboard something concrete to
-//   open with, and motivates a return visit (e.g. waiting for approval,
-//   or after the teacher's comment lands).
+// ownEntries + currentClassTiming (added in slice 1 round-assignment, #27):
+//   The dashboard's "Your photo" card grows into a slot grid: one square
+//   per round (1..total_rounds), each holding the student's submission for
+//   that round (or empty if not yet filled). To support this, the archive
+//   now returns:
+//     • ownEntries: every own entry in the current class, one per round
+//       (most-recent upload wins per round if duplicates exist from
+//       pre-#27 data), sorted by round_number ascending.
+//     • currentClassTiming: total_rounds, game_starts_at, round_duration_hours,
+//       plus the COMPUTED currentRound and isGameOver booleans. The slot
+//       grid uses these to render N squares with the right lock state per
+//       slot (round N is locked iff N ≤ currentRound).
+//   ownEntry (single, legacy) is kept for back-compat with the current
+//   dashboard's "Your photo" card; it's the highest-round filled slot
+//   (your forward-most submission). Pass 2 replaces the card with the
+//   slot grid, at which point ownEntry can be removed.
 //
-//   - Pulled from the PRIVATE `media` bucket (same as class-deck.ts), so
-//     a signed URL is required. teacher-deck's getPublicUrl wouldn't work.
-//   - Includes pending entries: a freshly-uploaded photo shows up before
-//     the teacher approves it, with status so the page can label it.
-//   - Scoped to the CURRENT class (profiles.class_id). Past-class own
-//     entries are deliberately not surfaced — those classes are done.
+// LOCK SEMANTICS (mirrors actions.ts):
+//   Round N is LOCKED the moment round N starts:
+//     now ≥ game_starts_at + (N-1) * round_duration_hours.
+//   Pre-game (timing unset, or now < game_starts_at), no round is locked.
+//   The slot grid client reads currentClassTiming.currentRound and locks
+//   any slot whose number is ≤ that value. (The helpers below are
+//   duplicated from actions.ts — small enough to inline; if/when these
+//   helpers grow, extract to src/lib/round-timing.ts and import from both.)
 //
 // TWO-TRACK STUDENT IDS — read this before changing the entry query:
 //   This codebase has two distinct UUIDs per student, and they are NOT the
@@ -69,6 +78,33 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 const STARTER_BUCKET = "teacher-deck";
 const MEDIA_BUCKET = "media";
 const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour — same as class-deck.ts
+
+// ── Round-timing helpers (#27) ────────────────────────────────────────────
+// Duplicated from actions.ts to avoid coupling this read-path file to the
+// "use server" action file. Small enough that duplication > extraction for
+// now; extract to src/lib/round-timing.ts if these grow.
+type TimingShape = {
+  total_rounds: number | null;
+  game_starts_at: string | null;
+  round_duration_hours: number | null;
+};
+
+function computeCurrentRound(t: TimingShape, now: Date = new Date()): number {
+  const { game_starts_at, round_duration_hours, total_rounds } = t;
+  if (!game_starts_at || !round_duration_hours) return 0;
+  const start = new Date(game_starts_at);
+  if (now < start) return 0;
+  const elapsedMs = now.getTime() - start.getTime();
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  const computed = Math.floor(elapsedHours / round_duration_hours) + 1;
+  if (total_rounds !== null && computed > total_rounds) return total_rounds + 1;
+  return computed;
+}
+
+function computeIsGameOver(t: TimingShape, now: Date = new Date()): boolean {
+  if (t.total_rounds === null) return false;
+  return computeCurrentRound(t, now) > t.total_rounds;
+}
 
 export type ArchiveEntry = {
   id: string;
@@ -94,22 +130,40 @@ export type ClassArchive = {
   favoriteThumb: string | null;
 };
 
-// The student's OWN current-class entry, surfaced for the dashboard's
-// "your photo" card. Null when the student has no entry yet (e.g. they
-// just enrolled but haven't uploaded), or when there's no current class.
+// The student's OWN entry in a single slot of the current class.
+// One per round (deduped — most recent upload wins if duplicates exist).
 export type OwnEntry = {
   id: string;
   description_text: string | null;
   signedUrl: string | null;
   status: "pending" | "live" | string;
   uploadedAt: string | null;
+  roundNumber: number;       // #27: which slot this fills
+  teacherNote: string | null; // #27: teacher's note on this entry, if any
+};
+
+// Timing snapshot for the student's CURRENT class. Null when the student
+// has no current class. The slot grid renders totalRounds squares
+// (falling back to 1 when null) and locks any whose number ≤ currentRound.
+export type CurrentClassTiming = {
+  totalRounds: number | null;       // null → game not configured yet (show 1 slot)
+  gameStartsAt: string | null;
+  roundDurationHours: number | null;
+  currentRound: number;             // 0 = pre-game; totalRounds+1 = over
+  isGameOver: boolean;
 };
 
 export type ArchiveResult =
   | { error: "no-session" | "not-enrolled" | "Server not configured." }
   | { student: { id: string; name: string | null; screen_name: string | null; email: string | null };
       classes: ClassArchive[];
-      ownEntry: OwnEntry | null };
+      // Legacy: single "your photo" card. Now means "highest-round filled
+      // slot in the current class." Removed once pass 2 replaces the card.
+      ownEntry: OwnEntry | null;
+      // #27: all own entries in current class, one per round, sorted asc.
+      ownEntries: OwnEntry[];
+      // #27: timing snapshot for the current class (null when none).
+      currentClassTiming: CurrentClassTiming | null };
 
 export async function getStudentArchive(): Promise<ArchiveResult> {
   const supabase = await createClient();
@@ -151,7 +205,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     .order("enrolled_at", { ascending: false });
 
   if (!enrollments || enrollments.length === 0) {
-    return { student, classes: [], ownEntry: null };
+    return { student, classes: [], ownEntry: null, ownEntries: [], currentClassTiming: null };
   }
 
   // Preload ALL of this student's teacher notes once, then bucket per class.
@@ -248,59 +302,109 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     return 0; // preserve newest-first within each group
   });
 
-  // ── ownEntry: the student's most-recent own entry in the CURRENT class.
-  // Skipped if there's no current class. Both 'live' and 'pending' are
-  // surfaced (pending matters most — that's what motivates return visits
-  // while waiting for approval). Newest first; we take one.
+  // ── #27: ownEntries + currentClassTiming for the current class ────────
+  // Returns all own entries one-per-round (deduped: most recent upload
+  // wins if a round has duplicates from pre-#27 data), plus a timing
+  // snapshot for the slot grid to render against. Both null/empty if
+  // there's no current class.
   //
-  // CRITICAL — see TWO-TRACK STUDENT IDS comment at the top of this file.
+  // CRITICAL — see TWO-TRACK STUDENT IDS comment at top of this file:
   // entries.student_id holds profiles.id (= auth user.id), NOT students.id.
-  // The previous version of this query used student.id and silently returned
-  // null; the fix is to use user.id below.
-  let ownEntry: OwnEntry | null = null;
+  let ownEntries: OwnEntry[] = [];
+  let currentClassTiming: CurrentClassTiming | null = null;
+
   if (currentClassId) {
+    // Class timing.
+    const { data: classRow } = await admin
+      .from("classes")
+      .select("total_rounds, game_starts_at, round_duration_hours")
+      .eq("id", currentClassId)
+      .maybeSingle();
+    const timing: TimingShape = {
+      total_rounds: classRow?.total_rounds ?? null,
+      game_starts_at: classRow?.game_starts_at ?? null,
+      round_duration_hours: classRow?.round_duration_hours ?? null,
+    };
+    currentClassTiming = {
+      totalRounds: timing.total_rounds,
+      gameStartsAt: timing.game_starts_at,
+      roundDurationHours: timing.round_duration_hours,
+      currentRound: computeCurrentRound(timing),
+      isGameOver: computeIsGameOver(timing),
+    };
+
+    // Own entries: order by round asc, then uploaded_at desc, then dedupe
+    // keeping the first per round (= most recent upload for that round).
     const { data: ownRows } = await admin
       .from("entries")
-      .select("id, media_url, description_text, status, uploaded_at")
+      .select("id, media_url, description_text, status, uploaded_at, round_number")
       .eq("class_id", currentClassId)
       .eq("student_id", user.id)
       .eq("is_starter", false)
       .in("status", ["live", "pending"])
-      .order("uploaded_at", { ascending: false })
-      .limit(1);
+      .order("round_number", { ascending: true })
+      .order("uploaded_at", { ascending: false });
 
-    const row = ownRows?.[0];
-    if (row) {
-      let signedUrl: string | null = null;
-      if (row.media_url) {
-        try {
-          const { data, error } = await admin.storage
-            .from(MEDIA_BUCKET)
-            .createSignedUrl(row.media_url as string, SIGNED_URL_TTL_SECONDS);
-          if (error) {
-            console.error(
-              `[student-archive] createSignedUrl failed for own entry ${row.id}`,
-              error,
-            );
-          } else {
-            signedUrl = data?.signedUrl ?? null;
-          }
-        } catch (e) {
-          console.error(
-            `[student-archive] createSignedUrl threw for own entry ${row.id}`,
-            e,
-          );
-        }
-      }
-      ownEntry = {
-        id: row.id as string,
-        description_text: (row.description_text as string | null) ?? null,
-        signedUrl,
-        status: (row.status as string) ?? "pending",
-        uploadedAt: (row.uploaded_at as string | null) ?? null,
-      };
+    const seenRounds = new Set<number>();
+    const uniqueRows = (ownRows || []).filter((r) => {
+      const rn = r.round_number as number;
+      if (seenRounds.has(rn)) return false;
+      seenRounds.add(rn);
+      return true;
+    });
+
+    // Sign URLs for the deduped set, and attach teacher notes (if any).
+    // Teacher notes for the current class were already aggregated into
+    // allNotes above. We pull the ones with a matching entry_id.
+    const ownNoteByEntry: Record<string, string> = {};
+    for (const t of allNotes || []) {
+      if (t.class_id !== currentClassId) continue;
+      if (t.entry_id) ownNoteByEntry[t.entry_id as string] = t.body as string;
     }
+
+    ownEntries = await Promise.all(
+      uniqueRows.map(async (r) => {
+        let signedUrl: string | null = null;
+        if (r.media_url) {
+          try {
+            const { data, error } = await admin.storage
+              .from(MEDIA_BUCKET)
+              .createSignedUrl(r.media_url as string, SIGNED_URL_TTL_SECONDS);
+            if (error) {
+              console.error(
+                `[student-archive] createSignedUrl failed for own entry ${r.id}`,
+                error,
+              );
+            } else {
+              signedUrl = data?.signedUrl ?? null;
+            }
+          } catch (e) {
+            console.error(
+              `[student-archive] createSignedUrl threw for own entry ${r.id}`,
+              e,
+            );
+          }
+        }
+        return {
+          id: r.id as string,
+          description_text: (r.description_text as string | null) ?? null,
+          signedUrl,
+          status: (r.status as string) ?? "pending",
+          uploadedAt: (r.uploaded_at as string | null) ?? null,
+          roundNumber: r.round_number as number,
+          teacherNote: ownNoteByEntry[r.id as string] ?? null,
+        };
+      }),
+    );
   }
 
-  return { student, classes, ownEntry };
+  // Legacy back-compat for the current dashboard's "Your photo" card.
+  // Definition shift in #27: this is now the HIGHEST-round filled slot
+  // (the student's forward-most submission), not the most-recently
+  // uploaded across rounds. The card is going away in pass 2 along with
+  // this field.
+  const ownEntry: OwnEntry | null =
+    ownEntries.length > 0 ? ownEntries[ownEntries.length - 1] : null;
+
+  return { student, classes, ownEntry, ownEntries, currentClassTiming };
 }

@@ -3,27 +3,31 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/dashboard/AddEntryForm.tsx
 //
-// Client wrapper around the "Add another photo" <form>. Uses useActionState
-// (aliased to useFormState below for grep continuity) to capture the
-// ActionResult returned by addEntry and render a banner above the submit
-// button — red on failure, green on success.
+// Client wrapper around an "Add to Student Round N" <form>. Lives inside
+// each EMPTY UPCOMING slot of the dashboard's three-band round stack (#27).
 //
-// Before #26, addEntry was Promise<void> and any failure (upload failed,
-// insert failed) silently no-op'd; the student hit "Add to the class →"
-// and the dashboard refreshed with their new photo nowhere to be seen.
+// Takes a `roundNumber` prop and posts it as a hidden round_number input.
+// addEntry validates it server-side (must be unlocked, in range, unfilled
+// by this student) and writes the new `entries` row at that exact slot.
 //
-// Success polish (#26 follow-up): green banner on success and resets all
-// form fields on each successful submit by keying a wrapper div on a
-// submit counter — React unmounts and remounts the subtree, which resets
-// PhotoField's internal preview state alongside the native input/textarea
-// values. Previously a successful submit cleared the textarea and file
-// input but left PhotoField's preview thumbnail visible, which read as
-// ambiguous ("did it submit or not?").
+// Pre-#27, this form was standalone in the "Your photo → Add another photo"
+// card with no slot target; addEntry auto-resolved.  The slot-aware version
+// is explicit: each empty upcoming slot has its own AddEntryForm instance
+// scoped to that slot's round.
+//
+// Error/success banners (#26 polish) preserved:
+//   • Red banner above the submit on state.error.
+//   • Green banner ("Added to the queue — your teacher will review your
+//     Student Round N photo") on state.ok, written specifically for the
+//     queueing model rather than the old generic "Submitted ✓".
+//   • Form-reset trick: the keyed wrapper <div key={submitId}> bumps on
+//     each successful submit, remounting PhotoField (which resets its
+//     internal preview thumbnail) and clearing the textarea/file input.
+//     Banners live outside the keyed wrapper so they persist through reset.
 //
 // React/Next note: on Next 16 / React 19, useFormState from react-dom is
 // no longer available — useActionState from "react" replaces it. Same
-// signature (returns [state, dispatch, isPending] — we ignore isPending).
-// PhotoField is a pre-existing client component reused here.
+// signature; the third tuple element (isPending) is ignored.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { useActionState as useFormState } from "react";
@@ -44,16 +48,12 @@ const C = {
 };
 const F = "'Outfit',sans-serif";
 
-export default function AddEntryForm() {
+export default function AddEntryForm({ roundNumber }: { roundNumber: number }) {
   const [state, formAction] = useFormState<ActionResult | null, FormData>(
     addEntry,
     null
   );
 
-  // Each successful submit bumps this counter. The wrapping <div key={...}>
-  // below keys on it, so a successful submit causes React to unmount and
-  // remount the whole subtree — which resets PhotoField (whose preview
-  // lives in its own client state) along with the native file/text inputs.
   const [submitId, setSubmitId] = useState(0);
   useEffect(() => {
     if (state?.ok) setSubmitId((n) => n + 1);
@@ -61,13 +61,16 @@ export default function AddEntryForm() {
 
   return (
     <form action={formAction}>
+      {/* #27: tell addEntry exactly which slot this submission is for. */}
+      <input type="hidden" name="round_number" value={roundNumber} />
+
       <div key={submitId}>
         <PhotoField
           name="entry_photo"
           label="Photo"
           helper="something you'd like classmates to see and comment on"
           required
-          previewSize={160}
+          previewSize={140}
         />
         <label style={{ fontSize: 13, fontWeight: 600, display: "block",
           marginTop: 12, marginBottom: 6, color: C.text }}>
@@ -86,14 +89,15 @@ export default function AddEntryForm() {
         />
       </div>
 
-      {/* ── Banners — live OUTSIDE the keyed wrapper so they persist across resets ── */}
+      {/* Banners live OUTSIDE the keyed wrapper so they persist across resets. */}
       {state?.ok && (
         <div role="status" style={{
           background: C.successBg, border: `1px solid ${C.successEdge}`,
           color: C.successText, padding: "10px 14px", borderRadius: 10,
           fontSize: 13, lineHeight: 1.5, marginTop: 12,
         }}>
-          <strong>Submitted ✓</strong> Your teacher will review this. Add another whenever you&apos;d like.
+          <strong>Added to the queue ✓</strong> Your teacher will review your
+          Student Round {roundNumber} photo before it goes live.
         </div>
       )}
       {state && !state.ok && (
@@ -113,7 +117,7 @@ export default function AddEntryForm() {
           color: "#fff", border: "none", borderRadius: 10,
           cursor: "pointer", letterSpacing: 0.5, marginTop: 12 }}
       >
-        Add to the class →
+        Add to Student Round {roundNumber} →
       </button>
     </form>
   );

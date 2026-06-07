@@ -93,11 +93,19 @@ function ClassBody({ a }: { a: ClassArchive }) {
         </section>
       )}
 
-      {/* ── ROUND header ── */}
+      {/* ── ROUND header ──
+          #27: relabel from "Round {a.round}" to "Teacher's Warm-up Round."
+          That class+round game session is the one where the student
+          commented on the TEACHER's starter content and picked a favorite —
+          conceptually the warm-up, not "Round 1," which now collides with
+          the "Student Round 1" naming used by the slot stack on the
+          dashboard. "Completed {date}" now refers unambiguously to the
+          warm-up round; the "CURRENT" badge on the class tile above still
+          applies to the class as a whole (student rounds are in progress). */}
       <section style={{ marginBottom: 12 }}>
         <h3 style={{ fontSize: 13, letterSpacing: 2, textTransform: "uppercase",
           color: C.light, marginBottom: 4, marginTop: 0 }}>
-          Round {a.round}
+          Teacher&apos;s Warm-up Round
         </h3>
         {a.completedAt && (
           <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 16 }}>
@@ -158,49 +166,96 @@ function ClassBody({ a }: { a: ClassArchive }) {
         </section>
       )}
 
-      {/* ── ALL COMMENTS ── */}
-      <section style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>All your comments</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-          {a.entries.map((e) => (
-            <div key={e.id} style={{
-              background: e.isFavorite ? C.light + "22" : C.bg,
-              border: `2px solid ${e.isFavorite ? C.light : C.panelEdge}`,
-              borderRadius: 12, padding: 8, position: "relative",
-            }}>
-              {e.isFavorite && (
-                <div style={{
-                  position: "absolute", top: -8, right: -8,
-                  width: 26, height: 26, borderRadius: "50%",
-                  background: C.light, color: "#fff",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-                }}>★</div>
-              )}
-              {e.publicUrl && (
-                <img src={e.publicUrl} alt=""
-                  style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover",
-                    borderRadius: 8, display: "block", marginBottom: 6 }} />
-              )}
-              <div style={{ fontSize: 11, color: C.text, lineHeight: 1.4,
-                minHeight: 28, wordBreak: "break-word" }}>
-                {e.comment}
-              </div>
-              {e.teacherNote && (
-                <div style={{ marginTop: 6, borderTop: `1px solid ${C.light}55`, paddingTop: 6 }}>
-                  <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase",
-                    color: C.light, fontWeight: 700, marginBottom: 2 }}>
-                    From your teacher
-                  </div>
-                  <div style={{ fontSize: 11, color: C.text, lineHeight: 1.4, wordBreak: "break-word" }}>
-                    {e.teacherNote}
-                  </div>
+      {/* ── OTHER COMMENTS ──
+          #27 first pass: switched from a 3×3 grid (which mimicked the
+          game UI for no reason — the dashboard is a different surface) to
+          a vertical list matching the teacher dashboard's "Everything they
+          wrote" layout.  #27 second pass: filter out the favorite, since
+          the pull-out FAVORITE block above already shows it with strictly
+          more context ("Why it was your favorite"). Keeping it in both
+          places duplicated the photo and created a jarring color shift
+          mid-list. Renamed to "Your other comments" to reflect the
+          filtering.  If only one entry exists and it's the favorite, the
+          filtered list is empty and we hide the section entirely. */}
+      {a.entries.some((e) => !e.isFavorite) && (
+        <section style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+            Your other comments
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {a.entries.filter((e) => !e.isFavorite).map((e) => (
+              <div key={e.id} style={{
+                display: "flex", gap: 14, alignItems: "flex-start",
+                background: C.bg,
+                border: `1px solid ${C.panelEdge}`,
+                borderRadius: 12, padding: 12,
+              }}>
+                {e.publicUrl ? (
+                  <img src={e.publicUrl} alt=""
+                    style={{
+                      width: 80, height: 80, objectFit: "cover", borderRadius: 8,
+                      border: `1px solid ${C.panelEdge}`, flexShrink: 0,
+                    }} />
+                ) : (
+                  <div style={{
+                    width: 80, height: 80, borderRadius: 8, flexShrink: 0,
+                    background: C.panel, border: `1px solid ${C.panelEdge}`,
+                  }} />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {e.description_text && (
+                    <p style={{
+                      fontSize: 13, color: C.text, fontStyle: "italic",
+                      lineHeight: 1.5, margin: "0 0 8px",
+                      borderLeft: `2px solid ${C.light}`, paddingLeft: 10,
+                      wordBreak: "break-word",
+                    }}>
+                      &quot;{e.description_text}&quot;
+                    </p>
+                  )}
+                  {e.comment && (
+                    <>
+                      <div style={{
+                        fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                        color: C.textFaint, textTransform: "uppercase",
+                        marginBottom: 3,
+                      }}>
+                        What you said during the game
+                      </div>
+                      <p style={{
+                        fontSize: 14, color: C.text, lineHeight: 1.5,
+                        margin: 0, wordBreak: "break-word",
+                      }}>
+                        {e.comment}
+                      </p>
+                    </>
+                  )}
+                  {e.teacherNote && (
+                    <div style={{
+                      marginTop: 10, paddingTop: 10,
+                      borderTop: `1px solid ${C.panelEdge}`,
+                    }}>
+                      <div style={{
+                        fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                        color: C.light, textTransform: "uppercase",
+                        marginBottom: 3,
+                      }}>
+                        From your teacher
+                      </div>
+                      <p style={{
+                        fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
+                        wordBreak: "break-word",
+                      }}>
+                        {e.teacherNote}
+                      </p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
