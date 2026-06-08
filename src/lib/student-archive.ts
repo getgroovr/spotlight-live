@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/lib/student-archive.ts — per-class archive builder for the student
-// profile (Slice 1 Part 2).
+// DESTINATION: src/lib/student-archive.ts   (REPLACES existing file)
+//
+// Per-class archive builder for the student profile (Slice 1 Part 2).
 //
 // WHY THIS EXISTS
 //   The original dashboard read ONE session — the student's most-recent
@@ -53,9 +54,8 @@
 //     now ≥ game_starts_at + (N-1) * round_duration_hours.
 //   Pre-game (timing unset, or now < game_starts_at), no round is locked.
 //   The slot grid client reads currentClassTiming.currentRound and locks
-//   any slot whose number is ≤ that value. (The helpers below are
-//   duplicated from actions.ts — small enough to inline; if/when these
-//   helpers grow, extract to src/lib/round-timing.ts and import from both.)
+//   any slot whose number is ≤ that value. Helpers are now imported from
+//   src/lib/round-timing.ts (handoff #30 carry-over: extraction complete).
 //
 // TWO-TRACK STUDENT IDS — read this before changing the entry query:
 //   This codebase has two distinct UUIDs per student, and they are NOT the
@@ -74,37 +74,15 @@
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
+import {
+  type ClassTiming,
+  computeCurrentRound,
+  isGameOver,
+} from "@/lib/round-timing";
 
 const STARTER_BUCKET = "teacher-deck";
 const MEDIA_BUCKET = "media";
 const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour — same as class-deck.ts
-
-// ── Round-timing helpers (#27) ────────────────────────────────────────────
-// Duplicated from actions.ts to avoid coupling this read-path file to the
-// "use server" action file. Small enough that duplication > extraction for
-// now; extract to src/lib/round-timing.ts if these grow.
-type TimingShape = {
-  total_rounds: number | null;
-  game_starts_at: string | null;
-  round_duration_hours: number | null;
-};
-
-function computeCurrentRound(t: TimingShape, now: Date = new Date()): number {
-  const { game_starts_at, round_duration_hours, total_rounds } = t;
-  if (!game_starts_at || !round_duration_hours) return 0;
-  const start = new Date(game_starts_at);
-  if (now < start) return 0;
-  const elapsedMs = now.getTime() - start.getTime();
-  const elapsedHours = elapsedMs / (1000 * 60 * 60);
-  const computed = Math.floor(elapsedHours / round_duration_hours) + 1;
-  if (total_rounds !== null && computed > total_rounds) return total_rounds + 1;
-  return computed;
-}
-
-function computeIsGameOver(t: TimingShape, now: Date = new Date()): boolean {
-  if (t.total_rounds === null) return false;
-  return computeCurrentRound(t, now) > t.total_rounds;
-}
 
 export type ArchiveEntry = {
   id: string;
@@ -320,7 +298,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
       .select("total_rounds, game_starts_at, round_duration_hours")
       .eq("id", currentClassId)
       .maybeSingle();
-    const timing: TimingShape = {
+    const timing: ClassTiming = {
       total_rounds: classRow?.total_rounds ?? null,
       game_starts_at: classRow?.game_starts_at ?? null,
       round_duration_hours: classRow?.round_duration_hours ?? null,
@@ -330,7 +308,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
       gameStartsAt: timing.game_starts_at,
       roundDurationHours: timing.round_duration_hours,
       currentRound: computeCurrentRound(timing),
-      isGameOver: computeIsGameOver(timing),
+      isGameOver: isGameOver(timing),
     };
 
     // Own entries: order by round asc, then uploaded_at desc, then dedupe

@@ -1,5 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/play/actions.ts — Server Actions for the /play surface and profile
+// DESTINATION: src/app/play/actions.ts   (REPLACES existing file)
+//
+// Server Actions for the /play surface and profile.
 //
 // Slice 1 (cohorts foundation):
 //   - enrollStudent derives the class from the FAVORITED ENTRY (not a
@@ -73,12 +75,20 @@
 //   stage their entire queue ahead of time. When the game starts, slot 1
 //   locks. When round 2 starts, slot 2 locks. And so on. After the last
 //   round starts, every slot is locked — the game is effectively over.
+//
+// Round-timing helpers (#30 follow-up): extracted to src/lib/round-timing.ts
+// and now imported alongside the rest of the module's dependencies.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
+import {
+  type ClassTiming,
+  isRoundLocked,
+  isGameOver,
+} from "@/lib/round-timing";
 
 export type EnrollResult =
   | { ok: true; message: string }
@@ -90,44 +100,6 @@ export type EnrollResult =
 export type ActionResult =
   | { ok: true }
   | { ok: false; error: string };
-
-// ── Class-timing helpers (#27) ─────────────────────────────────────────────
-// Centralized lock/timing math. Both addEntry and removeEntry read these.
-// When the teacher UI lands (#28) and we add a setClassTiming action, that
-// action's validation will live alongside these helpers.
-type ClassTiming = {
-  total_rounds: number | null;
-  game_starts_at: string | null;       // ISO timestamp
-  round_duration_hours: number | null; // CHECK IN (1, 24, 168) per migration #26
-};
-
-// "Current round" — the round in flight RIGHT NOW.
-//   - 0 if pre-game (no timing configured, or now < game_starts_at).
-//   - N if now is inside round N's window
-//     (game_starts_at + (N-1)*hours  ≤  now  <  game_starts_at + N*hours).
-//   - total_rounds + 1 if the game is over (capped, so callers don't see
-//     unbounded values).
-function computeCurrentRound(timing: ClassTiming, now: Date = new Date()): number {
-  const { game_starts_at, round_duration_hours, total_rounds } = timing;
-  if (!game_starts_at || !round_duration_hours) return 0;
-  const start = new Date(game_starts_at);
-  if (now < start) return 0;
-  const elapsedMs = now.getTime() - start.getTime();
-  const elapsedHours = elapsedMs / (1000 * 60 * 60);
-  const computed = Math.floor(elapsedHours / round_duration_hours) + 1;
-  if (total_rounds !== null && computed > total_rounds) return total_rounds + 1;
-  return computed;
-}
-
-// A round is LOCKED once it has started.  Round N is locked iff N ≤ currentRound.
-function isRoundLocked(roundNumber: number, timing: ClassTiming, now: Date = new Date()): boolean {
-  return roundNumber <= computeCurrentRound(timing, now);
-}
-
-function isGameOver(timing: ClassTiming, now: Date = new Date()): boolean {
-  if (timing.total_rounds === null) return false;
-  return computeCurrentRound(timing, now) > timing.total_rounds;
-}
 
 // Resolve an unspecified target round → the lowest unlocked + unfilled slot.
 // Used when the form doesn't pass round_number explicitly (today's
