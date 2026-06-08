@@ -10,24 +10,30 @@
 //      becomes their first `entries` row at round_number = 1.  Unchanged
 //      from #26 — FinishJoiningForm wraps saveProfile via useActionState.
 //
-//   2. COMPLETE — shows the THREE-BAND ROUND STACK (#27) followed by the
-//      "Your classes" history strip. The stack replaces the old single
-//      "Your photo" card with one slot per Student Round, organized as:
+//   2. COMPLETE — shows the TWO-BAND ROUND STACK (#27, refined #28)
+//      followed by the "Your classes" history strip. The stack replaces
+//      the old single "Your photo" card with one slot per Student Round:
 //
-//        ┌─ UPCOMING ──────────────────┐  full-size; ascending
-//        │  Student Round N+1          │  (each empty or filled-queued)
-//        │  Student Round N+2          │
-//        │  Student Round N+3          │
+//        ┌─ LIVE + UPCOMING (top) ─────┐  ascending; the live (current)
+//        │  Student Round N  ← live    │  round sits at the TOP of this
+//        │  Student Round N+1          │  band so the queue reads top-to-
+//        │  Student Round N+2          │  bottom and a round transitioning
+//        │  Student Round N+3          │  from upcoming → in-progress
+//        └─────────────────────────────┘  doesn't visually jump bands.
+//        ┌─ COMPLETED (bottom) ────────┐  condensed <details>; descending
+//        │  ▸ Student Round N−1        │  (newest-completed at top of
+//        │  ▸ Student Round N−2        │  band); click to expand;
+//        │  ▸ Student Round 1          │  Teacher's Warm-up Round always
+//        │  ▸ Teacher's Warm-up Round  │  last (the chronological origin).
 //        └─────────────────────────────┘
-//        ┌─ CURRENT ───────────────────┐  full-size; single slot;
-//        │  Student Round N            │  locked (no edit/remove);
-//        │  LIVE THIS ROUND            │  shows teacher note if present
-//        └─────────────────────────────┘
-//        ┌─ COMPLETED ─────────────────┐  condensed <details>;
-//        │  ▸ Student Round N−1        │  descending (newest at top);
-//        │  ▸ Student Round N−2        │  click to expand
-//        │  ▸ Student Round 1          │
-//        └─────────────────────────────┘
+//
+//      Filled cards in the top band lay out as image-LEFT + all-text-
+//      stacked-RIGHT (pill if live → header + status → description →
+//      teacher note → footer with Remove). Uniform 120px image baseline;
+//      live card bumps to 140px to signal current without breaking the
+//      shared layout grammar (#28, Mike: "all the same... if anything
+//      the current should be a little bigger... pic by itself to the
+//      left").
 //
 // "Teacher's Round" is implicit: the teacher's starter content lives in
 // the game (accessed via "Go to the game →"). The dashboard explicitly
@@ -219,6 +225,169 @@ function FullSlotCard({
       opacity: faded ? 0.85 : 1,
     }}>
       {children}
+    </section>
+  );
+}
+
+// Filled card for the TOP band (live or queued-upcoming).
+//
+// Layout (#28 pass 5, Mike's call):
+//   ┌──────────────────────────────────────────┐
+//   │  ┌────┐  [● LIVE pill if live]           │
+//   │  │ IMG│  STUDENT ROUND N                 │
+//   │  │    │  [AWAITING APPROVAL]             │
+//   │  └────┘  ✕ Remove (if !isLocked)         │
+//   │          You can replace this photo …    │
+//   │                                          │
+//   │  YOUR DESCRIPTION                        │
+//   │  "..." — spans full card width           │
+//   │                                          │
+//   │  YOUR TEACHER SAID                       │
+//   │  ... — spans full card width             │
+//   └──────────────────────────────────────────┘
+//
+// The top row pairs the image with COMPACT metadata only (round number,
+// status badge, Remove, plus the live pill when applicable) — all short
+// fixed-size items that fit in the narrow column next to the image.
+// VARIABLE-LENGTH content (description, teacher note) drops below the
+// top row and takes the full card width — so long descriptions/notes
+// don't get squeezed into a 150-200px column on mobile.  Mike: "if the
+// students write a lot- it will take up a lot of space using only one
+// column... maybe the round number, the waiting approval and the
+// remove next to the pic. and the text that can get longer- namely,
+// the description- below it."
+//
+// Uniform 120px image baseline; live card bumps to 140px to signal
+// current without breaking the shared layout grammar.  Completed-
+// expanded keeps EntryBody at 120 so the baseline stays uniform.
+//
+// The pill lives INSIDE the metadata column (rather than as a banner
+// above the whole card) so it fills the vertical space next to the
+// image instead of adding an extra row of padding.  The green card
+// border carries the primary "live" signal; the pill reinforces.
+function FilledTopSlotCard({
+  entry, isLive, isLocked, imageSize,
+}: {
+  entry: OwnEntry;
+  isLive: boolean;
+  isLocked: boolean;
+  imageSize: number;
+}) {
+  return (
+    <section style={{
+      background: C.panel,
+      border: isLive
+        ? `2px solid ${C.liveGreen}`
+        : `1px solid ${C.panelEdge}`,
+      borderRadius: 16, padding: "20px 22px", marginBottom: 16,
+    }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+        {/* TOP ROW — image + compact metadata column */}
+        <div style={{
+          display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap",
+        }}>
+          {/* IMAGE */}
+          {entry.signedUrl ? (
+            <img
+              src={entry.signedUrl}
+              alt=""
+              style={{
+                width: imageSize, height: imageSize, objectFit: "cover",
+                borderRadius: 12, border: `2px solid ${C.light}`, flexShrink: 0,
+              }}
+            />
+          ) : (
+            <div style={{
+              width: imageSize, height: imageSize, borderRadius: 12,
+              border: `2px dashed ${C.panelEdge}`, flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12, color: C.textFaint, textAlign: "center", padding: 8,
+            }}>
+              photo unavailable
+            </div>
+          )}
+
+          {/* METADATA COLUMN — pill, round number, badge, remove. All
+              short items, stack vertically next to the image. */}
+          <div style={{
+            flex: 1, minWidth: 0,
+            display: "flex", flexDirection: "column",
+            alignItems: "flex-start", gap: 10,
+          }}>
+            {isLive && (
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 8,
+                background: C.liveGreenBg,
+                color: C.liveGreenText,
+                border: `1px solid ${C.liveGreen}`,
+                padding: "4px 12px", borderRadius: 999,
+                fontSize: 11, letterSpacing: 2, fontWeight: 700,
+                textTransform: "uppercase",
+              }}>
+                ● Current round — live now
+              </div>
+            )}
+            <h3 style={{
+              fontSize: 13, letterSpacing: 1.5, textTransform: "uppercase",
+              color: C.light, margin: 0,
+            }}>
+              Student Round {entry.roundNumber}
+            </h3>
+            <StatusBadge status={entry.status} />
+            {!isLocked && (
+              <>
+                <RemoveEntryButton entryId={entry.id} roundNumber={entry.roundNumber} />
+                <p style={{
+                  fontSize: 11, color: C.textDim, lineHeight: 1.5, margin: 0,
+                }}>
+                  You can replace this photo until the round starts.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* DESCRIPTION — full card width below the top row */}
+        {entry.description_text && (
+          <div>
+            <div style={{
+              fontSize: 11, letterSpacing: 1, fontWeight: 600,
+              color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
+            }}>
+              Your description
+            </div>
+            <p style={{
+              fontSize: 14, color: C.text, fontStyle: "italic",
+              lineHeight: 1.6, margin: 0,
+              borderLeft: `2px solid ${C.light}`, paddingLeft: 12,
+              wordBreak: "break-word",
+            }}>
+              &quot;{entry.description_text}&quot;
+            </p>
+          </div>
+        )}
+
+        {/* TEACHER NOTE — full card width below the description */}
+        {entry.teacherNote && (
+          <div>
+            <div style={{
+              fontSize: 11, letterSpacing: 1, fontWeight: 600,
+              color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
+            }}>
+              Your teacher said
+            </div>
+            <p style={{
+              fontSize: 14, color: C.text, lineHeight: 1.6, margin: 0,
+              background: C.panelSoft, border: `1px solid ${C.panelEdge}`,
+              borderRadius: 8, padding: "8px 12px",
+              wordBreak: "break-word",
+            }}>
+              {entry.teacherNote}
+            </p>
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -513,7 +682,12 @@ export default async function StudentProfile() {
 
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
 
-        {/* ── HEADER ── */}
+        {/* ── HEADER ──
+            Greeting + status line both swap to a completion message when
+            the game is over.  "Well done" + "You've completed the class"
+            is the right tone for a wrap-up moment — the student finished
+            a multi-day classroom game; treat it like an accomplishment,
+            not just a state change. */}
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
           <div style={{ width: 64, height: 64, borderRadius: "50%",
             background: C.panelEdge, display: "flex", alignItems: "center",
@@ -522,27 +696,40 @@ export default async function StudentProfile() {
           </div>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>
-              Welcome, {displayName}.
+              {isGameOver
+                ? `Well done, ${displayName}.`
+                : `Welcome, ${displayName}.`}
             </h1>
             <div style={{ fontSize: 13, color: C.textDim }}>
-              {classes.length > 1
-                ? `You're in ${classes.length} classes.`
-                : "You're in the class."}
+              {isGameOver
+                ? "You've completed the class."
+                : (classes.length > 1
+                    ? `You're in ${classes.length} classes.`
+                    : "You're in the class.")}
             </div>
           </div>
         </div>
 
-        {/* ── GO TO THE GAME ── */}
-        <a
-          href="/student/play"
-          style={{ display: "block", textAlign: "center", textDecoration: "none",
-            width: "100%", boxSizing: "border-box", padding: "13px",
-            fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
-            color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
-            marginBottom: 28 }}
-        >
-          Go to the game →
-        </a>
+        {/* ── GO TO THE GAME ──
+            Hidden once the game is over.  /student/play shows "waiting on
+            classmates" copy that's nonsensical post-completion; the right
+            destination at game-end is a results/reveal page, but that
+            doesn't exist yet (see end-of-game-reveal design — separate
+            future slice).  Hiding entirely is the cleanest interim.  When
+            the reveal lands, this button comes back with new copy + href
+            (e.g. "See final results →" → /student/results). */}
+        {!isGameOver && (
+          <a
+            href="/student/play"
+            style={{ display: "block", textAlign: "center", textDecoration: "none",
+              width: "100%", boxSizing: "border-box", padding: "13px",
+              fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
+              color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+              marginBottom: 28 }}
+          >
+            Go to the game →
+          </a>
+        )}
 
         {/* ── ROUND STACK (#27) ──
             Only rendered when the student has a current class. The teacher's
@@ -550,16 +737,28 @@ export default async function StudentProfile() {
             above. */}
         {currentClassTiming && (
           <>
-            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-              color: C.light, marginBottom: 6 }}>
-              Your rounds
-            </h2>
-            <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6,
-              margin: "0 0 18px" }}>
-              After your teacher&apos;s round, these are yours. Add a photo to each
-              slot before its round starts — once a round begins, that slot is
-              locked in.
-            </p>
+            {/* "Your rounds" header + preamble is instructional copy for
+                ACTIVE play — explains the slot mechanics to a student who
+                still has rounds to play.  When the game is OVER, every
+                slot is in the Completed band (which has its own header
+                below) and the game-complete banner at the bottom of the
+                stack provides closure.  Showing "After your teacher's
+                round, these are yours. Add a photo..." post-completion
+                reads as stale instructions.  Hide both header and copy. */}
+            {!isGameOver && (
+              <>
+                <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                  color: C.light, marginBottom: 6 }}>
+                  Your rounds
+                </h2>
+                <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6,
+                  margin: "0 0 18px" }}>
+                  After your teacher&apos;s round, these are yours. Add a photo to each
+                  slot before its round starts — once a round begins, that slot is
+                  locked in.
+                </p>
+              </>
+            )}
 
             {/* Unconfigured notice — sits ABOVE the regular slot stack.
                 The slots themselves render via the Upcoming band below;
@@ -603,50 +802,13 @@ export default async function StudentProfile() {
 
               if (entry) {
                 return (
-                  <section
+                  <FilledTopSlotCard
                     key={`top-${r}`}
-                    style={{
-                      background: C.panel,
-                      border: isLive
-                        ? `2px solid ${C.liveGreen}`
-                        : `1px solid ${C.panelEdge}`,
-                      borderRadius: 16, padding: "20px 22px", marginBottom: 16,
-                    }}
-                  >
-                    {isLive && (
-                      <div style={{
-                        display: "inline-flex", alignItems: "center", gap: 8,
-                        background: C.liveGreenBg,
-                        color: C.liveGreenText,
-                        border: `1px solid ${C.liveGreen}`,
-                        padding: "4px 12px", borderRadius: 999,
-                        fontSize: 11, letterSpacing: 2, fontWeight: 700,
-                        textTransform: "uppercase", marginBottom: 12,
-                      }}>
-                        ● Current round — live now
-                      </div>
-                    )}
-                    <SlotHeader
-                      roundNumber={r}
-                      status={entry.status}
-                    />
-                    <EntryBody entry={entry} imageSize={isLive ? 100 : 140} />
-                    {!isLocked && (
-                      <div style={{
-                        marginTop: 14, paddingTop: 12,
-                        borderTop: `1px solid ${C.panelEdge}`,
-                        display: "flex", justifyContent: "space-between",
-                        alignItems: "center", gap: 12, flexWrap: "wrap",
-                      }}>
-                        <p style={{ fontSize: 12, color: C.textDim,
-                          lineHeight: 1.6, margin: 0, flex: 1, minWidth: 200 }}>
-                          Queued for Student Round {r}. You can replace it
-                          until the round starts.
-                        </p>
-                        <RemoveEntryButton entryId={entry.id} roundNumber={r} />
-                      </div>
-                    )}
-                  </section>
+                    entry={entry}
+                    isLive={isLive}
+                    isLocked={isLocked}
+                    imageSize={isLive ? 140 : 120}
+                  />
                 );
               }
 
@@ -828,15 +990,28 @@ export default async function StudentProfile() {
               </div>
             )}
 
-            {/* Game-over banner — explicit closure copy. */}
+            {/* End-of-game CTA — routes to the top-3 favorites reveal.
+                The reveal page itself is a separate future slice (full
+                design is locked: top 3 students by total favorites
+                received, with podium + per-student panels for posted pic
+                and own taste).  /student/results will 404 until that
+                slice lands.  Comment retained to make the dependency
+                explicit so it doesn't get lost.
+                The "game is complete" status banner was dropped here —
+                the new "You've completed the class" subtitle at the top
+                conveys the same status, and the button itself serves as
+                a clear end-of-stack marker. */}
             {isGameOver && (
-              <div style={{
-                background: C.panelSoft, border: `1px dashed ${C.panelEdge}`,
-                borderRadius: 12, padding: "12px 16px", marginTop: 12,
-                fontSize: 13, color: C.textDim, lineHeight: 1.6,
-              }}>
-                The game is complete. All rounds have closed.
-              </div>
+              <a
+                href="/student/results"
+                style={{ display: "block", textAlign: "center", textDecoration: "none",
+                  width: "100%", boxSizing: "border-box", padding: "13px",
+                  fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
+                  color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+                  marginTop: 18 }}
+              >
+                See the 3 most favorited students →
+              </a>
             )}
           </>
         )}

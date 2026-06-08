@@ -8,8 +8,45 @@
 // the Current or Completed bands are read-only — their rounds have
 // already started, so the action would be rejected server-side anyway).
 //
-// The button is intentionally restrained: a small "✕ Remove" link rather
-// than a big destructive-red affordance. Two reasons:
+// Label note (#28): the user-facing label reads "Replace photo" even
+// though the action itself only REMOVES the entry — the empty slot
+// then surfaces "+ Add photo" so the student can upload a new one.
+// Mike's call: the user's mental model is replacement, not deletion;
+// the two-step nature is invisible to them.  Component name stays
+// `RemoveEntryButton` because that's still what the underlying action
+// does, and renaming the component would churn imports for no gain.
+//
+// PLANNED — status-only replacement block (Mike's call, captured #28
+// planning):
+//
+// Once a teacher has APPROVED an entry, the student should no longer
+// be able to replace it.  Approval is a commitment; casually nuking
+// the teacher's sign-off is bad UX.  Pending entries — even those
+// with a teacher NOTE attached — REMAIN replaceable; notes are
+// cheaper to redo than approvals, so blocking on note-presence would
+// be too aggressive.
+//
+// Implementation when this lands:
+//   • Take `entryStatus` as a new prop on this component (or just
+//     conditionally render at the call site in page.tsx).
+//   • When status === 'approved': hide the button entirely, OR render
+//     a small "✓ Approved — locked in" indicator in its place.
+//   • Update the helper line in page.tsx ("You can replace this photo
+//     until the round starts.") to reflect approval as an additional
+//     lockout — e.g. "You can replace this photo until your teacher
+//     approves it or the round starts."
+//   • removeEntry on the server should ALSO reject when the entry is
+//     already approved.  This button is a UX affordance, not a
+//     security boundary; the server is the gate.
+//
+// Classmate comments are a separate, deferred concern — pending the
+// `entries` ↔ `submissions` seam resolution.  Once comments exist,
+// "what happens to comments when the underlying entry is replaced?"
+// becomes its own design question (CASCADE delete vs orphan vs
+// block-replace-if-comments-exist).  Solve it then, not now.
+//
+// The button is intentionally restrained: a small underlined link
+// rather than a big destructive-red affordance. Two reasons:
 //   • The slot still has the queued photo visible right above the button.
 //     Big "DELETE" framing would feel scarier than the action warrants.
 //   • If the student misclicks, they can just re-upload — the storage
@@ -54,7 +91,7 @@ export default function RemoveEntryButton({
         <input type="hidden" name="entry_id" value={entryId} />
         <button
           type="submit"
-          aria-label={`Remove your Student Round ${roundNumber} photo`}
+          aria-label={`Replace your Student Round ${roundNumber} photo`}
           style={{
             background: "none",
             border: "none",
@@ -66,7 +103,7 @@ export default function RemoveEntryButton({
             textDecoration: "underline",
           }}
         >
-          ✕ Remove
+          Replace photo
         </button>
       </form>
       {state && !state.ok && (
