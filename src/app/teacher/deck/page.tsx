@@ -4,12 +4,16 @@
 // delete button. Renders an upload form that posts to the uploadStarter
 // Server Action. Refuses to render at all if the visitor isn't a teacher.
 //
-// Slice 1A / piece 3 change: image URLs now come from getPublicUrl against
-// the `teacher-deck` bucket (which is public by design). Previously this
-// signed against the `media` bucket — a leftover from before the bucket
-// migration. Public URLs don't expire and don't require a signing roundtrip,
-// which is the correct shape for a public starter pool that anonymous /play
-// visitors will also need to read.
+// Slice 1A / piece 3 change: image URLs come from getPublicUrl against the
+// `teacher-deck` bucket (public by design). Public URLs don't expire and
+// don't require a signing roundtrip — correct shape for a starter pool that
+// anonymous /play visitors will also read.
+//
+// Slice 1 step 5 change: added the "Class | Deck" top nav strip mirroring
+// the students page, so navigation between the two teacher views is
+// bidirectional. Colors are adjusted to the deck page's dark theme but the
+// shape is the same as on /teacher/students.
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { DeckClient } from "./deck-client";
@@ -19,8 +23,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Spotlight — Deck" };
 
 // Starter bucket name. Kept in one place so we don't drift from actions.ts
-// (which has its own STARTER_BUCKET const for the same reason). If we ever
-// rename or split the bucket again, both files change in lockstep.
+// (which has its own STARTER_BUCKET const for the same reason).
 const STARTER_BUCKET = "teacher-deck";
 
 type Starter = {
@@ -31,11 +34,31 @@ type Starter = {
   uploaded_at: string;
 };
 
+// Top nav strip — same two-tab shape as /teacher/students, palette
+// flipped to suit the dark gradient background. "Deck" active here,
+// "Class" links back.
+function TopNav() {
+  return (
+    <nav className="mb-6 flex gap-6 border-b border-white/10 pb-0 text-sm">
+      <Link
+        href="/teacher/students"
+        className="-mb-px pb-2 font-medium text-white/60 hover:text-white/90 transition"
+      >
+        Class
+      </Link>
+      <span className="-mb-px border-b-2 border-fuchsia-400 pb-2 font-bold text-fuchsia-300">
+        Deck
+      </span>
+    </nav>
+  );
+}
+
 export default async function TeacherDeckPage() {
   const supabase = await createClient();
   if (!supabase) {
     return (
       <Frame>
+        <TopNav />
         <h1 className="text-2xl font-bold mb-2">Supabase isn’t configured.</h1>
         <p className="text-white/70">
           Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
@@ -46,13 +69,11 @@ export default async function TeacherDeckPage() {
     );
   }
 
-  // Auth: redirect to login if no user.
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login");
 
-  // Role check: only teachers see this page.
   const { data: profile } = await supabase
     .from("profiles")
     .select("id, role")
@@ -61,6 +82,7 @@ export default async function TeacherDeckPage() {
   if (!profile || profile.role !== "teacher") {
     return (
       <Frame>
+        <TopNav />
         <h1 className="text-2xl font-bold mb-2">Teacher access only.</h1>
         <p className="text-white/70">
           Your account is signed in but does not have the teacher role.
@@ -69,7 +91,6 @@ export default async function TeacherDeckPage() {
     );
   }
 
-  // Find the public class.
   const pinnedId = process.env.NEXT_PUBLIC_DEMO_CLASS_ID;
   let classId: string | null = pinnedId || null;
   if (!classId) {
@@ -84,6 +105,7 @@ export default async function TeacherDeckPage() {
   if (!classId) {
     return (
       <Frame>
+        <TopNav />
         <h1 className="text-2xl font-bold mb-2">No public class yet.</h1>
         <p className="text-white/70">
           Run the setup SQL in <code>SLICE_1A_MANUAL_STEPS.md</code> to create
@@ -93,7 +115,6 @@ export default async function TeacherDeckPage() {
     );
   }
 
-  // Pull the existing starter pool (live + is_starter, for this class).
   const { data: rows } = await supabase
     .from("entries")
     .select("id, media_url, description_text, uploaded_at")
@@ -102,15 +123,10 @@ export default async function TeacherDeckPage() {
     .eq("is_starter", true)
     .order("uploaded_at", { ascending: true });
 
-  // Build public URLs for the gallery thumbnails.
-  // getPublicUrl is synchronous, never errors, and the URL never expires —
-  // which is what we want for a public bucket. Kept the field name
-  // `signed_url` on the Starter type so deck-client.tsx doesn't need to
-  // change; from its perspective it's still "a URL string the <img> can
-  // load," just generated a different way.
   const starters: Starter[] = (rows || []).map((r) => {
     const publicUrl = r.media_url
-      ? supabase.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url).data.publicUrl
+      ? supabase.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url).data
+          .publicUrl
       : null;
     return {
       id: r.id,
@@ -123,6 +139,7 @@ export default async function TeacherDeckPage() {
 
   return (
     <Frame>
+      <TopNav />
       <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-fuchsia-400 to-violet-400 bg-clip-text text-transparent">
         Public deck
       </h1>
@@ -157,8 +174,9 @@ function PoolStatus({ count }: { count: number }) {
       }`}
     >
       <p className="text-sm">
-        {ready ? "✓" : "•"} <strong>{count}</strong> {count === 1 ? "photo" : "photos"} in the
-        pool {ready ? "— the front door is open." : `(need at least 9).`}
+        {ready ? "✓" : "•"} <strong>{count}</strong>{" "}
+        {count === 1 ? "photo" : "photos"} in the pool{" "}
+        {ready ? "— the front door is open." : `(need at least 9).`}
       </p>
     </div>
   );

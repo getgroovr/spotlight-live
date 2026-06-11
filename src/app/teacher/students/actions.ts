@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// DESTINATION: src/app/teacher/students/actions.ts   (NEW FILE)
+// DESTINATION: src/app/teacher/students/actions.ts   (REPLACES existing)
 //
 // Slice 1 teacher UI, step 3: saveClassSettings.
 //
@@ -18,23 +18,17 @@
 // VALIDATION
 //   - name:                  required, 1–100 chars after trim
 //   - total_rounds:          required, integer 1–100 (matches CHECK on classes)
-//   - round_duration_hours:  required, must be in (0.25, 0.5, 1, 2, 5, 24)
-//                            — matches the migration #30 CHECK constraint
-//   - game_starts_at:        OPTIONAL. Empty/missing → set NULL (teacher hasn't
-//                            picked a start time yet). If provided, must parse
-//                            as a valid Date.
+//   - round_duration_hours:  required, must be in the allowed set below —
+//                            MUST match the CHECK constraint on classes.
+//   - game_starts_at:        OPTIONAL. Empty/missing → set NULL.
 //
-// PAST-START WARNING (Mike's call):
-//   A start time in the past is ALLOWED — backdated configuration is sometimes
-//   legitimate ("the game already started, let me record it now"). But it's
-//   often a typo, so we save successfully AND return a warning string. The
-//   header surfaces the warning above the form so the teacher can confirm or
-//   correct. Save state is still ok: true.
+// PAST-START WARNING: a start time in the past is ALLOWED but returns a
+// warning string the header surfaces above the form. ok stays true.
 //
-// RESULT SHAPE
-//   Action-local SaveClassSettingsResult = ActionResult | {ok:true, warning}.
-//   Keeps the shared ActionResult untouched (only this action needs the
-//   warning channel; spreading it across every consumer isn't worth it).
+// IMPORTANT — keep ALLOWED_DURATION_HOURS in lockstep with TWO things:
+//   1. The CHECK constraint on classes.round_duration_hours
+//   2. DURATION_OPTIONS in src/app/teacher/students/class-header.tsx
+// If one moves, all three must.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -42,16 +36,16 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase-server";
 import type { ActionResult } from "@/app/play/actions";
 
-// Same six values as the CHECK constraint added in the step-2 migration.
-// Keep this array and the SQL in lockstep — if one moves, both must.
-const ALLOWED_DURATION_HOURS = [0.25, 0.5, 1, 2, 5, 24] as const;
+// Allowed round_duration_hours values. Must match the DB CHECK and the
+// dropdown options in class-header.tsx exactly.
+const ALLOWED_DURATION_HOURS = [0.25, 0.5, 1, 2, 5, 24, 48, 168] as const;
 
 // Matches the existing CHECK on classes.total_rounds (1..100).
 const MIN_ROUNDS = 1;
 const MAX_ROUNDS = 100;
 
-// Trim bounds for the class name. Hard upper bound prevents abuse; the lower
-// bound just enforces "non-empty after trim."
+// Trim bounds for the class name. Hard upper prevents abuse; lower
+// enforces "non-empty after trim."
 const NAME_MIN = 1;
 const NAME_MAX = 100;
 
@@ -123,13 +117,13 @@ export async function saveClassSettings(
     return {
       ok: false,
       error:
-        "Round duration must be one of: 15 min, 30 min, 1 hour, 2 hours, 5 hours, 1 day.",
+        "Round duration must be one of: 15 min, 30 min, 1 hour, 2 hours, 5 hours, 1 day, 2 days, 1 week.",
     };
   }
 
   // game_starts_at: optional. Empty string / missing → store NULL.
-  // If provided, must parse to a valid Date (HTML datetime-local inputs
-  // emit "YYYY-MM-DDTHH:MM" which `new Date(...)` accepts).
+  // If provided, must parse to a valid Date (datetime-local emits
+  // "YYYY-MM-DDTHH:MM" which `new Date(...)` accepts).
   let gameStartsAtIso: string | null = null;
   let startInPast = false;
   if (startRaw.length > 0) {
@@ -143,8 +137,8 @@ export async function saveClassSettings(
 
   // ── Ownership check + UPDATE in one go ───────────────────────────────
   // Filtering by teacher_id makes this idempotent on ownership: if the
-  // teacher doesn't own this class, the UPDATE simply affects 0 rows and
-  // we surface a clean "not found / not yours" error.
+  // teacher doesn't own this class, the UPDATE affects 0 rows and we
+  // surface a clean "not found / not yours" error.
   const { data: updated, error: updErr } = await supabase
     .from("classes")
     .update({
@@ -167,7 +161,7 @@ export async function saveClassSettings(
     };
   }
 
-  // Refresh the students page so the header re-reads the new values.
+  // Refresh so the header re-reads the new values.
   revalidatePath("/teacher/students");
 
   if (startInPast) {
