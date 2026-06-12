@@ -1,4 +1,5 @@
-// /teacher/deck — manage the public deck's starter pool.
+// ─────────────────────────────────────────────────────────────────────────
+// src/app/teacher/deck/page.tsx — manage the public deck's starter pool.
 //
 // Server Component. Lists the current starters with their descriptions and a
 // delete button. Renders an upload form that posts to the uploadStarter
@@ -11,8 +12,15 @@
 //
 // Slice 1 step 5 change: added the "Class | Deck" top nav strip mirroring
 // the students page, so navigation between the two teacher views is
-// bidirectional. Colors are adjusted to the deck page's dark theme but the
-// shape is the same as on /teacher/students.
+// bidirectional.
+//
+// Step 6 changes:
+//   1. Scope filter: `.eq("student_id", user.id)` on the starters query so
+//      each teacher sees only their own uploads. `/play` (via loadGenericDeck)
+//      is untouched and continues to union everything across teachers.
+//   2. Teacher display_name: read from `profiles.display_name` and pass to
+//      DeckClient so it can render/edit the name field at the top of the page.
+// ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
@@ -59,7 +67,7 @@ export default async function TeacherDeckPage() {
     return (
       <Frame>
         <TopNav />
-        <h1 className="text-2xl font-bold mb-2">Supabase isn’t configured.</h1>
+        <h1 className="text-2xl font-bold mb-2">Supabase isn't configured.</h1>
         <p className="text-white/70">
           Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
           <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> to <code>.env.local</code>{" "}
@@ -76,7 +84,7 @@ export default async function TeacherDeckPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("id, role")
+    .select("id, role, display_name")
     .eq("id", user.id)
     .single();
   if (!profile || profile.role !== "teacher") {
@@ -115,10 +123,15 @@ export default async function TeacherDeckPage() {
     );
   }
 
+  // ── Step 6: scope filter ──────────────────────────────────────────────
+  // Each teacher sees only their own uploads. The `.eq("student_id", ...)`
+  // filter restricts to entries this teacher created. The `/play` route
+  // (loadGenericDeck) is untouched and unions everything across teachers.
   const { data: rows } = await supabase
     .from("entries")
     .select("id, media_url, description_text, uploaded_at")
     .eq("class_id", classId)
+    .eq("student_id", user.id)
     .eq("status", "live")
     .eq("is_starter", true)
     .order("uploaded_at", { ascending: true });
@@ -150,7 +163,10 @@ export default async function TeacherDeckPage() {
 
       <PoolStatus count={starters.length} />
 
-      <DeckClient starters={starters} />
+      <DeckClient
+        starters={starters}
+        initialDisplayName={profile.display_name || ""}
+      />
     </Frame>
   );
 }

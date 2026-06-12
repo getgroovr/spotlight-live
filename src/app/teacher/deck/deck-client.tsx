@@ -21,12 +21,19 @@
 //   4. Tighter grid — pool grid now ladders 1 → 2 → 3 → 4 columns, so on a
 //      wide monitor nine photos fit comfortably without taking forever to
 //      scroll past.
+//
+// Step 6 addition:
+//   5. Teacher display_name field — an editable name field at the very top
+//      of the page. Reads/writes `profiles.display_name` via the new
+//      saveDisplayName server action. Small "Your name" label above a
+//      compact inline-save field.
 
 import { useEffect, useOptimistic, useState, useTransition } from "react";
 import {
   uploadStarter,
   deleteStarter,
   updateStarterDescription,
+  saveDisplayName,
   type UploadResult,
 } from "./actions";
 
@@ -38,29 +45,27 @@ type Starter = {
   uploaded_at: string;
 };
 
-export function DeckClient({ starters }: { starters: Starter[] }) {
+export function DeckClient({
+  starters,
+  initialDisplayName,
+}: {
+  starters: Starter[];
+  initialDisplayName: string;
+}) {
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<UploadResult | null>(null);
 
   // ── Optimistic list ────────────────────────────────────────────────
-  // Removing a card updates the UI immediately so we don't depend on
-  // revalidatePath round-tripping before the user sees the change.
-  // If the Server Action fails, useOptimistic discards the optimistic
-  // state automatically when the transition ends, so the original card
-  // reappears and the error message shows below the upload form.
   const [optimisticStarters, removeOptimistic] = useOptimistic(
     starters,
     (current: Starter[], deletedId: string) =>
       current.filter((s) => s.id !== deletedId),
   );
 
-  // Preview state for the upload form. Held as an object URL so we can
-  // revoke it when it changes — leaving these around leaks memory.
+  // Preview state for the upload form.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    // Cleanup the object URL whenever previewUrl changes or the component
-    // unmounts. Without this, each picked file leaks a blob URL.
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
@@ -68,8 +73,6 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
-    // Revoke any old URL first to avoid leaking when the user picks a
-    // second file without submitting the first.
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     if (f && f.type.startsWith("image/")) {
       setPreviewUrl(URL.createObjectURL(f));
@@ -79,9 +82,6 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
   };
 
   const onSubmit = async (formData: FormData) => {
-    // Client-side preflight on file size. The Server Action also checks, but
-    // a file larger than the proxy's 12 MB body limit would arrive truncated;
-    // catching it here avoids any chance of that and gives a faster error.
     const f = formData.get("photo");
     if (f instanceof File && f.size > 8 * 1024 * 1024) {
       setResult({ ok: false, error: "Photo must be 8 MB or smaller." });
@@ -91,7 +91,6 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
     startTransition(async () => {
       const r = await uploadStarter(formData);
       setResult(r);
-      // On success, clear the preview so the form is visibly reset.
       if (r.ok) {
         if (previewUrl) URL.revokeObjectURL(previewUrl);
         setPreviewUrl(null);
@@ -103,19 +102,21 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
     if (!confirm("Remove this photo from the deck?")) return;
     setResult(null);
     startTransition(async () => {
-      // Optimistic: the card vanishes from the list immediately. Note this
-      // call must be inside the transition — useOptimistic enforces that.
       removeOptimistic(id);
       const r = await deleteStarter(id);
       setResult(r);
-      // No manual revert needed on failure: when the transition ends, the
-      // optimistic state is discarded and we re-render against the original
-      // `starters` prop, which still contains the row.
     });
   };
 
   return (
     <>
+      {/* ── Display name field (Step 6) ──────────────────────────────── */}
+      <DisplayNameField
+        initialName={initialDisplayName}
+        pending={pending}
+        startTransition={startTransition}
+      />
+
       {/* ── Upload form ──────────────────────────────────────────────── */}
       <section className="mb-8 rounded-xl border border-white/10 bg-white/5 p-5">
         <h2 className="text-lg font-semibold mb-3">Add a photo</h2>
@@ -134,8 +135,7 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
             />
           </div>
 
-          {/* Live preview — appears as soon as a file is picked, so the
-              teacher writes the description while looking at the photo. */}
+          {/* Live preview */}
           {previewUrl && (
             <div className="rounded-lg border border-white/10 bg-black/30 p-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -187,10 +187,6 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
         {optimisticStarters.length === 0 ? (
           <p className="text-sm text-white/60">No photos yet.</p>
         ) : (
-          // Tighter grid: 1 col on phones, 2 on small tablets, 3 on
-          // laptops, 4 on a wide monitor. Each card naturally shrinks as
-          // the column count grows, so all 9 starter photos can sit in
-          // view without endless scrolling.
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {optimisticStarters.map((s) => (
               <StarterCard
@@ -210,15 +206,80 @@ export function DeckClient({ starters }: { starters: Starter[] }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// DisplayNameField — Step 6
+//
+// A compact inline field that reads/writes profiles.display_name. Sits at
+// the very top of the deck client, above the upload form. Small "Your name"
+// label so the affordance is discoverable (preference #10).
+//
+// Saves on blur or Enter. Shows a brief "Saved." confirmation. The field
+// is visually understated — not a big hero input — because it's a settings
+// value, not the page's primary action.
+// ─────────────────────────────────────────────────────────────────────────
+function DisplayNameField({
+  initialName,
+  pending,
+  startTransition,
+}: {
+  initialName: string;
+  pending: boolean;
+  startTransition: (cb: () => void) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [nameResult, setNameResult] = useState<UploadResult | null>(null);
+  // Track what's been persisted so we only save on actual changes.
+  const [savedName, setSavedName] = useState(initialName);
+
+  const doSave = () => {
+    const trimmed = name.trim();
+    if (trimmed === savedName.trim()) return; // no change
+    if (trimmed.length === 0) return; // don't save empty
+    startTransition(async () => {
+      const r = await saveDisplayName(trimmed);
+      setNameResult(r);
+      if (r.ok) setSavedName(trimmed);
+      // Clear the "Saved." message after a moment.
+      if (r.ok) setTimeout(() => setNameResult(null), 2000);
+    });
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      doSave();
+    }
+  };
+
+  return (
+    <section className="mb-6 rounded-xl border border-white/10 bg-white/5 p-4">
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <label className="mb-1 block text-xs text-white/50">Your name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={doSave}
+            onKeyDown={onKeyDown}
+            maxLength={100}
+            placeholder="Enter your name"
+            disabled={pending}
+            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white outline-none focus:border-fuchsia-400 disabled:opacity-50"
+          />
+        </div>
+        {nameResult && !nameResult.ok && (
+          <p className="text-xs text-red-400 self-end pb-1">{nameResult.error}</p>
+        )}
+        {nameResult && nameResult.ok && (
+          <p className="text-xs text-emerald-400 self-end pb-1">Saved.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // StarterCard — one entry in the "Current pool" grid.
-//
-// Two modes:
-//   - view : shows the description text + Edit + Remove buttons
-//   - edit : shows a textarea + Save + Cancel
-//
-// Edit state is local to the card so opening one card doesn't unmount the
-// others. Save calls updateStarterDescription; on success the card returns
-// to view mode and the page revalidates so the new text is canonical.
 // ─────────────────────────────────────────────────────────────────────────
 function StarterCard({
   starter,
@@ -237,8 +298,6 @@ function StarterCard({
   const [draft, setDraft] = useState(starter.description_text);
 
   const startEdit = () => {
-    // Reset draft to whatever the current saved text is — handles the case
-    // where the user edited, cancelled, and re-opened.
     setDraft(starter.description_text);
     setEditing(true);
   };
@@ -249,8 +308,6 @@ function StarterCard({
   };
 
   const saveEdit = () => {
-    // Client-side preflight matching the server bounds. Cheaper than a
-    // round trip for the obvious cases.
     const trimmed = draft.trim();
     if (trimmed.length < 10) {
       onSaveResult({ ok: false, error: "Description must be at least 10 characters." });
@@ -260,7 +317,6 @@ function StarterCard({
       onSaveResult({ ok: false, error: "Description is too long (1000 chars max)." });
       return;
     }
-    // If nothing changed, just close — no point round-tripping.
     if (trimmed === starter.description_text.trim()) {
       setEditing(false);
       return;

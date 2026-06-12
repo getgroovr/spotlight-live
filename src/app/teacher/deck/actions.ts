@@ -7,6 +7,11 @@
 //   - updateStarterDescription: edit the description text of an existing
 //                               starter (photo unchanged)
 //
+// Step 6 addition:
+//   - saveDisplayName         : write profiles.display_name for the
+//                               logged-in teacher. Feeds the default class
+//                               name string in the class-creation flow.
+//
 // Per the Next.js 16 mutating-data guide: Server Actions are reachable via
 // direct POST, so we MUST authenticate inside each action — the form's
 // existence is not authorization. We:
@@ -38,9 +43,58 @@ const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DESC_MIN = 10;
 const DESC_MAX = 1000;
 
+// Display-name bounds.
+const NAME_MIN = 1;
+const NAME_MAX = 100;
+
 export type UploadResult =
   | { ok: true }
   | { ok: false; error: string };
+
+// ─────────────────────────────────────────────────────────────────────────
+// saveDisplayName — Step 6
+//
+// Reads/writes `profiles.display_name` for the logged-in teacher. The
+// field is used as the teacher's visible name throughout the teacher UI
+// and eventually seeds the default class name when creating new classes.
+//
+// Auth: same pattern as the other actions — re-check session + role.
+// ─────────────────────────────────────────────────────────────────────────
+export async function saveDisplayName(name: string): Promise<UploadResult> {
+  const supabase = await createClient();
+  if (!supabase) return { ok: false, error: "Supabase is not configured." };
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "You must be logged in." };
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("id, role")
+    .eq("id", user.id)
+    .single();
+  if (!profile || profile.role !== "teacher") {
+    return { ok: false, error: "Only teachers can update their display name." };
+  }
+
+  const trimmed = String(name || "").trim();
+  if (trimmed.length < NAME_MIN) {
+    return { ok: false, error: "Name cannot be empty." };
+  }
+  if (trimmed.length > NAME_MAX) {
+    return { ok: false, error: `Name is too long (${NAME_MAX} chars max).` };
+  }
+
+  const { error: updErr } = await supabase
+    .from("profiles")
+    .update({ display_name: trimmed })
+    .eq("id", user.id);
+  if (updErr) {
+    return { ok: false, error: `Could not save name: ${updErr.message}` };
+  }
+
+  revalidatePath("/teacher/deck");
+  return { ok: true };
+}
 
 export async function uploadStarter(formData: FormData): Promise<UploadResult> {
   const supabase = await createClient();
