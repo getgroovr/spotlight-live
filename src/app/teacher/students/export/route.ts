@@ -8,6 +8,12 @@
 // the teacher's own notes back. Counts/timestamps/flags were dropped per the
 // #23 decision ("the actual language is key").
 //
+// CSV-per-class scoping (agreed chat #32):
+//   If `?class=<id>` is present and the teacher owns that class, all queries
+//   scope to that single class. If absent, falls back to the whole-teacher
+//   behavior (all classes). The class id is passed from the students page
+//   where `selectedClass.id` is already available.
+//
 // Comment findability: game_sessions.comments is keyed by the STARTER entry id
 // the student was commenting on. We look those ids up in `entries` and prefix
 // each comment with that photo's own caption ([caption] comment…) so the
@@ -23,7 +29,7 @@
 // joins, every query scoped to classes this teacher owns. Available anytime —
 // NOT gated to end-of-class (confirmed not needed).
 // ─────────────────────────────────────────────────────────────────────────
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 
@@ -38,7 +44,7 @@ function csvCell(v: unknown): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
   if (!supabase) {
     return new NextResponse("Server not configured.", { status: 500 });
@@ -56,18 +62,46 @@ export async function GET() {
   }
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
-  // Which classes does this teacher own?
-  const { data: classes } = await admin
-    .from("classes")
-    .select("id, name")
-    .eq("teacher_id", user.id);
-  const classIds = (classes || []).map((c) => c.id);
-  if (classIds.length === 0) {
-    return new NextResponse("No class found for this account.", { status: 404 });
+  // ── Class scoping ─────────────────────────────────────────────────────
+  // If ?class=<id> is present, scope to that single class (after confirming
+  // the teacher owns it). Otherwise, fall back to all classes the teacher owns.
+  const requestedClassId = request.nextUrl.searchParams.get("class");
+
+  let classIds: string[];
+  let classNameById: Map<string, string>;
+  let filenameSuffix: string;
+
+  if (requestedClassId) {
+    // Verify ownership of the specific class.
+    const { data: cls } = await admin
+      .from("classes")
+      .select("id, name")
+      .eq("id", requestedClassId)
+      .eq("teacher_id", user.id)
+      .maybeSingle();
+    if (!cls) {
+      return new NextResponse("Class not found or not owned by you.", { status: 404 });
+    }
+    classIds = [cls.id];
+    classNameById = new Map([[cls.id, cls.name]]);
+    // Sanitize class name for the filename.
+    const safeName = cls.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+    filenameSuffix = safeName;
+  } else {
+    // All classes this teacher owns.
+    const { data: classes } = await admin
+      .from("classes")
+      .select("id, name")
+      .eq("teacher_id", user.id);
+    classIds = (classes || []).map((c) => c.id);
+    if (classIds.length === 0) {
+      return new NextResponse("No class found for this account.", { status: 404 });
+    }
+    classNameById = new Map(
+      (classes || []).map((c) => [c.id, c.name])
+    );
+    filenameSuffix = "all-classes";
   }
-  const classNameById = new Map<string, string>(
-    (classes || []).map((c) => [c.id, c.name])
-  );
 
   // Enrollments in those classes, joined to the student rows.
   const { data: enrollments } = await admin
@@ -221,7 +255,7 @@ export async function GET() {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="spotlight-class-${stamp}.csv"`,
+      "Content-Disposition": `attachment; filename="spotlight-${filenameSuffix}-${stamp}.csv"`,
       "Cache-Control": "no-store",
     },
   });

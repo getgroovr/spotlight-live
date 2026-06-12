@@ -146,7 +146,7 @@ export function ClassHeader({ classes, selectedClass, statusLine }: Props) {
           htmlFor="class-switcher"
           style={{ fontSize: 13, color: C.textDim, fontWeight: 600 }}
         >
-          Class:
+          Current class:
         </label>
         <select
           id="class-switcher"
@@ -169,6 +169,19 @@ export function ClassHeader({ classes, selectedClass, statusLine }: Props) {
         >
           {classes.length} {classes.length === 1 ? "class" : "classes"}
         </span>
+        <a
+          href={`/teacher/students/export?class=${encodeURIComponent(selectedClass.id)}`}
+          style={{
+            fontSize: 12,
+            color: C.light,
+            fontWeight: 600,
+            textDecoration: "none",
+            textAlign: "right",
+            lineHeight: 1.3,
+          }}
+        >
+          Download class<br />spreadsheet
+        </a>
       </div>
 
       <form
@@ -250,7 +263,7 @@ export function ClassHeader({ classes, selectedClass, statusLine }: Props) {
             />
           </Field>
 
-          <Field label="Duration">
+          <Field label="Duration of each round">
             <select
               name="round_duration_hours"
               defaultValue={durationSelectValue}

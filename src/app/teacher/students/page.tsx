@@ -13,10 +13,8 @@
 // Auth pattern: SSR cookie client to resolve auth.uid(), service client
 // for the joins, every query scoped to classes this teacher owns.
 //
-// CSV note: the Export CSV link points at /teacher/students/export, which
-// currently exports EVERY class the teacher owns (one CSV across all
-// classes). When/if that's scoped to the selected class, this link will
-// need the ?class=<id> appended too — TBD with Mike.
+// CSV note: the Export CSV link now lives inside the ClassHeader component
+// and automatically scopes to the selected class via ?class=<id>.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -293,33 +291,15 @@ export default async function TeacherStudents({
       <div style={{ maxWidth: 860, margin: "0 auto" }}>
         <TopNav />
 
-        {/* Title row + utility links (Export CSV) */}
+        {/* Title row */}
         <div
           style={{
-            display: "flex",
-            alignItems: "baseline",
-            justifyContent: "space-between",
             marginBottom: 6,
-            flexWrap: "wrap",
-            gap: 8,
           }}
         >
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
             Your classes
           </h1>
-          {students.length > 0 && (
-            <a
-              href="/teacher/students/export"
-              style={{
-                fontSize: 13,
-                color: C.light,
-                fontWeight: 600,
-                textDecoration: "underline",
-              }}
-            >
-              ↓ Export CSV
-            </a>
-          )}
         </div>
 
         {/* Class management header. Keyed on the selected class id so
