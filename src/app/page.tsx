@@ -29,7 +29,7 @@ export default function HomePage() {
       </h1>
       <p style={{ fontSize: 16, color: "#6E5536", maxWidth: 420, lineHeight: 1.6, marginTop: 12 }}>
         The shuffle-stop showcase. Hit stop, see who lands in the spotlight,
-        watch their video, and leave them a comment.
+        look at your classmates&apos; pictures, and leave them a comment.
       </p>
       <Link
         href="/play"
