@@ -76,6 +76,7 @@ import ProfileArchive from "./ProfileArchive";
 import FinishJoiningForm from "./FinishJoiningForm";
 import AddEntryForm from "./AddEntryForm";
 import RemoveEntryButton from "./RemoveEntryButton";
+import { StudentDashboardCsvButton } from "./csv-button";
 
 export const dynamic = "force-dynamic";
 
@@ -678,7 +679,14 @@ export default async function StudentProfile() {
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
       fontFamily: F, color: C.text }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
+        .round-toggle .when-open { display: none; }
+        .round-toggle[open] .when-closed { display: none; }
+        .round-toggle[open] .when-open { display: inline; }
+        .round-toggle summary { list-style: none; }
+        .round-toggle summary::-webkit-details-marker { display: none; }
+      `}</style>
 
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
 
@@ -895,13 +903,13 @@ export default async function StudentProfile() {
                 {completedRounds.map((r) => {
                   const entry = entryByRound.get(r);
                   return (
-                    <details key={`completed-${r}`} style={{
+                    <details key={`completed-${r}`} className="round-toggle" style={{
                       background: C.panelSoft,
                       border: `1px solid ${C.panelEdge}`,
                       borderRadius: 12, padding: "10px 14px", marginBottom: 8,
                     }}>
                       <summary style={{
-                        cursor: "pointer", listStyle: "revert",
+                        cursor: "pointer",
                         display: "flex", alignItems: "center", gap: 12,
                         flexWrap: "wrap",
                       }}>
@@ -936,6 +944,13 @@ export default async function StudentProfile() {
                             no photo submitted
                           </span>
                         )}
+                        <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
+                          color: C.light, background: C.light + "18",
+                          border: `1px solid ${C.light}44`, borderRadius: 6,
+                          padding: "3px 10px" }}>
+                          <span className="when-closed">See the round</span>
+                          <span className="when-open">Close the round</span>
+                        </span>
                       </summary>
                       <div style={{ marginTop: 12, paddingTop: 12,
                         borderTop: `1px solid ${C.panelEdge}` }}>
@@ -954,13 +969,13 @@ export default async function StudentProfile() {
 
                 {/* Teacher's Warm-up Round — at the very bottom. */}
                 {currentClass && currentClass.entries.length > 0 && (
-                  <details style={{
+                  <details className="round-toggle" style={{
                     background: C.panelSoft,
                     border: `1px solid ${C.panelEdge}`,
                     borderRadius: 12, padding: "10px 14px", marginBottom: 8,
                   }}>
                     <summary style={{
-                      cursor: "pointer", listStyle: "revert",
+                      cursor: "pointer",
                       display: "flex", alignItems: "center", gap: 12,
                       flexWrap: "wrap",
                     }}>
@@ -982,6 +997,13 @@ export default async function StudentProfile() {
                         fontSize: 13, fontWeight: 700, color: C.text,
                       }}>
                         Teacher&apos;s Warm-up Round
+                      </span>
+                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
+                        color: C.light, background: C.light + "18",
+                        border: `1px solid ${C.light}44`, borderRadius: 6,
+                        padding: "3px 10px" }}>
+                        <span className="when-closed">See the round</span>
+                        <span className="when-open">Close the round</span>
                       </span>
                     </summary>
                     <WarmupBody a={currentClass} />
@@ -1010,8 +1032,21 @@ export default async function StudentProfile() {
                   color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
                   marginTop: 18 }}
               >
-                See the 3 most favorited students →
+                See who got the most favorites →
               </a>
+            )}
+            {isGameOver && (
+              <div style={{ textAlign: "center", marginTop: 12 }}>
+                <StudentDashboardCsvButton
+                  studentName={displayName}
+                  csvRows={ownEntries.map((e) => ({
+                    round: e.roundNumber,
+                    description: e.description_text || "",
+                    status: e.status,
+                    teacherNote: e.teacherNote || "",
+                  }))}
+                />
+              </div>
             )}
           </>
         )}
