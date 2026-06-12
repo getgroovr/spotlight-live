@@ -1,51 +1,35 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/actions.ts   (REPLACES existing)
 //
-// Slice 1 teacher UI, step 3: saveClassSettings.
+// Server actions for the teacher students page:
 //
-// Single action backing the class-management header on the students page.
-// One Save button → one round trip → one UPDATE on classes. Handles all
-// four configurable fields together (name, total_rounds,
-// round_duration_hours, game_starts_at).
+//   1. saveClassSettings — class management header (slice 1, step 3)
+//   2. approveEntry      — approve a pending student submission
+//   3. rejectEntry        — reject a pending submission with a reason
 //
-// AUTH PATTERN (matches the rest of the teacher area)
+// AUTH PATTERN (all three):
 //   - SSR cookie client to resolve auth.uid()
 //   - Verify role = 'teacher' on profiles
-//   - Verify ownership: UPDATE is scoped by id AND teacher_id, so a teacher
-//     can't edit another teacher's class even by crafting the request.
-//   - RLS is the second line; the explicit teacher_id filter is the first.
+//   - Verify ownership (class belongs to this teacher)
 //
-// VALIDATION
-//   - name:                  required, 1–100 chars after trim
-//   - total_rounds:          required, integer 1–100 (matches CHECK on classes)
-//   - round_duration_hours:  required, must be in the allowed set below —
-//                            MUST match the CHECK constraint on classes.
-//   - game_starts_at:        OPTIONAL. Empty/missing → set NULL.
-//
-// PAST-START WARNING: a start time in the past is ALLOWED but returns a
-// warning string the header surfaces above the form. ok stays true.
-//
-// IMPORTANT — keep ALLOWED_DURATION_HOURS in lockstep with TWO things:
-//   1. The CHECK constraint on classes.round_duration_hours
-//   2. DURATION_OPTIONS in src/app/teacher/students/class-header.tsx
-// If one moves, all three must.
+// approveEntry / rejectEntry work the same way:
+//   - Verify the entry exists, is 'pending', and belongs to a class
+//     this teacher owns.
+//   - UPDATE entries: set status, reviewed_by, reviewed_at.
+//   - rejectEntry also stores the rejection_reason text.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase-server";
+import { createClient as createServiceClient } from "@supabase/supabase-js";
 import type { ActionResult } from "@/app/play/actions";
 
-// Allowed round_duration_hours values. Must match the DB CHECK and the
-// dropdown options in class-header.tsx exactly.
-const ALLOWED_DURATION_HOURS = [0.25, 0.5, 1, 2, 5, 24, 48, 168] as const;
+// ── saveClassSettings ─────────────────────────────────────────────────────
 
-// Matches the existing CHECK on classes.total_rounds (1..100).
+const ALLOWED_DURATION_HOURS = [0.25, 0.5, 1, 2, 5, 24, 48, 168] as const;
 const MIN_ROUNDS = 1;
 const MAX_ROUNDS = 100;
-
-// Trim bounds for the class name. Hard upper prevents abuse; lower
-// enforces "non-empty after trim."
 const NAME_MIN = 1;
 const NAME_MAX = 100;
 
@@ -62,7 +46,6 @@ export async function saveClassSettings(
     return { ok: false, error: "Server isn't configured." };
   }
 
-  // ── Auth ────────────────────────────────────────────────────────────
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -79,7 +62,6 @@ export async function saveClassSettings(
     return { ok: false, error: "Only teachers can change class settings." };
   }
 
-  // ── Extract + validate inputs ───────────────────────────────────────
   const classId = String(formData.get("class_id") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const totalRoundsRaw = String(formData.get("total_rounds") || "").trim();
@@ -121,9 +103,6 @@ export async function saveClassSettings(
     };
   }
 
-  // game_starts_at: optional. Empty string / missing → store NULL.
-  // If provided, must parse to a valid Date (datetime-local emits
-  // "YYYY-MM-DDTHH:MM" which `new Date(...)` accepts).
   let gameStartsAtIso: string | null = null;
   let startInPast = false;
   if (startRaw.length > 0) {
@@ -135,10 +114,6 @@ export async function saveClassSettings(
     startInPast = parsed.getTime() < Date.now();
   }
 
-  // ── Ownership check + UPDATE in one go ───────────────────────────────
-  // Filtering by teacher_id makes this idempotent on ownership: if the
-  // teacher doesn't own this class, the UPDATE affects 0 rows and we
-  // surface a clean "not found / not yours" error.
   const { data: updated, error: updErr } = await supabase
     .from("classes")
     .update({
@@ -161,7 +136,6 @@ export async function saveClassSettings(
     };
   }
 
-  // Refresh so the header re-reads the new values.
   revalidatePath("/teacher/students");
 
   if (startInPast) {
@@ -171,5 +145,132 @@ export async function saveClassSettings(
         "Start time is in the past — the game is already underway. If that wasn't intentional, edit the start time and save again.",
     };
   }
+  return { ok: true };
+}
+
+// ── Shared helper: verify teacher + get admin client ──────────────────────
+
+async function getTeacherAdmin(): Promise<
+  | { ok: false; error: string }
+  | { ok: true; userId: string; admin: ReturnType<typeof createServiceClient> }
+> {
+  const supabase = await createClient();
+  if (!supabase) return { ok: false, error: "Server isn't configured." };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Sign-in expired." };
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("id, role")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (!profile || profile.role !== "teacher") {
+    return { ok: false, error: "Only teachers can do this." };
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return { ok: false, error: "Server config error." };
+  }
+
+  return {
+    ok: true,
+    userId: user.id,
+    admin: createServiceClient(supabaseUrl, serviceKey),
+  };
+}
+
+// Verify the entry is pending and belongs to a class this teacher owns.
+async function verifyEntryOwnership(
+  admin: ReturnType<typeof createServiceClient>,
+  entryId: string,
+  teacherId: string,
+): Promise<
+  | { ok: false; error: string }
+  | { ok: true; entryClassId: string }
+> {
+  const { data: entry } = await admin
+    .from("entries")
+    .select("id, class_id, status")
+    .eq("id", entryId)
+    .maybeSingle();
+
+  if (!entry) return { ok: false, error: "Entry not found." };
+  if (entry.status !== "pending") {
+    return { ok: false, error: "This entry has already been reviewed." };
+  }
+
+  const { data: cls } = await admin
+    .from("classes")
+    .select("id")
+    .eq("id", entry.class_id)
+    .eq("teacher_id", teacherId)
+    .maybeSingle();
+
+  if (!cls) return { ok: false, error: "You don't own this class." };
+  return { ok: true, entryClassId: entry.class_id };
+}
+
+// ── approveEntry ──────────────────────────────────────────────────────────
+
+export async function approveEntry(entryId: string): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
+  if (!ownership.ok) return ownership;
+
+  const { error: updErr } = await auth.admin
+    .from("entries")
+    .update({
+      status: "live",
+      reviewed_by: auth.userId,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", entryId);
+
+  if (updErr) {
+    return { ok: false, error: `Could not approve: ${updErr.message}` };
+  }
+
+  revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ── rejectEntry ───────────────────────────────────────────────────────────
+
+export async function rejectEntry(
+  entryId: string,
+  reason: string,
+): Promise<ActionResult> {
+  if (!reason || reason.trim().length === 0) {
+    return { ok: false, error: "Please provide a reason for the rejection." };
+  }
+
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
+  if (!ownership.ok) return ownership;
+
+  const { error: updErr } = await auth.admin
+    .from("entries")
+    .update({
+      status: "rejected",
+      rejection_reason: reason.trim(),
+      reviewed_by: auth.userId,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", entryId);
+
+  if (updErr) {
+    return { ok: false, error: `Could not reject: ${updErr.message}` };
+  }
+
+  revalidatePath("/teacher/students");
   return { ok: true };
 }

@@ -35,6 +35,15 @@
 //      the current should be a little bigger... pic by itself to the
 //      left").
 //
+// #34 APPROVAL UX:
+//   - Approved entries (status='live'): Remove button is hidden. The
+//     existing "APPROVED" badge is the only affordance — the student
+//     can't replace an approved photo.
+//   - Rejected entries (status='rejected'): shows the teacher's reason
+//     in a notice box. Remove button stays so the student can delete
+//     and re-upload a different photo.
+//   - Pending entries: unchanged — Remove + "you can replace" text.
+//
 // "Teacher's Round" is implicit: the teacher's starter content lives in
 // the game (accessed via "Go to the game →"). The dashboard explicitly
 // labels student rounds as "Student Round N" to make the numbering frame
@@ -42,33 +51,13 @@
 //
 // EDGE CASES:
 //   • No current class (currentClassTiming == null): skip the stack
-//     entirely and show only the history strip.  Rare — should only
-//     happen if profiles.class_id got cleared.
+//     entirely and show only the history strip.
 //   • Game NOT configured (totalRounds == null): render a single faded
-//     "Student Round 1" placeholder.  If the student already has a
-//     pre-existing round-1 entry (from finish-joining), show it queued
-//     with copy explaining we're waiting for the teacher to set rounds.
+//     "Student Round 1" placeholder.
 //   • Pre-game (configured, but game_starts_at is null or in the future):
-//     currentRound == 0 → every slot is in the Upcoming band.  The
-//     student can stage their full queue ahead of time.
+//     currentRound == 0 → every slot is in the Upcoming band.
 //   • Game over (currentRound > totalRounds): no Upcoming, no Current;
 //     every slot is in Completed (condensed).
-//
-// SHAPE NOTES (from student-archive.ts):
-//   • ownEntries: one entry per Student Round (deduped — most recent
-//     upload wins when duplicates exist from pre-#27 data).  Sorted
-//     ascending by roundNumber.
-//   • currentClassTiming: snapshot with totalRounds, gameStartsAt,
-//     roundDurationHours, plus pre-computed currentRound and isGameOver.
-//   • OwnEntry now carries teacherNote (#27) so each slot can render the
-//     teacher's response inline without a second fetch.
-//
-// What was removed in #27:
-//   • The "Your photo" single-card section (replaced by the slot stack).
-//   • The "Add another photo" form under it (each empty Upcoming slot
-//     now has its own AddEntryForm scoped to that slot's round).
-//   • The "What happens next" footer copy — the new slot stack
-//     communicates state on its own; that copy was largely redundant.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { getStudentArchive, type OwnEntry, type ClassArchive } from "@/lib/student-archive";
@@ -95,12 +84,27 @@ const C = {
   liveGreen: "#7A9F5C",
   liveGreenBg: "#E2EFD9",
   liveGreenText: "#3D5A1F",
+  // #34 additions
+  danger: "#C04030",
+  dangerBg: "#FCEAE8",
 };
 const F = "'Outfit',sans-serif";
 
 // ── Small server-rendered helpers ─────────────────────────────────────────
 
+// #34: three-state badge — pending, approved, rejected.
 function StatusBadge({ status }: { status: string }) {
+  if (status === "rejected") {
+    return (
+      <span style={{
+        fontSize: 10, letterSpacing: 1.5, fontWeight: 600,
+        background: C.danger, color: "#fff",
+        padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+      }}>
+        NOT APPROVED
+      </span>
+    );
+  }
   const pending = status === "pending";
   return (
     <span style={{
@@ -232,40 +236,10 @@ function FullSlotCard({
 
 // Filled card for the TOP band (live or queued-upcoming).
 //
-// Layout (#28 pass 5, Mike's call):
-//   ┌──────────────────────────────────────────┐
-//   │  ┌────┐  [● LIVE pill if live]           │
-//   │  │ IMG│  STUDENT ROUND N                 │
-//   │  │    │  [AWAITING APPROVAL]             │
-//   │  └────┘  ✕ Remove (if !isLocked)         │
-//   │          You can replace this photo …    │
-//   │                                          │
-//   │  YOUR DESCRIPTION                        │
-//   │  "..." — spans full card width           │
-//   │                                          │
-//   │  YOUR TEACHER SAID                       │
-//   │  ... — spans full card width             │
-//   └──────────────────────────────────────────┘
-//
-// The top row pairs the image with COMPACT metadata only (round number,
-// status badge, Remove, plus the live pill when applicable) — all short
-// fixed-size items that fit in the narrow column next to the image.
-// VARIABLE-LENGTH content (description, teacher note) drops below the
-// top row and takes the full card width — so long descriptions/notes
-// don't get squeezed into a 150-200px column on mobile.  Mike: "if the
-// students write a lot- it will take up a lot of space using only one
-// column... maybe the round number, the waiting approval and the
-// remove next to the pic. and the text that can get longer- namely,
-// the description- below it."
-//
-// Uniform 120px image baseline; live card bumps to 140px to signal
-// current without breaking the shared layout grammar.  Completed-
-// expanded keeps EntryBody at 120 so the baseline stays uniform.
-//
-// The pill lives INSIDE the metadata column (rather than as a banner
-// above the whole card) so it fills the vertical space next to the
-// image instead of adding an extra row of padding.  The green card
-// border carries the primary "live" signal; the pill reinforces.
+// #34: approval-aware affordances:
+//   - status='live' (approved) → no Remove button, badge says APPROVED
+//   - status='rejected'        → shows rejection reason, Remove stays
+//   - status='pending'         → Remove + "you can replace" (unchanged)
 function FilledTopSlotCard({
   entry, isLive, isLocked, imageSize,
 }: {
@@ -279,7 +253,9 @@ function FilledTopSlotCard({
       background: C.panel,
       border: isLive
         ? `2px solid ${C.liveGreen}`
-        : `1px solid ${C.panelEdge}`,
+        : entry.status === "rejected"
+          ? `2px solid ${C.danger}`
+          : `1px solid ${C.panelEdge}`,
       borderRadius: 16, padding: "20px 22px", marginBottom: 16,
     }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -309,8 +285,7 @@ function FilledTopSlotCard({
             </div>
           )}
 
-          {/* METADATA COLUMN — pill, round number, badge, remove. All
-              short items, stack vertically next to the image. */}
+          {/* METADATA COLUMN */}
           <div style={{
             flex: 1, minWidth: 0,
             display: "flex", flexDirection: "column",
@@ -336,16 +311,46 @@ function FilledTopSlotCard({
               Student Round {entry.roundNumber}
             </h3>
             <StatusBadge status={entry.status} />
-            {!isLocked && (
+
+            {/* #34: Rejection reason — shown when teacher rejected */}
+            {entry.status === "rejected" && entry.rejectionReason && (
+              <div style={{
+                background: C.dangerBg,
+                border: `1px solid ${C.danger}44`,
+                borderRadius: 8, padding: "8px 12px",
+                width: "100%",
+              }}>
+                <div style={{
+                  fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                  color: C.danger, textTransform: "uppercase", marginBottom: 4,
+                }}>
+                  Your teacher said
+                </div>
+                <p style={{
+                  fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
+                  wordBreak: "break-word",
+                }}>
+                  {entry.rejectionReason}
+                </p>
+              </div>
+            )}
+
+            {/* #34: Remove button + help text — approval-aware.
+                - approved (live): hidden entirely. Student can't replace.
+                - rejected: show Remove so they can re-upload a different photo.
+                - pending + unlocked: show Remove + "you can replace" (original). */}
+            {entry.status === "live" ? null : !isLocked ? (
               <>
                 <RemoveEntryButton entryId={entry.id} roundNumber={entry.roundNumber} />
                 <p style={{
                   fontSize: 11, color: C.textDim, lineHeight: 1.5, margin: 0,
                 }}>
-                  You can replace this photo until the round starts.
+                  {entry.status === "rejected"
+                    ? "Remove this photo and try a different one."
+                    : "You can replace this photo until the round starts."}
                 </p>
               </>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -394,11 +399,7 @@ function FilledTopSlotCard({
 }
 
 // Body of the Teacher's Warm-up Round dropdown that lives at the bottom
-// of the completed band.  Mirrors what ProfileArchive used to show for
-// the current class (favorite block + "Your other comments" list), now
-// inlined here so all archived rounds for the current class — student
-// rounds AND the warm-up — live in one place at the bottom of the slot
-// stack.  Past CLASSES still appear in the history strip below.
+// of the completed band.
 function WarmupBody({ a }: { a: ClassArchive }) {
   const favorite = a.entries.find((e) => e.isFavorite) || null;
   const others = a.entries.filter((e) => !e.isFavorite);
@@ -625,20 +626,9 @@ export default async function StudentProfile() {
 
   // ── COMPLETE: three-band slot stack ──────────────────────────────────
 
-  // Index entries by round for O(1) lookup while we partition slots.
   const entryByRound = new Map<number, OwnEntry>();
   for (const e of ownEntries) entryByRound.set(e.roundNumber, e);
 
-  // Number of slots to render in the stack.
-  //   • If totalRounds is set: that many, OR however many filled rounds
-  //     the student has (whichever is greater). The "greater" branch covers
-  //     OVERAGE — e.g. student staged 7 entries in unconfigured state, then
-  //     teacher set total_rounds = 5; we still render slots 6 and 7 so the
-  //     student doesn't lose visual track of their photos. addEntry still
-  //     rejects new uploads beyond total_rounds.
-  //   • If totalRounds is null (unconfigured): render existing filled
-  //     rounds plus ONE empty upload slot at the end, so the student can
-  //     keep staging entries while waiting for the teacher to configure.
   const totalRounds = currentClassTiming?.totalRounds ?? null;
   const currentRound = currentClassTiming?.currentRound ?? 0;
   const isGameOver = currentClassTiming?.isGameOver ?? false;
@@ -650,13 +640,6 @@ export default async function StudentProfile() {
     ? Math.max(totalRounds, maxFilledRound)
     : Math.max(1, maxFilledRound + 1);
 
-  // Partition rounds into TOP (live + upcoming) and BOTTOM (completed).
-  // #27 layout pass 2 (Mike's call): the LIVE round stays at the top
-  // alongside upcoming rounds, in ascending order — so the queue reads
-  // top-to-bottom and a round transitioning from upcoming → in-progress
-  // doesn't visually jump to a middle band.  Rounds only fall to the
-  // bottom band once they're FULLY complete (the next round has started).
-  // Newest-completed nearest the top of the bottom band.
   const topRounds: number[] = [];
   const completedRounds: number[] = [];
   for (let r = 1; r <= numSlots; r++) {
@@ -668,11 +651,6 @@ export default async function StudentProfile() {
   }
   completedRounds.reverse();
 
-  // Locate the current class's archive (for the Teacher's Warm-up Round
-  // entry at the bottom of the completed band) and the past classes set
-  // (passed to the history strip).  Filtering the current class OUT of
-  // ProfileArchive avoids duplicating warm-up content — it lives in the
-  // slot stack's completed band now.
   const currentClass = classes.find((c) => c.isCurrent) ?? null;
   const pastClasses = classes.filter((c) => !c.isCurrent);
 
@@ -690,12 +668,7 @@ export default async function StudentProfile() {
 
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
 
-        {/* ── HEADER ──
-            Greeting + status line both swap to a completion message when
-            the game is over.  "Well done" + "You've completed the class"
-            is the right tone for a wrap-up moment — the student finished
-            a multi-day classroom game; treat it like an accomplishment,
-            not just a state change. */}
+        {/* ── HEADER ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
           <div style={{ width: 64, height: 64, borderRadius: "50%",
             background: C.panelEdge, display: "flex", alignItems: "center",
@@ -718,14 +691,7 @@ export default async function StudentProfile() {
           </div>
         </div>
 
-        {/* ── GO TO THE GAME ──
-            Hidden once the game is over.  /student/play shows "waiting on
-            classmates" copy that's nonsensical post-completion; the right
-            destination at game-end is a results/reveal page, but that
-            doesn't exist yet (see end-of-game-reveal design — separate
-            future slice).  Hiding entirely is the cleanest interim.  When
-            the reveal lands, this button comes back with new copy + href
-            (e.g. "See final results →" → /student/results). */}
+        {/* ── GO TO THE GAME ── */}
         {!isGameOver && (
           <a
             href="/student/play"
@@ -739,20 +705,9 @@ export default async function StudentProfile() {
           </a>
         )}
 
-        {/* ── ROUND STACK (#27) ──
-            Only rendered when the student has a current class. The teacher's
-            round is implicit — accessed via the "Go to the game →" button
-            above. */}
+        {/* ── ROUND STACK (#27) ── */}
         {currentClassTiming && (
           <>
-            {/* "Your rounds" header + preamble is instructional copy for
-                ACTIVE play — explains the slot mechanics to a student who
-                still has rounds to play.  When the game is OVER, every
-                slot is in the Completed band (which has its own header
-                below) and the game-complete banner at the bottom of the
-                stack provides closure.  Showing "After your teacher's
-                round, these are yours. Add a photo..." post-completion
-                reads as stale instructions.  Hide both header and copy. */}
             {!isGameOver && (
               <>
                 <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
@@ -768,11 +723,6 @@ export default async function StudentProfile() {
               </>
             )}
 
-            {/* Unconfigured notice — sits ABOVE the regular slot stack.
-                The slots themselves render via the Upcoming band below;
-                in unconfigured state, currentRound is 0 (no game_starts_at),
-                so every slot is Upcoming. The student can keep staging
-                uploads via the trailing empty slot. */}
             {isUnconfigured && (
               <div style={{
                 background: C.fadedBg,
@@ -786,23 +736,7 @@ export default async function StudentProfile() {
               </div>
             )}
 
-            {/* ── TOP band — live + upcoming, ascending ──
-                The live (current) round, if any, sits at the top alongside
-                upcoming rounds rather than in a middle band of its own,
-                so the queue reads top-to-bottom and a round transitioning
-                from upcoming → in-progress doesn't visually jump.
-                  • Filled + unlocked → full card with image + description
-                    + ✕ Remove.
-                  • Filled + live (locked) → full card with image +
-                    description + teacher note + prominent CURRENT ROUND
-                    indicator; no remove.
-                  • Empty + live (locked) → full card with "you didn't add
-                    a photo" notice.
-                  • Empty + unlocked → COMPACT collapsed <details> showing
-                    just "Student Round N — + Add photo".  Click to reveal
-                    the AddEntryForm inline.  All empty unlocked slots
-                    collapse so the dashboard stays scannable when many
-                    rounds are open at once. */}
+            {/* ── TOP band — live + upcoming, ascending ── */}
             {topRounds.map((r) => {
               const entry = entryByRound.get(r);
               const isLocked = currentRound > 0 && r <= currentRound;
@@ -882,14 +816,7 @@ export default async function StudentProfile() {
               );
             })}
 
-            {/* ── COMPLETED band ──
-                Condensed dropdowns for fully-completed Student Rounds
-                (newest-first, nearest the top of the band), plus the
-                Teacher's Warm-up Round at the very bottom — the warm-up
-                is chronologically the FIRST archived event but sits below
-                the student rounds so the band reads "most recent ↓
-                older ↓ origin."  The warm-up moved here from the history
-                strip; past CLASSES still appear in the strip below. */}
+            {/* ── COMPLETED band ── */}
             {(completedRounds.length > 0 ||
               (currentClass && currentClass.entries.length > 0)) && (
               <div style={{ marginTop: 20 }}>
@@ -1012,17 +939,6 @@ export default async function StudentProfile() {
               </div>
             )}
 
-            {/* End-of-game CTA — routes to the top-3 favorites reveal.
-                The reveal page itself is a separate future slice (full
-                design is locked: top 3 students by total favorites
-                received, with podium + per-student panels for posted pic
-                and own taste).  /student/results will 404 until that
-                slice lands.  Comment retained to make the dependency
-                explicit so it doesn't get lost.
-                The "game is complete" status banner was dropped here —
-                the new "You've completed the class" subtitle at the top
-                conveys the same status, and the button itself serves as
-                a clear end-of-stack marker. */}
             {isGameOver && (
               <a
                 href="/student/results"
@@ -1051,12 +967,7 @@ export default async function StudentProfile() {
           </>
         )}
 
-        {/* ── YOUR CLASSES (history strip) ──
-            Past classes only.  The current class's warm-up content moved
-            to the slot stack's Completed band (Teacher's Warm-up Round
-            button) so all archived rounds for the current class live in
-            one place.  If there are no past classes, this section hides
-            entirely. */}
+        {/* ── YOUR CLASSES (history strip) ── */}
         {pastClasses.length > 0 && (
           <div style={{ marginTop: 32 }}>
             <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",

@@ -57,6 +57,12 @@
 //   any slot whose number is ≤ that value. Helpers are now imported from
 //   src/lib/round-timing.ts (handoff #30 carry-over: extraction complete).
 //
+// APPROVAL / REJECTION (#34):
+//   OwnEntry now carries rejectionReason (from entries.rejection_reason).
+//   The status filter includes "rejected" so the student sees entries the
+//   teacher has sent back, along with the reason. The dashboard renders a
+//   rejection notice and lets the student remove + re-upload.
+//
 // TWO-TRACK STUDENT IDS — read this before changing the entry query:
 //   This codebase has two distinct UUIDs per student, and they are NOT the
 //   same value:
@@ -114,10 +120,11 @@ export type OwnEntry = {
   id: string;
   description_text: string | null;
   signedUrl: string | null;
-  status: "pending" | "live" | string;
+  status: "pending" | "live" | "rejected" | string;
   uploadedAt: string | null;
   roundNumber: number;       // #27: which slot this fills
   teacherNote: string | null; // #27: teacher's note on this entry, if any
+  rejectionReason: string | null; // #34: teacher's reason when status='rejected'
 };
 
 // Timing snapshot for the student's CURRENT class. Null when the student
@@ -288,6 +295,9 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
   //
   // CRITICAL — see TWO-TRACK STUDENT IDS comment at top of this file:
   // entries.student_id holds profiles.id (= auth user.id), NOT students.id.
+  //
+  // #34: status filter now includes "rejected" so the student sees entries
+  // the teacher has sent back. rejection_reason is fetched for display.
   let ownEntries: OwnEntry[] = [];
   let currentClassTiming: CurrentClassTiming | null = null;
 
@@ -313,13 +323,14 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
 
     // Own entries: order by round asc, then uploaded_at desc, then dedupe
     // keeping the first per round (= most recent upload for that round).
+    // #34: include "rejected" so student sees entries sent back by teacher.
     const { data: ownRows } = await admin
       .from("entries")
-      .select("id, media_url, description_text, status, uploaded_at, round_number")
+      .select("id, media_url, description_text, status, uploaded_at, round_number, rejection_reason")
       .eq("class_id", currentClassId)
       .eq("student_id", user.id)
       .eq("is_starter", false)
-      .in("status", ["live", "pending"])
+      .in("status", ["live", "pending", "rejected"])
       .order("round_number", { ascending: true })
       .order("uploaded_at", { ascending: false });
 
@@ -371,6 +382,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
           uploadedAt: (r.uploaded_at as string | null) ?? null,
           roundNumber: r.round_number as number,
           teacherNote: ownNoteByEntry[r.id as string] ?? null,
+          rejectionReason: (r.rejection_reason as string | null) ?? null,
         };
       }),
     );

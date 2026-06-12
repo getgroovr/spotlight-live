@@ -1,20 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/page.tsx   (REPLACES existing file)
 //
-// Slice 1 teacher UI:
-//   - step 4: class management header + class switcher (rendered via the
-//     ClassHeader client component)
-//   - step 5: top nav strip "Class | Deck" replaces the old "← Back to deck"
-//     link. Mirrored on /teacher/deck so navigation is bidirectional.
+// Teacher students page. Three-section layout:
+//   1. Class settings header (ClassHeader component)
+//   2. Pending submissions queue (PendingQueue component) — NEW
+//   3. Student profile grid
 //
-// The student grid is filtered to the selected class only (previously
-// unioned every class this teacher owned).
+// The pending queue shows entries with status = 'pending' for the
+// selected class. Teacher can approve (→ 'live') or reject (→ 'rejected'
+// with a reason). Approved entries disappear from the queue and the
+// student's photo enters the game. Rejected entries disappear too; the
+// student sees the reason on their dashboard.
 //
-// Auth pattern: SSR cookie client to resolve auth.uid(), service client
-// for the joins, every query scoped to classes this teacher owns.
-//
-// CSV note: the Export CSV link now lives inside the ClassHeader component
-// and automatically scopes to the selected class via ?class=<id>.
+// Auth pattern: SSR cookie client for auth.uid(), service client for
+// joins and admin auth (resolving student emails). All queries scoped
+// to classes this teacher owns.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -26,8 +26,10 @@ import {
   type ClassTiming,
 } from "@/lib/round-timing";
 import { ClassHeader } from "./class-header";
+import { PendingQueue, type PendingEntryData } from "./pending-queue";
 
 const MEDIA_BUCKET = "media";
+const ENTRY_BUCKET = "teacher-deck";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +70,7 @@ type PageData =
       classes: ClassRow[];
       selectedClass: ClassRow;
       students: StudentCard[];
+      pendingEntries: PendingEntryData[];
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -101,6 +104,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     if (match) selectedClass = match;
   }
 
+  // ── Enrollments + students (existing logic) ─────────────────────────
   const { data: enrollments } = await admin
     .from("enrollments")
     .select(
@@ -108,6 +112,19 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     )
     .eq("class_id", selectedClass.id)
     .order("enrolled_at", { ascending: false });
+
+  // Build email → display name lookup from enrollment data.
+  // Used below to resolve student names for pending entries.
+  const emailToName = new Map<string, string>();
+  for (const e of enrollments || []) {
+    const s = e.students as any;
+    if (s?.email) {
+      emailToName.set(
+        s.email.toLowerCase(),
+        s.screen_name || s.name || s.email,
+      );
+    }
+  }
 
   const students: StudentCard[] = await Promise.all(
     (enrollments || []).map(async (e: any) => {
@@ -152,7 +169,59 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }),
   );
 
-  return { classes, selectedClass, students };
+  // ── Pending entries (NEW) ───────────────────────────────────────────
+  const { data: pendingRows } = await admin
+    .from("entries")
+    .select(
+      "id, media_url, description_text, round_number, uploaded_at, student_id",
+    )
+    .eq("class_id", selectedClass.id)
+    .eq("status", "pending")
+    .eq("is_starter", false)
+    .order("uploaded_at", { ascending: true });
+
+  // Resolve auth user emails → student display names.
+  // entries.student_id is auth.users.id (= profiles.id). We need the
+  // email to bridge to the students table (which has screen_name/name).
+  const uidEmailCache = new Map<string, string>();
+  const pendingEntries: PendingEntryData[] = [];
+
+  for (const pe of pendingRows || []) {
+    // Get auth email (cached per uid)
+    let email = uidEmailCache.get(pe.student_id);
+    if (email === undefined) {
+      try {
+        const {
+          data: { user: authUser },
+        } = await admin.auth.admin.getUserById(pe.student_id);
+        email = authUser?.email?.toLowerCase() || "";
+      } catch {
+        email = "";
+      }
+      uidEmailCache.set(pe.student_id, email);
+    }
+
+    // Resolve thumbnail URL
+    let thumbnailUrl: string | null = null;
+    if (pe.media_url) {
+      try {
+        const { data } = admin.storage
+          .from(ENTRY_BUCKET)
+          .getPublicUrl(pe.media_url);
+        thumbnailUrl = data?.publicUrl ?? null;
+      } catch {}
+    }
+
+    pendingEntries.push({
+      id: pe.id,
+      thumbnailUrl,
+      descriptionText: pe.description_text || "",
+      roundNumber: pe.round_number,
+      studentName: emailToName.get(email) || email || "Unknown student",
+    });
+  }
+
+  return { classes, selectedClass, students, pendingEntries };
 }
 
 function buildStatusLine(cls: ClassRow): string {
@@ -184,16 +253,16 @@ function buildStatusLine(cls: ClassRow): string {
   const hours = Math.floor(elapsedMs / (1000 * 60 * 60));
   const minutes = Math.floor(elapsedMs / (1000 * 60));
   const ago =
-    days >= 1 ? `${days}d ago` : hours >= 1 ? `${hours}h ago` : `${minutes}m ago`;
+    days >= 1
+      ? `${days}d ago`
+      : hours >= 1
+        ? `${hours}h ago`
+        : `${minutes}m ago`;
 
   return `Game started ${ago} — round ${current} of ${cls.total_rounds ?? "?"}`;
 }
 
-// ── Top nav strip (step 5) ────────────────────────────────────────────
-// Two-link horizontal nav: "Class" (this page, active) and "Deck"
-// (→ /teacher/deck). Active state = bold + accent color + 2px underline.
-// Inactive = muted link. Mirrored shape on /teacher/deck with palette
-// adjusted to the deck page's dark theme.
+// ── Top nav strip ─────────────────────────────────────────────────────────
 function TopNav() {
   return (
     <nav
@@ -273,7 +342,7 @@ export default async function TeacherStudents({
     );
   }
 
-  const { classes, selectedClass, students } = data;
+  const { classes, selectedClass, students, pendingEntries } = data;
   const statusLine = buildStatusLine(selectedClass);
 
   return (
@@ -292,19 +361,13 @@ export default async function TeacherStudents({
         <TopNav />
 
         {/* Title row */}
-        <div
-          style={{
-            marginBottom: 6,
-          }}
-        >
+        <div style={{ marginBottom: 6 }}>
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
             Your classes
           </h1>
         </div>
 
-        {/* Class management header. Keyed on the selected class id so
-            switching classes remounts the form and clears any in-progress
-            edits. */}
+        {/* ── SECTION 1: Class settings header ── */}
         <ClassHeader
           key={selectedClass.id}
           classes={classes.map((c) => ({ id: c.id, name: c.name }))}
@@ -321,11 +384,19 @@ export default async function TeacherStudents({
           statusLine={statusLine}
         />
 
+        {/* ── SECTION 2: Pending submissions queue ──
+            Sits between settings and the student grid.
+            Renders nothing if there are no pending entries. */}
+        <div style={{ marginTop: 20 }}>
+          <PendingQueue entries={pendingEntries} />
+        </div>
+
+        {/* ── SECTION 3: Student grid ── */}
         <p
           style={{
             fontSize: 14,
             color: C.textDim,
-            margin: "20px 0 16px",
+            margin: "0 0 16px",
           }}
         >
           {students.length}{" "}
