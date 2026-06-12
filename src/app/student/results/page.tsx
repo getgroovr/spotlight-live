@@ -1,101 +1,27 @@
 // ─────────────────────────────────────────────────────────────────────────
-// DESTINATION: src/app/student/results/page.tsx   (REPLACES existing file)
+// src/app/student/results/page.tsx — Round-by-round favorites reveal.
 //
-// End-of-game top-three favorites reveal.
+// Replaces the old top-3-students ceremony. New design:
+//   - For each round, shows the photo(s) that received the most favorites.
+//   - Ties: if 2+ photos share the top count, all appear.
+//   - Comments: only from students who chose that photo as their favorite.
+//   - Anonymous throughout — no student names shown.
 //
-// v2 STRUCTURE
-//   Server fetches the data; a sibling client component (RevealCeremony)
-//   handles the multi-screen flow:
+// Auth: gated on game-over. Resolves class via profiles.class_id (matches
+// the rest of the student app). Redirects to dashboard if not enrolled,
+// not configured, or game not over yet.
 //
-//     Bronze (if 3 winners) → Silver (if ≥2) → Gold → Finish → /dashboard
-//
-//   Each screen shows ONE winner with up to N of their favorited entries
-//   (N = tier cap: Gold 3, Silver 2, Bronze 1). Each entry shows: photo,
-//   the student's description, fav count, and every favoriter's comment +
-//   attribution. The cap lives in TypeScript (TIER_CAP) so it can be
-//   tuned without a DB migration.
-//
-// DATA SOURCE
-//   class_top_three_reveal(p_class_id) RPC v2. Returns ALL favorited
-//   entries per winner ordered by fav_count DESC; this file applies the
-//   per-tier cap.
-//
-// AUTH + GATING
-//   Server component. Two clients used deliberately:
-//     • User's authenticated cookie client for the RPC call — the RPC's
-//       is_enrolled_in() check inspects auth.uid(), which is null on the
-//       service-role JWT. Calling as the user lets the check pass.
-//     • Service-role admin client for storage signing (mirrors
-//       student-archive.ts:365-398).
-//   Page-level redirect is the first line of auth: if no session, no
-//   current class, or current class isn't over yet, redirect to
-//   /student/dashboard.
-//
-// MEDIA URLs
-//   The RPC returns raw storage paths; signed here with the same 1-hour
-//   TTL the rest of the app uses.
-//
-// EDGE CASES
-//   • 0 winners            → EmptyState with a single dashboard link.
-//   • 1 winner             → ceremony skips straight to Gold (only screen).
-//   • 2 winners            → ceremony starts at Silver.
-//   • 3 winners            → ceremony starts at Bronze.
-//   • Winner with no entries (defensive — total_favorites would have to
-//     be 0, which excludes them from top_three) → header only on their
-//     screen with a generic message, handled in the client component.
-//
-// Round-timing helpers are imported from src/lib/round-timing.ts
-// (handoff #30 carry-over: extraction complete).
+// RevealCeremony.tsx is NO LONGER NEEDED — this is a single server-
+// rendered page. Delete RevealCeremony.tsx from the folder.
 // ─────────────────────────────────────────────────────────────────────────
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
-import RevealCeremony from "./RevealCeremony";
-import type { RevealData, ResolvedWinner } from "./RevealCeremony";
 import { type ClassTiming, isGameOver } from "@/lib/round-timing";
 
-const MEDIA_BUCKET = "media";
-const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour — match student-archive.ts.
+export const dynamic = "force-dynamic";
 
-// ── Types for the RPC v2 response ───────────────────────────────────────
-type CommentFromFavoriter = {
-  author_id: string;
-  author_name: string;
-  author_screen_name: string;
-  comment: string;
-};
-
-type FavoritedEntry = {
-  entry_id: string;
-  round: number;
-  media_url: string;          // raw storage path (signed before render)
-  description_text: string | null;
-  fav_count: number;
-  comments_from_favoriters: CommentFromFavoriter[];
-};
-
-type Winner = {
-  placement: number;
-  student_id: string;
-  student_name: string;
-  student_screen_name: string;
-  total_favorites: number;
-  favorited_entries: FavoritedEntry[];
-};
-
-type RevealResponse = {
-  class_name: string;
-  total_rounds: number;
-  winners: Winner[];
-};
-
-// Tier caps — Gold sees more of their work, Bronze sees one. Sized so a
-// 5-round class has a clear hierarchy without the Gold screen feeling
-// crowded. Re-tune here without touching the DB.
-const TIER_CAP: Record<number, number> = { 1: 3, 2: 2, 3: 1 };
-
-// ── Color tokens for the error/empty states rendered server-side. ──────
-// (Main reveal palette lives in RevealCeremony alongside the layout.)
 const C = {
   bg: "#FBF6EC",
   panel: "#F3E4C4",
@@ -103,236 +29,319 @@ const C = {
   light: "#D98A2B",
   text: "#3A2A18",
   textDim: "#6E5536",
+  textFaint: "#9A815E",
 };
 const F = "'Outfit',sans-serif";
 
-export const dynamic = "force-dynamic";
+const STARTER_BUCKET = "teacher-deck";
 
-// ── PAGE ────────────────────────────────────────────────────────────────
+type WinningPhoto = {
+  entryId: string;
+  publicUrl: string | null;
+  description: string | null;
+  favoriteCount: number;
+  comments: string[];
+};
 
-export default async function ResultsPage() {
-  // ── Auth + admin client ──
+type RoundResult = {
+  round: number;
+  winners: WinningPhoto[];
+};
+
+async function getResults() {
   const supabase = await createClient();
-  if (!supabase) redirect("/student/dashboard");
+  if (!supabase) return { error: "config" as const };
+
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !user.email) redirect("/student/dashboard");
+  if (!user || !user.email) return { error: "no-session" as const };
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) redirect("/student/dashboard");
+  if (!supabaseUrl || !serviceKey) return { error: "config" as const };
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
-  // ── Resolve current class via profiles.class_id ──
+  // Resolve class via profiles.class_id (matches the rest of the student app)
   const { data: profile } = await admin
     .from("profiles")
     .select("class_id")
     .eq("id", user.id)
     .maybeSingle();
   const classId = profile?.class_id ?? null;
-  if (!classId) redirect("/student/dashboard");
+  if (!classId) return { error: "not-enrolled" as const };
 
-  // ── Gate on game-over computed from class timing ──
+  // Get class info + timing
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, game_starts_at, round_duration_hours")
+    .select("name, total_rounds, game_starts_at, round_duration_hours")
     .eq("id", classId)
-    .maybeSingle();
-  const timing: ClassTiming = {
-    total_rounds: classRow?.total_rounds ?? null,
-    game_starts_at: classRow?.game_starts_at ?? null,
-    round_duration_hours: classRow?.round_duration_hours ?? null,
-  };
-  if (!isGameOver(timing)) redirect("/student/dashboard");
-
-  // ── Fetch the reveal data via RPC (user client, NOT admin — see top) ──
-  const { data, error } = await supabase.rpc("class_top_three_reveal", {
-    p_class_id: classId,
-  });
-  if (error || !data) {
-    console.error("[results] class_top_three_reveal failed", error);
-    return <ErrorState />;
+    .single();
+  if (!classRow || !classRow.total_rounds) {
+    return { error: "not-configured" as const };
   }
-  const reveal = data as RevealResponse;
 
-  // ── Sign all media_url paths and apply the tier cap ──
-  async function sign(path: string | null): Promise<string | null> {
-    if (!path) return null;
-    try {
-      const { data, error } = await admin.storage
-        .from(MEDIA_BUCKET)
-        .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
-      if (error) {
-        console.error(`[results] createSignedUrl failed for ${path}`, error);
-        return null;
+  // Gate on game-over
+  const timing: ClassTiming = {
+    total_rounds: classRow.total_rounds,
+    game_starts_at: classRow.game_starts_at,
+    round_duration_hours: classRow.round_duration_hours,
+  };
+  if (!isGameOver(timing)) {
+    return { error: "not-over" as const };
+  }
+
+  // Get ALL game sessions for this class (all students, all rounds)
+  const { data: sessions } = await admin
+    .from("game_sessions")
+    .select("student_id, round, favorites, comments")
+    .eq("class_id", classId);
+
+  if (!sessions || sessions.length === 0) {
+    return { error: "no-data" as const };
+  }
+
+  // Group sessions by round
+  const sessionsByRound = new Map<number, typeof sessions>();
+  for (const s of sessions) {
+    if (!s.round) continue;
+    const arr = sessionsByRound.get(s.round) || [];
+    arr.push(s);
+    sessionsByRound.set(s.round, arr);
+  }
+
+  // For each round, count favorites per entry_id and find the winner(s)
+  const allEntryIds = new Set<string>();
+  const roundResults: RoundResult[] = [];
+
+  for (let r = 1; r <= classRow.total_rounds; r++) {
+    const roundSessions = sessionsByRound.get(r) || [];
+    if (roundSessions.length === 0) continue;
+
+    // Count favorites: how many students favorited each entry
+    const favCounts = new Map<string, number>();
+    // Track comments from students who favorited each entry
+    const favoriters = new Map<string, string[]>();
+
+    for (const s of roundSessions) {
+      const favs = s.favorites as Record<string, boolean> | null;
+      const comments = s.comments as Record<string, string> | null;
+      if (!favs) continue;
+
+      for (const [entryId, isFav] of Object.entries(favs)) {
+        if (!isFav) continue;
+        favCounts.set(entryId, (favCounts.get(entryId) || 0) + 1);
+        allEntryIds.add(entryId);
+
+        const comment = comments?.[entryId] || "";
+        if (comment) {
+          const arr = favoriters.get(entryId) || [];
+          arr.push(comment);
+          favoriters.set(entryId, arr);
+        }
       }
-      return data?.signedUrl ?? null;
-    } catch (e) {
-      console.error(`[results] createSignedUrl threw for ${path}`, e);
-      return null;
+    }
+
+    if (favCounts.size === 0) continue;
+
+    // Find max favorite count
+    const maxFavs = Math.max(...favCounts.values());
+
+    // Collect all entries that tied for the top
+    const winnerIds = [...favCounts.entries()]
+      .filter(([, count]) => count === maxFavs)
+      .map(([id]) => id);
+
+    const winners: WinningPhoto[] = winnerIds.map((id) => ({
+      entryId: id,
+      publicUrl: null,
+      description: null,
+      favoriteCount: maxFavs,
+      comments: favoriters.get(id) || [],
+    }));
+
+    roundResults.push({ round: r, winners });
+  }
+
+  // Batch-fetch all entry details
+  if (allEntryIds.size > 0) {
+    const { data: entryRows } = await admin
+      .from("entries")
+      .select("id, media_url, description_text")
+      .in("id", Array.from(allEntryIds));
+
+    const entryMap = new Map<string, { publicUrl: string | null; description: string | null }>();
+    for (const e of entryRows || []) {
+      let publicUrl: string | null = null;
+      if (e.media_url) {
+        try {
+          const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(e.media_url);
+          publicUrl = data?.publicUrl ?? null;
+        } catch {}
+      }
+      entryMap.set(e.id, { publicUrl, description: e.description_text });
+    }
+
+    for (const rr of roundResults) {
+      for (const w of rr.winners) {
+        const entry = entryMap.get(w.entryId);
+        if (entry) {
+          w.publicUrl = entry.publicUrl;
+          w.description = entry.description;
+        }
+      }
     }
   }
 
-  const resolvedWinners: ResolvedWinner[] = await Promise.all(
-    reveal.winners.map(async (w) => {
-      const cap = TIER_CAP[w.placement] ?? 1;
-      const cappedEntries = w.favorited_entries.slice(0, cap);
-      const resolvedEntries = await Promise.all(
-        cappedEntries.map(async (e) => ({
-          entry_id: e.entry_id,
-          round: e.round,
-          description_text: e.description_text,
-          fav_count: e.fav_count,
-          comments_from_favoriters: e.comments_from_favoriters,
-          signedUrl: await sign(e.media_url),
-        })),
-      );
-      return {
-        placement: w.placement,
-        student_id: w.student_id,
-        student_name: w.student_name,
-        student_screen_name: w.student_screen_name,
-        total_favorites: w.total_favorites,
-        favorited_entries: resolvedEntries,
-        truncated: w.favorited_entries.length > cappedEntries.length,
-      };
-    }),
-  );
+  return {
+    className: classRow.name,
+    totalRounds: classRow.total_rounds,
+    roundResults,
+  };
+}
 
-  if (resolvedWinners.length === 0) {
-    return <EmptyState className={reveal.class_name} />;
+export default async function ResultsPage() {
+  const data = await getResults();
+
+  if ("error" in data) {
+    if (data.error === "no-session" || data.error === "not-enrolled" ||
+        data.error === "not-over" || data.error === "not-configured") {
+      redirect("/student/dashboard");
+    }
+
+    return (
+      <div style={{ background: C.bg, minHeight: "100vh", padding: "4rem 1rem",
+        fontFamily: F, color: C.text, textAlign: "center" }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+        <h1 style={{ fontSize: 24, marginBottom: 12 }}>No results yet</h1>
+        <p style={{ color: C.textDim }}>
+          Nobody has played yet — check back after the first round.
+        </p>
+        <Link href="/student/dashboard" style={{ color: C.light, fontSize: 14 }}>
+          ← Back to dashboard
+        </Link>
+      </div>
+    );
   }
 
-  const revealData: RevealData = {
-    className: reveal.class_name,
-    totalRounds: reveal.total_rounds,
-    winners: resolvedWinners,
-  };
+  const { className, roundResults } = data;
 
-  return <RevealCeremony data={revealData} />;
-}
-
-// ── EMPTY + ERROR STATES (server-rendered; no interactivity needed) ────
-
-function EmptyState({ className }: { className: string }) {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: C.bg,
-        color: C.text,
-        fontFamily: F,
-        padding: "48px 18px",
-      }}
-    >
-      <div style={{ maxWidth: 600, margin: "0 auto", textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 12,
-            letterSpacing: 2,
-            textTransform: "uppercase",
-            color: C.light,
-            marginBottom: 6,
-          }}
-        >
-          End of the season
-        </div>
-        <h1
-          style={{
-            fontSize: 26,
-            fontWeight: 800,
-            margin: "0 0 18px",
-            lineHeight: 1.2,
-          }}
-        >
-          {className}
-        </h1>
-        <section
-          style={{
-            background: C.panel,
-            border: `1px solid ${C.panelEdge}`,
-            borderRadius: 16,
-            padding: "28px 22px",
-            marginBottom: 24,
-          }}
-        >
-          <h2
-            style={{
-              fontSize: 18,
-              fontWeight: 700,
-              color: C.text,
-              margin: "0 0 8px",
-            }}
-          >
-            No favorites were recorded this season
-          </h2>
-          <p
-            style={{
-              fontSize: 14,
-              color: C.textDim,
-              margin: 0,
-              lineHeight: 1.6,
-            }}
-          >
-            Once students start favoriting each other&apos;s posts, the top
-            three will appear here.
+    <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
+      fontFamily: F, color: C.text }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+
+      <div style={{ maxWidth: 700, margin: "0 auto" }}>
+        <Link href="/student/dashboard"
+          style={{ fontSize: 13, color: C.textDim, textDecoration: "underline" }}>
+          ← Back to dashboard
+        </Link>
+
+        <div style={{ textAlign: "center", margin: "24px 0 36px" }}>
+          <h1 style={{ fontSize: 32, fontWeight: 800, margin: "0 0 6px" }}>
+            Spotlight Favorites
+          </h1>
+          <p style={{ fontSize: 14, color: C.textDim, margin: 0 }}>
+            The most loved photos from each round of {className}.
           </p>
-        </section>
-        <a
-          href="/student/dashboard"
-          style={{
-            fontSize: 14,
-            color: C.textDim,
-            textDecoration: "none",
-            borderBottom: `1px solid ${C.panelEdge}`,
-            paddingBottom: 2,
-          }}
-        >
-          ← Back to your dashboard
-        </a>
-      </div>
-    </main>
-  );
-}
+        </div>
 
-function ErrorState() {
-  return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: C.bg,
-        color: C.text,
-        fontFamily: F,
-        padding: "48px 18px",
-      }}
-    >
-      <div style={{ maxWidth: 600, margin: "0 auto", textAlign: "center" }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>
-          Something went wrong
-        </h1>
-        <p
-          style={{
-            fontSize: 14,
-            color: C.textDim,
-            margin: "0 0 24px",
-            lineHeight: 1.6,
-          }}
-        >
-          We couldn&apos;t load the results right now. Please try again in a
-          moment.
-        </p>
-        <a
-          href="/student/dashboard"
-          style={{
-            fontSize: 14,
-            color: C.textDim,
-            textDecoration: "none",
-            borderBottom: `1px solid ${C.panelEdge}`,
-            paddingBottom: 2,
-          }}
-        >
-          ← Back to your dashboard
-        </a>
+        {roundResults.length === 0 ? (
+          <div style={{ background: C.panel, border: `1px solid ${C.panelEdge}`,
+            borderRadius: 16, padding: "32px 24px", textAlign: "center" }}>
+            <p style={{ fontSize: 14, color: C.textDim, margin: 0 }}>
+              No favorites have been cast yet. Check back after a round completes.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+            {roundResults.map((rr) => (
+              <section key={rr.round}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  {rr.winners.map((w) => (
+                    <div key={w.entryId} style={{
+                      background: C.panel,
+                      border: `1px solid ${C.panelEdge}`,
+                      borderRadius: 16, overflow: "hidden",
+                      display: "flex", alignItems: "stretch",
+                      flexWrap: "wrap",
+                      position: "relative",
+                    }}>
+                      {/* Round label — upper right corner */}
+                      <div style={{ position: "absolute", top: 10, right: 14,
+                        fontSize: 11, letterSpacing: 2, textTransform: "uppercase",
+                        color: C.light, fontWeight: 700 }}>
+                        Round {rr.round}
+                        {rr.winners.length > 1 && (
+                          <span style={{ marginLeft: 6, fontSize: 10, color: C.textFaint,
+                            letterSpacing: 0, textTransform: "none", fontWeight: 400 }}>
+                            {rr.winners.length}-way tie
+                          </span>
+                        )}
+                      </div>
+                      {/* Left column — photo + description (1/3) */}
+                      <div style={{ flex: "0 0 33%", minWidth: 200, display: "flex",
+                        flexDirection: "column" }}>
+                        {w.publicUrl && (
+                          <div style={{ display: "flex", justifyContent: "center",
+                            padding: "12px 12px 0" }}>
+                            <img src={w.publicUrl} alt=""
+                              style={{ width: "70%", maxWidth: 120, aspectRatio: "1",
+                                objectFit: "cover", borderRadius: 10,
+                                display: "block" }} />
+                          </div>
+                        )}
+                        <div style={{ padding: "12px 14px", flex: 1 }}>
+                          {w.description && (
+                            <p style={{ fontSize: 13, color: C.text, fontStyle: "italic",
+                              lineHeight: 1.5, margin: "0 0 8px",
+                              borderLeft: `3px solid ${C.light}`, paddingLeft: 10 }}>
+                              &ldquo;{w.description}&rdquo;
+                            </p>
+                          )}
+                          <div style={{ fontSize: 13, color: C.light, fontWeight: 700 }}>
+                            ★ {w.favoriteCount} {w.favoriteCount === 1 ? "favorite" : "favorites"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right column — comments from favoriters (2/3) */}
+                      <div style={{ flex: "1 1 0", minWidth: 260, padding: "16px 18px",
+                        display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                        {w.comments.length > 0 ? (
+                          <>
+                            <div style={{ fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                              color: C.textFaint, textTransform: "uppercase", marginBottom: 8 }}>
+                              What they said
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {w.comments.map((comment, i) => (
+                                <div key={i} style={{
+                                  background: C.bg,
+                                  border: `1px solid ${C.panelEdge}`,
+                                  borderRadius: 10, padding: "10px 14px",
+                                }}>
+                                  <p style={{ fontSize: 14, color: C.text, lineHeight: 1.5,
+                                    margin: 0 }}>
+                                    {comment}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <p style={{ fontSize: 13, color: C.textFaint, margin: 0,
+                            fontStyle: "italic" }}>
+                            Favorited without a comment.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
       </div>
-    </main>
+    </div>
   );
 }
