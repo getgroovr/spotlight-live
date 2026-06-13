@@ -12,6 +12,25 @@
 //      isGameOver). Generates a CSV of all rounds' data client-side via
 //      a small client component.
 //
+// #36 B1 FIX:
+//   game_sessions.round is always 1 for all sessions (the play flow
+//   records the enrollment round, which is always the warm-up round).
+//   This caused every row to display "ROUND 1." Fix: number sessions
+//   sequentially by chronological order (1, 2, 3 …). Also filter
+//   sessions to the current class and sort by completed_at to ensure
+//   correct chronological ordering.
+//
+// #37 FIXES:
+//   1. Rounds now display in ascending order (1, 2, 3) not reversed.
+//   2. Student's own submissions (entries) now shown in a dedicated
+//      section with status badges. Previously, approved/rejected entries
+//      vanished after leaving the pending queue because this page only
+//      queried game_sessions (what the student saw during play), not the
+//      student's own entries.
+//   3. Two-track ID bridge: entries.student_id = profiles.id (auth user
+//      id), but this page receives students.id. We resolve via
+//      student.email → auth user lookup → profiles.id.
+//
 // Auth: gated on the teacher owning the class this student is enrolled in.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
@@ -34,6 +53,8 @@ const C = {
   text: "#3A2A18",
   textDim: "#6E5536",
   textFaint: "#9A815E",
+  green: "#2D8659",
+  red: "#C0392B",
 };
 const F = "'Outfit',sans-serif";
 
@@ -52,6 +73,18 @@ type RoundData = {
   favoriteComment: string | null;
   completedAt: string | null;
   sessionId: string; // unique key for dedup
+};
+
+// Student's own submission (entry)
+type Submission = {
+  id: string;
+  roundNumber: number;
+  status: string;
+  description_text: string;
+  rejectionReason: string | null;
+  publicUrl: string | null;
+  uploadedAt: string;
+  teacherNote: string | null;
 };
 
 async function getStudentJourney(studentId: string) {
@@ -103,12 +136,27 @@ async function getStudentJourney(studentId: string) {
     .maybeSingle();
   if (!student) return { error: "not-found" as const };
 
+  // ── Resolve profiles.id from student email ────────────────────────────
+  // entries.student_id uses profiles.id (auth user id), but this page
+  // receives students.id. Bridge: student.email → auth user → profiles.id
+  let profilesId: string | null = null;
+  if (student.email) {
+    const { data: authList } = await admin.auth.admin.listUsers({ perPage: 1000 });
+    const authUser = (authList?.users || []).find(
+      (u: { email?: string }) => u.email?.toLowerCase() === student.email?.toLowerCase()
+    );
+    profilesId = authUser?.id ?? null;
+  }
+
   // ── Fetch ALL sessions for this student (Step 7) ──────────────────
+  // #36 B1: filter by class_id to avoid cross-class bleed, and sort by
+  // completed_at ASC so sessions appear in chronological play order.
   const { data: sessions } = await admin
     .from("game_sessions")
     .select("id, comments, favorites, favorite_comment, round, completed_at")
     .eq("student_id", studentId)
-    .order("round", { ascending: true });
+    .eq("class_id", enrollment.class_id)
+    .order("completed_at", { ascending: true });
 
   // Collect every entry ID referenced across all sessions so we can
   // batch-fetch them in one query.
@@ -150,10 +198,15 @@ async function getStudentJourney(studentId: string) {
     else generalNotes.push({ body: t.body, round: t.round });
   }
 
-  // Build per-round data. Use session.id as a unique key to avoid
-  // duplicate-key errors when multiple sessions share the same round number.
+  // Build per-round data.
+  // #36 B1: game_sessions.round is unreliable (always 1 for warm-up
+  // round sessions). Number sessions sequentially by chronological
+  // order (sorted by completed_at above). Use session.id as key to
+  // avoid duplicate-key errors when multiple sessions share round=1.
   const rounds: RoundData[] = [];
-  for (const s of sessions || []) {
+  const sessionList = sessions || [];
+  for (let i = 0; i < sessionList.length; i++) {
+    const s = sessionList[i];
     const commentIds = s.comments ? Object.keys(s.comments) : [];
     const favoriteIds = s.favorites
       ? Object.keys(s.favorites).filter((k) => s.favorites[k])
@@ -176,12 +229,47 @@ async function getStudentJourney(studentId: string) {
       .filter((x): x is Entry => x !== null);
 
     rounds.push({
-      round: s.round || 1,
+      round: i + 1,  // #36 B1: sequential numbering (1, 2, 3 …)
       entries,
       favoriteComment: s.favorite_comment || null,
       completedAt: s.completed_at || null,
       sessionId: s.id,
     });
+  }
+
+  // ── Fetch student's own submissions (entries) ─────────────────────────
+  // #37: query entries table directly so approved/rejected/pending entries
+  // show on the teacher's student detail page.
+  const submissions: Submission[] = [];
+  if (profilesId) {
+    const { data: ownEntries } = await admin
+      .from("entries")
+      .select("id, media_url, description_text, status, round_number, rejection_reason, uploaded_at")
+      .eq("student_id", profilesId)
+      .eq("class_id", enrollment.class_id)
+      .eq("is_starter", false)
+      .order("round_number", { ascending: true })
+      .order("uploaded_at", { ascending: false });
+
+    for (const e of ownEntries || []) {
+      let publicUrl: string | null = null;
+      if (e.media_url) {
+        try {
+          const { data } = await admin.storage.from(MEDIA_BUCKET).createSignedUrl(e.media_url, 3600);
+          publicUrl = data?.signedUrl ?? null;
+        } catch {}
+      }
+      submissions.push({
+        id: e.id,
+        roundNumber: e.round_number,
+        status: e.status,
+        description_text: e.description_text || "",
+        rejectionReason: e.rejection_reason,
+        publicUrl,
+        uploadedAt: e.uploaded_at,
+        teacherNote: noteByEntry[e.id] ?? null,
+      });
+    }
   }
 
   let studentPhotoUrl: string | null = null;
@@ -196,12 +284,15 @@ async function getStudentJourney(studentId: string) {
     student,
     studentPhotoUrl,
     rounds,
+    submissions,
     currentRound,
     classId: enrollment.class_id as string,
     generalNotes,
     totalRounds: timing.total_rounds,
   };
 }
+
+// ── Page ──────────────────────────────────────────────────────────────────
 
 export default async function StudentDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -233,7 +324,7 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
     );
   }
 
-  const { student, studentPhotoUrl, rounds, currentRound, classId, generalNotes, totalRounds } = data;
+  const { student, studentPhotoUrl, rounds, submissions, currentRound, classId, generalNotes, totalRounds } = data;
   const displayName = student.screen_name || student.name || student.email;
 
   // Shared styles for the per-photo note form bits.
@@ -246,6 +337,25 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
     marginTop: 6, background: C.light, color: "#fff", border: "none",
     borderRadius: 8, padding: "6px 14px", fontSize: 13, fontWeight: 600,
     cursor: "pointer", fontFamily: F,
+  };
+
+  // Status badge renderer
+  const statusBadge = (status: string) => {
+    const styles: Record<string, { bg: string; fg: string; label: string }> = {
+      live:     { bg: C.green + "20", fg: C.green,  label: "APPROVED" },
+      pending:  { bg: C.light + "20", fg: C.light,  label: "AWAITING APPROVAL" },
+      rejected: { bg: C.red + "20",   fg: C.red,    label: "NOT APPROVED" },
+      archived: { bg: C.textFaint + "20", fg: C.textFaint, label: "ARCHIVED" },
+    };
+    const s = styles[status] || styles.pending;
+    return (
+      <span style={{
+        fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase",
+        background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 4,
+      }}>
+        {s.label}
+      </span>
+    );
   };
 
   // The per-photo note UI (read + author), reused for each entry.
@@ -395,7 +505,7 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
       `}</style>
 
       <div style={{ maxWidth: 760, margin: "0 auto" }}>
-        <Link href="/teacher/students"
+        <Link href={`/teacher/students?class=${classId}`}
           style={{ fontSize: 13, color: C.textDim, textDecoration: "underline" }}>
           ← Back to class
         </Link>
@@ -426,7 +536,80 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
           </div>
         </div>
 
-        {/* ── ROUNDS ─────────────────────────────────────────────────── */}
+        {/* ── SUBMISSIONS — student's own entries ────────────────────── */}
+        {submissions.length > 0 && (
+          <section style={{ marginBottom: 32 }}>
+            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+              color: C.light, marginBottom: 12 }}>
+              Submissions
+            </h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {submissions.map((sub) => (
+                <div key={sub.id} style={{
+                  display: "flex", gap: 12, alignItems: "flex-start",
+                  background: sub.status === "rejected" ? C.red + "08" : C.panel,
+                  border: `1px solid ${sub.status === "rejected" ? C.red + "44" : C.panelEdge}`,
+                  borderRadius: 10, padding: 12,
+                }}>
+                  {sub.publicUrl ? (
+                    <img src={sub.publicUrl} alt=""
+                      style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8,
+                        flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 72, height: 72, borderRadius: 8, flexShrink: 0,
+                      background: C.panelEdge + "44", display: "flex", alignItems: "center",
+                      justifyContent: "center", fontSize: 10, color: C.textFaint }}>
+                      no pic
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>
+                        Round {sub.roundNumber}
+                      </span>
+                      {statusBadge(sub.status)}
+                    </div>
+                    {sub.description_text && (
+                      <p style={{ fontSize: 12, color: C.textDim, fontStyle: "italic",
+                        margin: "0 0 4px", lineHeight: 1.4 }}>
+                        &ldquo;{sub.description_text}&rdquo;
+                      </p>
+                    )}
+                    {sub.status === "rejected" && (sub.teacherNote || sub.rejectionReason) && (
+                      <div style={{ marginTop: 6, background: C.red + "10",
+                        border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
+                        borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
+                          REJECTION REASON
+                        </div>
+                        <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                          {sub.teacherNote || sub.rejectionReason}
+                        </p>
+                      </div>
+                    )}
+                    {sub.status !== "rejected" && sub.teacherNote && (
+                      <div style={{ marginTop: 6, background: C.light + "14",
+                        border: `1px solid ${C.light}55`, borderLeft: `3px solid ${C.light}`,
+                        borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 10, color: C.light, fontWeight: 700, marginBottom: 2 }}>
+                          YOUR NOTE
+                        </div>
+                        <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                          {sub.teacherNote}
+                        </p>
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>
+                      Submitted {new Date(sub.uploadedAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ── ROUNDS PLAYED ──────────────────────────────────────────── */}
         {rounds.length === 0 ? (
           <div style={{ background: C.panel, border: `1px solid ${C.panelEdge}`,
             borderRadius: 12, padding: "20px 16px", textAlign: "center" }}>
@@ -435,67 +618,75 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
             </p>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {/* Render rounds in reverse order: most recent on top */}
-            {[...rounds].reverse().map((rd) => {
-              // Current or most recent round is expanded; past rounds collapse.
-              const isCurrent = rd.round === currentRound || (
-                currentRound === 0 && rd === rounds[rounds.length - 1]
-              );
-
-              if (isCurrent) {
-                // Expanded — no <details> wrapper
-                return (
-                  <section key={rd.sessionId}>
-                    <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-                      color: C.light, marginBottom: 10 }}>
-                      Round {rd.round}
-                      {rd.round === currentRound && (
-                        <span style={{ marginLeft: 8, fontSize: 11, color: C.textFaint,
-                          letterSpacing: 0, textTransform: "none", fontWeight: 400 }}>
-                          current
-                        </span>
-                      )}
-                    </h2>
-                    {renderRoundContent(rd)}
-                  </section>
+          <>
+            {submissions.length > 0 && (
+              <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                color: C.light, marginBottom: 12 }}>
+                Rounds played
+              </h2>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* #37: Render rounds in ascending order (1, 2, 3) */}
+              {rounds.map((rd) => {
+                // Current or most recent round is expanded; past rounds collapse.
+                const isCurrent = rd.round === currentRound || (
+                  currentRound === 0 && rd === rounds[rounds.length - 1]
                 );
-              }
 
-              // Collapsed past round — uses CSS-driven toggle text
-              return (
-                <details key={rd.sessionId} className="round-toggle"
-                  style={{ background: C.panel,
-                    border: `1px solid ${C.panelEdge}`, borderRadius: 12 }}>
-                  <summary style={{
-                    padding: "12px 16px", cursor: "pointer",
-                    display: "flex", alignItems: "center", gap: 10,
-                  }}>
-                    <span style={{ fontSize: 11, color: C.light, fontWeight: 700,
-                      letterSpacing: 1, textTransform: "uppercase" }}>
-                      Round {rd.round}
-                    </span>
-                    <span style={{ fontSize: 12, color: C.textDim, fontWeight: 400 }}>
-                      {rd.entries.length} {rd.entries.length === 1 ? "photo" : "photos"}
-                      {rd.completedAt
-                        ? ` · ${new Date(rd.completedAt).toLocaleDateString()}`
-                        : ""}
-                    </span>
-                    <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
-                      color: C.light, background: C.light + "18",
-                      border: `1px solid ${C.light}44`, borderRadius: 6,
-                      padding: "3px 10px" }}>
-                      <span className="when-closed">See the round</span>
-                      <span className="when-open">Close the round</span>
-                    </span>
-                  </summary>
-                  <div style={{ padding: "0 16px 16px" }}>
-                    {renderRoundContent(rd)}
-                  </div>
-                </details>
-              );
-            })}
-          </div>
+                if (isCurrent) {
+                  // Expanded — no <details> wrapper
+                  return (
+                    <section key={rd.sessionId}>
+                      <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                        color: C.light, marginBottom: 10 }}>
+                        Round {rd.round}
+                        {rd.round === currentRound && (
+                          <span style={{ marginLeft: 8, fontSize: 11, color: C.textFaint,
+                            letterSpacing: 0, textTransform: "none", fontWeight: 400 }}>
+                            current
+                          </span>
+                        )}
+                      </h2>
+                      {renderRoundContent(rd)}
+                    </section>
+                  );
+                }
+
+                // Collapsed past round — uses CSS-driven toggle text
+                return (
+                  <details key={rd.sessionId} className="round-toggle"
+                    style={{ background: C.panel,
+                      border: `1px solid ${C.panelEdge}`, borderRadius: 12 }}>
+                    <summary style={{
+                      padding: "12px 16px", cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 10,
+                    }}>
+                      <span style={{ fontSize: 11, color: C.light, fontWeight: 700,
+                        letterSpacing: 1, textTransform: "uppercase" }}>
+                        Round {rd.round}
+                      </span>
+                      <span style={{ fontSize: 12, color: C.textDim, fontWeight: 400 }}>
+                        {rd.entries.length} {rd.entries.length === 1 ? "photo" : "photos"}
+                        {rd.completedAt
+                          ? ` · ${new Date(rd.completedAt).toLocaleDateString()}`
+                          : ""}
+                      </span>
+                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
+                        color: C.light, background: C.light + "18",
+                        border: `1px solid ${C.light}44`, borderRadius: 6,
+                        padding: "3px 10px" }}>
+                        <span className="when-closed">See the round</span>
+                        <span className="when-open">Close the round</span>
+                      </span>
+                    </summary>
+                    <div style={{ padding: "0 16px 16px" }}>
+                      {renderRoundContent(rd)}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {/* GENERAL NOTES — only shows if any non-photo notes exist */}
