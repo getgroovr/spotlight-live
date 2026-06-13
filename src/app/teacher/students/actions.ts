@@ -12,11 +12,22 @@
 //   - Verify role = 'teacher' on profiles
 //   - Verify ownership (class belongs to this teacher)
 //
-// approveEntry / rejectEntry work the same way:
-//   - Verify the entry exists, is 'pending', and belongs to a class
-//     this teacher owns.
-//   - UPDATE entries: set status, reviewed_by, reviewed_at.
-//   - rejectEntry also stores the rejection_reason text.
+// #35 T1: approveEntry now archives any existing live entry for the same
+//         student + class + round before flipping the new one to live.
+//         This prevents unique-constraint violations when a student
+//         resubmits and the teacher approves the replacement.
+//
+// #35 T2: Both approveEntry and rejectEntry write the teacher's comment
+//         to the `teacher_comments` table with `entry_id` set. This is
+//         the same table the student profile page reads from, so notes
+//         are editable from both the pending queue and the student detail
+//         view. rejectEntry ALSO writes to entries.rejection_reason for
+//         backward compatibility with older data paths.
+//
+// TWO-TRACK STUDENT IDS: teacher_comments.student_id uses students.id
+//   (not profiles.id / auth user id). The approval flow resolves this
+//   via the lookup chain: entry.student_id → auth user email → students
+//   table. See resolveStudentsId helper.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -185,17 +196,23 @@ async function getTeacherAdmin(): Promise<
 }
 
 // Verify the entry is pending and belongs to a class this teacher owns.
+// Also returns student_id, class_id, round_number for the archive step.
 async function verifyEntryOwnership(
   admin: ReturnType<typeof createServiceClient>,
   entryId: string,
   teacherId: string,
 ): Promise<
   | { ok: false; error: string }
-  | { ok: true; entryClassId: string }
+  | {
+      ok: true;
+      entryClassId: string;
+      studentId: string;       // profiles.id = auth user id
+      roundNumber: number;
+    }
 > {
   const { data: entry } = await admin
     .from("entries")
-    .select("id, class_id, status")
+    .select("id, class_id, status, student_id, round_number")
     .eq("id", entryId)
     .maybeSingle();
 
@@ -212,18 +229,135 @@ async function verifyEntryOwnership(
     .maybeSingle();
 
   if (!cls) return { ok: false, error: "You don't own this class." };
-  return { ok: true, entryClassId: entry.class_id };
+  return {
+    ok: true,
+    entryClassId: entry.class_id,
+    studentId: entry.student_id,
+    roundNumber: entry.round_number,
+  };
+}
+
+// ── Resolve students.id from profiles.id (auth user id) ───────────────────
+//
+// teacher_comments.student_id uses students.id, but entries.student_id is
+// profiles.id (= auth user id). Different UUIDs — see the TWO-TRACK
+// comment in student-archive.ts. This helper bridges the gap:
+//   profiles.id → auth.users.email → students.email → students.id
+//
+// Returns null if the student row can't be found (e.g. seed data with
+// fake UUIDs). The caller should silently skip the teacher_comments write
+// in that case — the note won't surface, but the approve/reject still
+// goes through.
+async function resolveStudentsId(
+  adminClient: ReturnType<typeof createServiceClient>,
+  profilesId: string,
+): Promise<string | null> {
+  // Step 1: get the auth user's email.
+  const { data: authData } = await adminClient.auth.admin.getUserById(profilesId);
+  const email = authData?.user?.email;
+  if (!email) return null;
+
+  // Step 2: look up the students row by email.
+  const { data: studentRow } = await adminClient
+    .from("students")
+    .select("id")
+    .eq("email", email.toLowerCase())
+    .maybeSingle();
+  return studentRow?.id ?? null;
+}
+
+// ── Write / update teacher comment in teacher_comments ────────────────────
+//
+// Upserts a teacher_comments row for (student_id, entry_id). If a row
+// already exists for this student + entry, the body is updated. Otherwise
+// a new row is inserted.
+//
+// ASSUMPTION: teacher_comments has at minimum these columns:
+//   student_id, class_id, entry_id, body, round, created_at
+// If the table has additional NOT NULL columns this INSERT may fail —
+// the approve/reject action will still succeed; only the note is lost.
+// A server-log error will surface the missing column so we can fix it.
+async function upsertTeacherComment(
+  adminClient: ReturnType<typeof createServiceClient>,
+  studentId: string,     // students.id
+  classId: string,
+  entryId: string,
+  roundNumber: number,
+  body: string,
+): Promise<void> {
+  // Check for existing row.
+  const { data: existing } = await adminClient
+    .from("teacher_comments")
+    .select("id")
+    .eq("student_id", studentId)
+    .eq("entry_id", entryId)
+    .maybeSingle();
+
+  if (existing) {
+    // Update the existing comment.
+    const { error } = await adminClient
+      .from("teacher_comments")
+      .update({ body })
+      .eq("id", existing.id);
+    if (error) {
+      console.error("[actions] Failed to update teacher_comments:", error.message);
+    }
+  } else {
+    // Insert a new comment.
+    const { error } = await adminClient
+      .from("teacher_comments")
+      .insert({
+        student_id: studentId,
+        class_id: classId,
+        entry_id: entryId,
+        round: roundNumber,
+        body,
+      });
+    if (error) {
+      console.error("[actions] Failed to insert teacher_comments:", error.message);
+    }
+  }
 }
 
 // ── approveEntry ──────────────────────────────────────────────────────────
+//
+// #35 T1: Archive any existing live entry for the same student + class +
+//         round BEFORE flipping this one to live. Prevents unique-constraint
+//         violations on entries_one_live_per_student_class_round.
+//
+// #35 T2: If a comment is provided, writes it to teacher_comments with
+//         entry_id set. The student sees it as "Your teacher said" on
+//         their dashboard. Editable later from the student profile page.
 
-export async function approveEntry(entryId: string): Promise<ActionResult> {
+export async function approveEntry(
+  entryId: string,
+  comment?: string,
+): Promise<ActionResult> {
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
 
   const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
   if (!ownership.ok) return ownership;
 
+  // #35 T1: archive any prior live entry for this student + class + round.
+  const { error: archiveErr } = await auth.admin
+    .from("entries")
+    .update({
+      status: "archived",
+      reviewed_by: auth.userId,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("class_id", ownership.entryClassId)
+    .eq("student_id", ownership.studentId)
+    .eq("round_number", ownership.roundNumber)
+    .eq("status", "live")
+    .neq("id", entryId);
+
+  if (archiveErr) {
+    return { ok: false, error: `Could not archive prior entry: ${archiveErr.message}` };
+  }
+
+  // Flip this entry to live.
   const { error: updErr } = await auth.admin
     .from("entries")
     .update({
@@ -237,11 +371,38 @@ export async function approveEntry(entryId: string): Promise<ActionResult> {
     return { ok: false, error: `Could not approve: ${updErr.message}` };
   }
 
+  // #35 T2: write optional teacher comment to teacher_comments.
+  if (comment && comment.trim().length > 0) {
+    const studentsId = await resolveStudentsId(auth.admin, ownership.studentId);
+    if (studentsId) {
+      await upsertTeacherComment(
+        auth.admin,
+        studentsId,
+        ownership.entryClassId,
+        entryId,
+        ownership.roundNumber,
+        comment.trim(),
+      );
+    } else {
+      console.warn(
+        `[actions] Could not resolve students.id for profiles.id=${ownership.studentId} — skipping teacher comment write.`,
+      );
+    }
+  }
+
   revalidatePath("/teacher/students");
   return { ok: true };
 }
 
 // ── rejectEntry ───────────────────────────────────────────────────────────
+//
+// Sets status to 'rejected'. Writes the reason to BOTH:
+//   1. entries.rejection_reason — backward compat for existing data paths
+//   2. teacher_comments (with entry_id) — the unified note the student
+//      dashboard and student profile page both read from
+//
+// The student sees the note in a red "NOT APPROVED" context box on their
+// dashboard (based on entry status, not which table the text came from).
 
 export async function rejectEntry(
   entryId: string,
@@ -257,6 +418,7 @@ export async function rejectEntry(
   const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
   if (!ownership.ok) return ownership;
 
+  // Set status to rejected + write rejection_reason on entries (backward compat).
   const { error: updErr } = await auth.admin
     .from("entries")
     .update({
@@ -269,6 +431,23 @@ export async function rejectEntry(
 
   if (updErr) {
     return { ok: false, error: `Could not reject: ${updErr.message}` };
+  }
+
+  // Also write to teacher_comments — the unified note.
+  const studentsId = await resolveStudentsId(auth.admin, ownership.studentId);
+  if (studentsId) {
+    await upsertTeacherComment(
+      auth.admin,
+      studentsId,
+      ownership.entryClassId,
+      entryId,
+      ownership.roundNumber,
+      reason.trim(),
+    );
+  } else {
+    console.warn(
+      `[actions] Could not resolve students.id for profiles.id=${ownership.studentId} — rejection reason saved on entry but not in teacher_comments.`,
+    );
   }
 
   revalidatePath("/teacher/students");

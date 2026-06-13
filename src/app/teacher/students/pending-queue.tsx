@@ -1,12 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────
-// DESTINATION: src/app/teacher/students/pending-queue.tsx   (NEW FILE)
+// DESTINATION: src/app/teacher/students/pending-queue.tsx   (REPLACES)
 //
 // Client component: renders the pending-submissions section on the
 // teacher students page. Each card shows the student's photo thumbnail,
 // name, round number, description excerpt, plus Approve / Reject buttons.
 //
-// Reject reveals a textarea for the rejection reason (the student will
-// see it on their dashboard). Approve is instant.
+// Both buttons reveal a textarea for the teacher's note:
+//   - Approve: textarea is OPTIONAL — teacher can confirm with or without
+//     a comment. The comment is stored in teacher_comments with entry_id.
+//   - Reject: textarea is REQUIRED — the reason is stored in both
+//     teacher_comments and entries.rejection_reason.
 //
 // Both actions call server actions in ./actions.ts and rely on
 // revalidatePath to refresh the page — the approved/rejected entry
@@ -45,15 +48,16 @@ export type PendingEntryData = {
 // ── Individual pending card ───────────────────────────────────────────────
 
 function PendingCard({ entry }: { entry: PendingEntryData }) {
-  const [mode, setMode] = useState<"idle" | "rejecting">("idle");
+  const [mode, setMode] = useState<"idle" | "approving" | "rejecting">("idle");
+  const [comment, setComment] = useState("");
   const [reason, setReason] = useState("");
   const [isPending, startTransition] = useTransition();
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  function handleApprove() {
+  function handleApproveConfirm() {
     setFeedback(null);
     startTransition(async () => {
-      const result = await approveEntry(entry.id);
+      const result = await approveEntry(entry.id, comment.trim() || undefined);
       if (!result.ok) setFeedback(result.error || "Failed to approve.");
     });
   }
@@ -168,7 +172,10 @@ function PendingCard({ entry }: { entry: PendingEntryData }) {
         {mode === "idle" && (
           <div style={{ display: "flex", gap: 8 }}>
             <button
-              onClick={handleApprove}
+              onClick={() => {
+                setMode("approving");
+                setFeedback(null);
+              }}
               disabled={isPending}
               style={{
                 fontFamily: F,
@@ -207,7 +214,68 @@ function PendingCard({ entry }: { entry: PendingEntryData }) {
           </div>
         )}
 
-        {/* Rejection reason form */}
+        {/* Approve comment form (optional textarea) */}
+        {mode === "approving" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Add a note for the student (optional)…"
+              rows={2}
+              autoFocus
+              style={{
+                fontFamily: F,
+                fontSize: 13,
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: `1px solid ${C.liveGreen}66`,
+                resize: "vertical",
+                lineHeight: 1.5,
+              }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleApproveConfirm}
+                disabled={isPending}
+                style={{
+                  fontFamily: F,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.liveGreen}`,
+                  background: C.liveGreen,
+                  color: "#fff",
+                  cursor: isPending ? "default" : "pointer",
+                  opacity: isPending ? 0.5 : 1,
+                }}
+              >
+                Confirm approval
+              </button>
+              <button
+                onClick={() => {
+                  setMode("idle");
+                  setComment("");
+                  setFeedback(null);
+                }}
+                style={{
+                  fontFamily: F,
+                  fontSize: 12,
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.panelEdge}`,
+                  background: "transparent",
+                  color: C.textDim,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rejection reason form (required textarea) */}
         {mode === "rejecting" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <textarea

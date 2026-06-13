@@ -20,44 +20,43 @@
 //        │  Student Round N+2          │  bottom and a round transitioning
 //        │  Student Round N+3          │  from upcoming → in-progress
 //        └─────────────────────────────┘  doesn't visually jump bands.
-//        ┌─ COMPLETED (bottom) ────────┐  condensed <details>; descending
-//        │  ▸ Student Round N−1        │  (newest-completed at top of
-//        │  ▸ Student Round N−2        │  band); click to expand;
-//        │  ▸ Student Round 1          │  Teacher's Warm-up Round always
-//        │  ▸ Teacher's Warm-up Round  │  last (the chronological origin).
+//        ┌─ COMPLETED (bottom) ────────┐  ascending (1, 2, 3 …) — the
+//        │  ▸ Student Round 1          │  order they were completed.
+//        │  ▸ Student Round 2          │
+//        │  ▸ Student Round N−1        │
 //        └─────────────────────────────┘
+//
+//      Teacher's Warm-up Round sits at the very bottom of the page,
+//      below the results button and the spreadsheet download button.
 //
 //      Filled cards in the top band lay out as image-LEFT + all-text-
 //      stacked-RIGHT (pill if live → header + status → description →
 //      teacher note → footer with Remove). Uniform 120px image baseline;
 //      live card bumps to 140px to signal current without breaking the
-//      shared layout grammar (#28, Mike: "all the same... if anything
-//      the current should be a little bigger... pic by itself to the
-//      left").
+//      shared layout grammar (#28).
 //
 // #34 APPROVAL UX:
 //   - Approved entries (status='live'): Remove button is hidden. The
 //     existing "APPROVED" badge is the only affordance — the student
 //     can't replace an approved photo.
-//   - Rejected entries (status='rejected'): shows the teacher's reason
-//     in a notice box. Remove button stays so the student can delete
-//     and re-upload a different photo.
+//   - Rejected entries (status='rejected'): shows the teacher's note
+//     in a rejection notice box. Remove button stays so the student can
+//     delete and re-upload a different photo.
 //   - Pending entries: unchanged — Remove + "you can replace" text.
 //
-// "Teacher's Round" is implicit: the teacher's starter content lives in
-// the game (accessed via "Go to the game →"). The dashboard explicitly
-// labels student rounds as "Student Round N" to make the numbering frame
-// obvious. A small intro line above the stack reminds them.
+// #35 TEACHER NOTE UNIFICATION:
+//   Teacher notes now come from teacher_comments (via teacherNote) for
+//   both approve and reject. For backward compat with older entries that
+//   have rejection_reason on the entries table, the rejection box uses
+//   teacherNote || rejectionReason as a fallback chain. The normal
+//   "Your teacher said" section is suppressed for rejected entries to
+//   prevent double-display.
 //
-// EDGE CASES:
-//   • No current class (currentClassTiming == null): skip the stack
-//     entirely and show only the history strip.
-//   • Game NOT configured (totalRounds == null): render a single faded
-//     "Student Round 1" placeholder.
-//   • Pre-game (configured, but game_starts_at is null or in the future):
-//     currentRound == 0 → every slot is in the Upcoming band.
-//   • Game over (currentRound > totalRounds): no Upcoming, no Current;
-//     every slot is in Completed (condensed).
+// #35 LAYOUT FIXES (Chunk 1):
+//   L1 — Completed rounds now ascending (1, 2, 3 …) instead of descending.
+//   L2 — Teacher's Warm-up Round moved to the very bottom of the page.
+//   L3 — Results button text: "See who got the most favorite votes in
+//         each round →".
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { getStudentArchive, type OwnEntry, type ClassArchive } from "@/lib/student-archive";
@@ -238,8 +237,14 @@ function FullSlotCard({
 //
 // #34: approval-aware affordances:
 //   - status='live' (approved) → no Remove button, badge says APPROVED
-//   - status='rejected'        → shows rejection reason, Remove stays
+//   - status='rejected'        → shows teacher note in rejection context, Remove stays
 //   - status='pending'         → Remove + "you can replace" (unchanged)
+//
+// #35: teacher note display unified — rejection box uses
+//   teacherNote || rejectionReason (backward compat for old entries that
+//   only have rejection_reason on the entries table). Normal teacher-note
+//   section is suppressed for rejected entries to avoid showing the same
+//   text twice.
 function FilledTopSlotCard({
   entry, isLive, isLocked, imageSize,
 }: {
@@ -248,6 +253,10 @@ function FilledTopSlotCard({
   isLocked: boolean;
   imageSize: number;
 }) {
+  // Unified teacher feedback text — prefers teacher_comments (teacherNote),
+  // falls back to entries.rejection_reason for older data.
+  const rejectionFeedback = entry.teacherNote || entry.rejectionReason;
+
   return (
     <section style={{
       background: C.panel,
@@ -312,8 +321,10 @@ function FilledTopSlotCard({
             </h3>
             <StatusBadge status={entry.status} />
 
-            {/* #34: Rejection reason — shown when teacher rejected */}
-            {entry.status === "rejected" && entry.rejectionReason && (
+            {/* #35: Teacher feedback for rejected entries — unified display.
+                Uses teacherNote (from teacher_comments) with fallback to
+                rejectionReason (from entries.rejection_reason) for older data. */}
+            {entry.status === "rejected" && rejectionFeedback && (
               <div style={{
                 background: C.dangerBg,
                 border: `1px solid ${C.danger}44`,
@@ -330,7 +341,7 @@ function FilledTopSlotCard({
                   fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
                   wordBreak: "break-word",
                 }}>
-                  {entry.rejectionReason}
+                  {rejectionFeedback}
                 </p>
               </div>
             )}
@@ -374,8 +385,10 @@ function FilledTopSlotCard({
           </div>
         )}
 
-        {/* TEACHER NOTE — full card width below the description */}
-        {entry.teacherNote && (
+        {/* TEACHER NOTE — full card width below the description.
+            #35: suppressed for rejected entries to avoid double-display
+            (the rejection box above already shows the teacher's feedback). */}
+        {entry.status !== "rejected" && entry.teacherNote && (
           <div>
             <div style={{
               fontSize: 11, letterSpacing: 1, fontWeight: 600,
@@ -399,7 +412,7 @@ function FilledTopSlotCard({
 }
 
 // Body of the Teacher's Warm-up Round dropdown that lives at the bottom
-// of the completed band.
+// of the page (below results + spreadsheet buttons).
 function WarmupBody({ a }: { a: ClassArchive }) {
   const favorite = a.entries.find((e) => e.isFavorite) || null;
   const others = a.entries.filter((e) => !e.isFavorite);
@@ -649,7 +662,7 @@ export default async function StudentProfile() {
       topRounds.push(r);
     }
   }
-  completedRounds.reverse();
+  // #35 L1: ascending order (1, 2, 3 …) — the order they were completed.
 
   const currentClass = classes.find((c) => c.isCurrent) ?? null;
   const pastClasses = classes.filter((c) => !c.isCurrent);
@@ -817,8 +830,7 @@ export default async function StudentProfile() {
             })}
 
             {/* ── COMPLETED band ── */}
-            {(completedRounds.length > 0 ||
-              (currentClass && currentClass.entries.length > 0)) && (
+            {completedRounds.length > 0 && (
               <div style={{ marginTop: 20 }}>
                 <h3 style={{
                   fontSize: 12, letterSpacing: 2, textTransform: "uppercase",
@@ -893,52 +905,10 @@ export default async function StudentProfile() {
                     </details>
                   );
                 })}
-
-                {/* Teacher's Warm-up Round — at the very bottom. */}
-                {currentClass && currentClass.entries.length > 0 && (
-                  <details className="round-toggle" style={{
-                    background: C.panelSoft,
-                    border: `1px solid ${C.panelEdge}`,
-                    borderRadius: 12, padding: "10px 14px", marginBottom: 8,
-                  }}>
-                    <summary style={{
-                      cursor: "pointer",
-                      display: "flex", alignItems: "center", gap: 12,
-                      flexWrap: "wrap",
-                    }}>
-                      {currentClass.favoriteThumb ? (
-                        <img src={currentClass.favoriteThumb} alt=""
-                          style={{
-                            width: 44, height: 44, objectFit: "cover",
-                            borderRadius: 8,
-                            border: `1px solid ${C.panelEdge}`,
-                            flexShrink: 0,
-                          }} />
-                      ) : (
-                        <div style={{
-                          width: 44, height: 44, borderRadius: 8,
-                          background: C.panelEdge, flexShrink: 0,
-                        }} />
-                      )}
-                      <span style={{
-                        fontSize: 13, fontWeight: 700, color: C.text,
-                      }}>
-                        Teacher&apos;s Warm-up Round
-                      </span>
-                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
-                        color: C.light, background: C.light + "18",
-                        border: `1px solid ${C.light}44`, borderRadius: 6,
-                        padding: "3px 10px" }}>
-                        <span className="when-closed">See the round</span>
-                        <span className="when-open">Close the round</span>
-                      </span>
-                    </summary>
-                    <WarmupBody a={currentClass} />
-                  </details>
-                )}
               </div>
             )}
 
+            {/* ── #35 L3: Results button (game over) ── */}
             {isGameOver && (
               <a
                 href="/student/results"
@@ -948,7 +918,7 @@ export default async function StudentProfile() {
                   color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
                   marginTop: 18 }}
               >
-                See who got the most favorites →
+                See who got the most favorite votes in each round →
               </a>
             )}
             {isGameOver && (
@@ -963,6 +933,51 @@ export default async function StudentProfile() {
                   }))}
                 />
               </div>
+            )}
+
+            {/* ── #35 L2: Teacher's Warm-up Round — at the very bottom,
+                 below results + spreadsheet buttons. ── */}
+            {currentClass && currentClass.entries.length > 0 && (
+              <details className="round-toggle" style={{
+                background: C.panelSoft,
+                border: `1px solid ${C.panelEdge}`,
+                borderRadius: 12, padding: "10px 14px",
+                marginTop: 20, marginBottom: 8,
+              }}>
+                <summary style={{
+                  cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 12,
+                  flexWrap: "wrap",
+                }}>
+                  {currentClass.favoriteThumb ? (
+                    <img src={currentClass.favoriteThumb} alt=""
+                      style={{
+                        width: 44, height: 44, objectFit: "cover",
+                        borderRadius: 8,
+                        border: `1px solid ${C.panelEdge}`,
+                        flexShrink: 0,
+                      }} />
+                  ) : (
+                    <div style={{
+                      width: 44, height: 44, borderRadius: 8,
+                      background: C.panelEdge, flexShrink: 0,
+                    }} />
+                  )}
+                  <span style={{
+                    fontSize: 13, fontWeight: 700, color: C.text,
+                  }}>
+                    Teacher&apos;s Warm-up Round
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600,
+                    color: C.light, background: C.light + "18",
+                    border: `1px solid ${C.light}44`, borderRadius: 6,
+                    padding: "3px 10px" }}>
+                    <span className="when-closed">See the round</span>
+                    <span className="when-open">Close the round</span>
+                  </span>
+                </summary>
+                <WarmupBody a={currentClass} />
+              </details>
             )}
           </>
         )}
