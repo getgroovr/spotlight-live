@@ -15,6 +15,10 @@
 // Auth pattern: SSR cookie client for auth.uid(), service client for
 // joins and admin auth (resolving student emails). All queries scoped
 // to classes this teacher owns.
+//
+// #34 FIX: Pending queue thumbnails were broken — used "teacher-deck"
+// bucket with getPublicUrl, but student entries upload to "media" bucket
+// and need createSignedUrl (same as student-archive.ts). Fixed below.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -29,7 +33,6 @@ import { ClassHeader } from "./class-header";
 import { PendingQueue, type PendingEntryData } from "./pending-queue";
 
 const MEDIA_BUCKET = "media";
-const ENTRY_BUCKET = "teacher-deck";
 
 export const dynamic = "force-dynamic";
 
@@ -201,14 +204,17 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       uidEmailCache.set(pe.student_id, email);
     }
 
-    // Resolve thumbnail URL
+    // ── FIX: use "media" bucket + createSignedUrl (not "teacher-deck" + getPublicUrl) ──
+    // Student entries upload to the "media" bucket (see AddEntryForm → addEntry).
+    // The old code used the wrong bucket and a sync public-url method that
+    // produced broken URLs for the private media bucket.
     let thumbnailUrl: string | null = null;
     if (pe.media_url) {
       try {
-        const { data } = admin.storage
-          .from(ENTRY_BUCKET)
-          .getPublicUrl(pe.media_url);
-        thumbnailUrl = data?.publicUrl ?? null;
+        const { data } = await admin.storage
+          .from(MEDIA_BUCKET)
+          .createSignedUrl(pe.media_url, 3600);
+        thumbnailUrl = data?.signedUrl ?? null;
       } catch {}
     }
 
