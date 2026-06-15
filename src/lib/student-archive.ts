@@ -107,6 +107,9 @@ export type ClassArchive = {
   completedAt: string | null;
   enrolledAt: string | null;
   favoriteComment: string | null;
+  // #39: favorite-comment moderation status, surfaced for the student dashboard.
+  favoriteCommentStatus: "pending" | "approved" | "rejected" | null;
+  favoriteCommentRejectionReason: string | null;
   entries: ArchiveEntry[];
   generalNotes: Array<{ body: string; round: number | null }>;
   // The favorite's public URL, surfaced for the collapsed strip tile (the
@@ -213,7 +216,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     // class, not the globally-latest session (the old bug).
     const { data: session } = await admin
       .from("game_sessions")
-      .select("comments, favorites, favorite_comment, round, completed_at")
+      .select("comments, favorites, favorite_comment, round, completed_at, favorite_comment_status, favorite_comment_rejection_reason")
       .eq("student_id", student.id)
       .eq("class_id", classId)
       .eq("round", round)
@@ -273,6 +276,8 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
       completedAt: session?.completed_at ?? null,
       enrolledAt: (en.enrolled_at as string) ?? null,
       favoriteComment: session?.favorite_comment ?? null,
+      favoriteCommentStatus: (session?.favorite_comment_status as "pending" | "approved" | "rejected" | null) ?? null,
+      favoriteCommentRejectionReason: (session?.favorite_comment_rejection_reason as string | null) ?? null,
       entries,
       generalNotes,
       favoriteThumb: favorite?.publicUrl ?? null,

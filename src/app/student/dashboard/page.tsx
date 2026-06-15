@@ -474,6 +474,48 @@ function WarmupBody({ a }: { a: ClassArchive }) {
                   </p>
                 </>
               )}
+              {/* #39: Favorite comment moderation status */}
+              {a.favoriteCommentStatus && (
+                <div style={{ marginTop: 10 }}>
+                  <span style={{
+                    fontSize: 10, letterSpacing: 1.5, fontWeight: 600,
+                    color: "#fff",
+                    background: a.favoriteCommentStatus === "approved"
+                      ? C.liveGreen
+                      : a.favoriteCommentStatus === "rejected"
+                        ? C.danger
+                        : C.panelEdge,
+                    padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+                  }}>
+                    {a.favoriteCommentStatus === "approved"
+                      ? "APPROVED"
+                      : a.favoriteCommentStatus === "rejected"
+                        ? "NOT APPROVED"
+                        : "AWAITING APPROVAL"}
+                  </span>
+                </div>
+              )}
+              {a.favoriteCommentStatus === "rejected" && a.favoriteCommentRejectionReason && (
+                <div style={{
+                  marginTop: 8,
+                  background: C.dangerBg,
+                  border: `1px solid ${C.danger}44`,
+                  borderRadius: 8, padding: "8px 12px",
+                }}>
+                  <div style={{
+                    fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                    color: C.danger, textTransform: "uppercase", marginBottom: 4,
+                  }}>
+                    Your teacher said
+                  </div>
+                  <p style={{
+                    fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
+                    wordBreak: "break-word",
+                  }}>
+                    {a.favoriteCommentRejectionReason}
+                  </p>
+                </div>
+              )}
               {favorite.teacherNote && (
                 <div style={{ marginTop: 10, paddingTop: 10,
                   borderTop: `1px solid ${C.panelEdge}` }}>
