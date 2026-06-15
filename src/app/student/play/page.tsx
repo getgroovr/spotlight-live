@@ -8,6 +8,10 @@
 //
 // Auth: anonymous visitors get the no-session holding page (we don't redirect
 // to login here yet — the dashboard's login flow is the main door).
+//
+// #39: mode="student" tells the game engine to save comments via
+// saveStudentRound (which writes the correct round number) instead of
+// enrollStudent (which hardcodes round=1). B3 fix.
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
 
@@ -23,7 +27,7 @@ export default async function StudentPlayPage() {
   const deck = await loadClassDeck();
 
   if (deck.ok) {
-    return <GameShell initialStudents={deck.students} />;
+    return <GameShell initialStudents={deck.students} mode="student" />;
   }
 
   return <ClassPlayHoldingPage reason={deck.reason} />;

@@ -12,10 +12,14 @@ import App from "./spotlight.jsx";
 // Component fetches the deck and passes it in; if omitted, the engine falls
 // back to its built-in STUDENTS sample data so local dev without env vars
 // still works.
+//
+// mode (optional): "visitor" (default, /play) or "student" (/student/play).
+// In student mode, the end-of-round flow saves comments via saveStudentRound
+// instead of triggering enrollment via enrollStudent. See B3 fix (#39).
 /**
- * @param {{ initialStudents?: unknown[] }} props
+ * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student" }} props
  */
-export default function GameShell({ initialStudents } = {}) {
+export default function GameShell({ initialStudents, mode } = {}) {
   useEffect(() => {
     const htmlEl = document.documentElement;
     const bodyEl = document.body;
@@ -51,7 +55,7 @@ export default function GameShell({ initialStudents } = {}) {
       }}
     >
       <div style={{ width: "100%", maxWidth: 560 }}>
-        <App initialStudents={initialStudents} />
+        <App initialStudents={initialStudents} mode={mode} />
       </div>
     </div>
   );

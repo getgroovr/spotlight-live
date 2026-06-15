@@ -21,7 +21,7 @@ import {
   archivedEntries,
   addEntry,
 } from "./students.js";
-import { enrollStudent } from "@/app/play/actions";
+import { enrollStudent, saveStudentRound } from "@/app/play/actions";
 
 const F = "'Outfit',sans-serif";
 const SOCIAL = false;
@@ -529,11 +529,115 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// StudentSaveForm — #39: the student-mode equivalent of EnrollForm. No
+// email / no enrollment — just saves comments + favorite to the current
+// round's game_session via saveStudentRound.
+// ─────────────────────────────────────────────────────────────────────────
+function StudentSaveForm({ myComments, favoriteId, onBack }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handleSubmit = async () => {
+    if (loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("comments", JSON.stringify(myComments));
+      fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
+      const result = await saveStudentRound(fd);
+      if (result.ok) {
+        clearProgress();
+        setDone(true);
+      } else {
+        setError(result.error);
+      }
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div style={{ textAlign: "center", padding: "2rem 1rem", maxWidth: 440, margin: "0 auto" }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 10px" }}>
+          Comments saved
+        </h2>
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.7, maxWidth: 380, margin: "0 auto 20px" }}>
+          Your comments and favorite pick have been saved for this round.
+          Head back to your profile to see everything.
+        </p>
+        <a
+          href="/student/dashboard"
+          style={{
+            display: "inline-block", fontFamily: F, fontSize: 15, fontWeight: 700,
+            padding: "12px 34px", background: C.light, color: C.stageDeep,
+            border: "none", borderRadius: 30, textDecoration: "none",
+            letterSpacing: 0.5, boxShadow: `0 8px 24px ${C.light}55`,
+          }}
+        >
+          Back to your profile →
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 420, margin: "0 auto", padding: "0.5rem 0" }}>
+      <div style={{ textAlign: "center", marginBottom: 22 }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>💬</div>
+        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
+          Save your comments
+        </h2>
+        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6, maxWidth: 360, margin: "0 auto" }}>
+          Your comments on each photo and your favorite pick will be saved
+          for this round.
+        </p>
+      </div>
+
+      {error && (
+        <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
+          background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
+          {error}
+        </div>
+      )}
+
+      <button
+        onClick={handleSubmit}
+        disabled={loading}
+        style={{ width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
+          background: loading ? C.panelEdge : C.light,
+          color: loading ? C.textFaint : C.stageDeep,
+          border: "none", borderRadius: 12,
+          cursor: loading ? "not-allowed" : "pointer",
+          letterSpacing: 0.5, marginBottom: 12 }}
+      >
+        {loading ? "Saving…" : "Save my comments →"}
+      </button>
+
+      <div style={{ textAlign: "center" }}>
+        <button onClick={onBack}
+          style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
+            border: "none", cursor: "pointer", textDecoration: "underline" }}>
+          ← Back to the photos
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // DoneScreen — tighter header. Removed: emoji block, "9 of 9", "Nice work."
 // Kept only the prompt + the grid + the button.
+//
+// #39: mode="student" swaps the EnrollForm for StudentSaveForm.
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
-  myComments, students, totalStudents, onPlayAgain,
+  myComments, students, totalStudents, onPlayAgain, mode = "visitor",
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
@@ -561,7 +665,7 @@ function DoneScreen({
           <div style={{ marginTop: 18, display: "flex", flexDirection: "column",
             alignItems: "center", gap: 6 }}>
             <button
-              onClick={() => setDonePhase("enroll")}
+              onClick={() => setDonePhase(mode === "student" ? "save" : "enroll")}
               disabled={!favoriteId}
               style={{
                 fontFamily: F, fontSize: 15, fontWeight: 700,
@@ -575,13 +679,15 @@ function DoneScreen({
                 transition: "all 0.2s ease",
               }}
             >
-              Join the class →
+              {mode === "student" ? "Save my comments →" : "Join the class →"}
             </button>
-            <button onClick={onPlayAgain}
-              style={{ fontFamily: F, fontSize: 12, color: C.textDim, background: "none",
-                border: "none", cursor: "pointer", textDecoration: "underline", marginTop: 4 }}>
-              No thanks — play again
-            </button>
+            {mode !== "student" && (
+              <button onClick={onPlayAgain}
+                style={{ fontFamily: F, fontSize: 12, color: C.textDim, background: "none",
+                  border: "none", cursor: "pointer", textDecoration: "underline", marginTop: 4 }}>
+                No thanks — play again
+              </button>
+            )}
           </div>
         </>
       )}
@@ -594,11 +700,19 @@ function DoneScreen({
           onBack={() => setDonePhase("review")}
         />
       )}
+
+      {donePhase === "save" && (
+        <StudentSaveForm
+          myComments={myComments}
+          favoriteId={favoriteId}
+          onBack={() => setDonePhase("review")}
+        />
+      )}
     </div>
   );
 }
 
-export default function App({ initialStudents = STUDENTS }) {
+export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
   const [view, setView] = useState("splash");
   const [phase, setPhase] = useState("idle");
   const [order, setOrder] = useState(initialStudents);
@@ -974,6 +1088,7 @@ export default function App({ initialStudents = STUDENTS }) {
           students={playableStudents}
           totalStudents={students.length}
           onPlayAgain={resetAll}
+          mode={mode}
         />
       )}
     </div>

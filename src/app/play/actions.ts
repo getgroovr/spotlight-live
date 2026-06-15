@@ -78,6 +78,11 @@
 //
 // Round-timing helpers (#30 follow-up): extracted to src/lib/round-timing.ts
 // and now imported alongside the rest of the module's dependencies.
+//
+// #38: saveProfile now sets favorite_comment_status = 'pending' when
+//      writing the why-note to game_sessions, so it appears in the
+//      teacher's pending queue for approval. Resubmissions (after a
+//      rejection) reset the reviewed fields.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -86,6 +91,7 @@ import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 import {
   type ClassTiming,
+  computeCurrentRound,
   isRoundLocked,
   isGameOver,
 } from "@/lib/round-timing";
@@ -454,6 +460,9 @@ export async function saveProfile(
   }
 
   // ── Attach the why-note to their most recent session (soft) ───────────
+  // #38: Also set favorite_comment_status = 'pending' so the teacher sees
+  // it in the pending queue. Reset reviewed fields in case this is a
+  // resubmission after rejection.
   const { data: session } = await admin
     .from("game_sessions")
     .select("id")
@@ -464,7 +473,13 @@ export async function saveProfile(
   if (session) {
     await admin
       .from("game_sessions")
-      .update({ favorite_comment: why })
+      .update({
+        favorite_comment: why,
+        favorite_comment_status: "pending",
+        favorite_comment_reviewed_by: null,
+        favorite_comment_reviewed_at: null,
+        favorite_comment_rejection_reason: null,
+      })
       .eq("id", session.id);
   }
 
@@ -753,5 +768,158 @@ export async function removeEntry(
   }
 
   revalidatePath("/student/dashboard");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// saveStudentRound — NEW in #39.  Saves a student's comments + favorite
+// at the end of an in-class round played via /student/play.
+//
+// This is the student counterpart of enrollStudent (which handles the
+// warm-up round during enrollment). The key difference: enrollStudent
+// always writes round=1 and triggers enrollment + magic link, while
+// saveStudentRound resolves the CURRENT round from class timing and
+// writes (or updates) the game_session for that round. No enrollment
+// or magic link — the student is already logged in.
+//
+// B3 fix: before this action existed, /student/play fell through to
+// enrollStudent, which hardcoded round=1. Every student round session
+// was incorrectly labeled round 1.
+//
+// Form fields (set by spotlight.jsx in student mode):
+//   comments  — JSON string: { "<entryId>": "comment text", … }
+//   favorites — JSON string: { "<entryId>": true }
+// ─────────────────────────────────────────────────────────────────────────
+export async function saveStudentRound(formData: FormData): Promise<ActionResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
+
+  const supabase = await createClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
+
+  // ── Parse form data ──────────────────────────────────────────────────
+  const commentsRaw = String(formData.get("comments") || "{}");
+  const favoritesRaw = String(formData.get("favorites") || "{}");
+
+  let comments: Record<string, string> = {};
+  let favorites: Record<string, boolean> = {};
+  try {
+    comments = JSON.parse(commentsRaw);
+    favorites = JSON.parse(favoritesRaw);
+  } catch {}
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // ── Resolve student + class ──────────────────────────────────────────
+  const { data: student } = await admin
+    .from("students")
+    .select("id")
+    .eq("email", user.email.toLowerCase())
+    .maybeSingle();
+  if (!student) {
+    return {
+      ok: false,
+      error: "We couldn't find your enrollment. Try the play page and re-join.",
+    };
+  }
+
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("class_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  const classId = profile?.class_id ?? null;
+  if (!classId) {
+    return {
+      ok: false,
+      error: "We couldn't find your class. Please tell your teacher.",
+    };
+  }
+
+  // ── Resolve current round ────────────────────────────────────────────
+  const { data: classRow } = await admin
+    .from("classes")
+    .select("total_rounds, game_starts_at, round_duration_hours")
+    .eq("id", classId)
+    .maybeSingle();
+  const timing: ClassTiming = {
+    total_rounds: classRow?.total_rounds ?? null,
+    game_starts_at: classRow?.game_starts_at ?? null,
+    round_duration_hours: classRow?.round_duration_hours ?? null,
+  };
+
+  if (isGameOver(timing)) {
+    return { ok: false, error: "The game has ended." };
+  }
+
+  const currentRound = computeCurrentRound(timing);
+  if (currentRound < 1) {
+    return {
+      ok: false,
+      error: "The game hasn't started yet. Your teacher will let you know when it begins.",
+    };
+  }
+
+  // ── Check for existing session in this round ─────────────────────────
+  const { data: existingSession } = await admin
+    .from("game_sessions")
+    .select("id")
+    .eq("student_id", student.id)
+    .eq("class_id", classId)
+    .eq("round", currentRound)
+    .maybeSingle();
+
+  if (existingSession) {
+    // Update existing — student replayed the round and re-submitted.
+    const { error: updateErr } = await admin
+      .from("game_sessions")
+      .update({
+        comments,
+        favorites,
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", existingSession.id);
+    if (updateErr) {
+      console.error("game_session update failed:", updateErr.message);
+      return { ok: false, error: "We couldn't save your comments. Please try again." };
+    }
+  } else {
+    // Insert new session for this round.
+    const { error: insertErr } = await admin
+      .from("game_sessions")
+      .insert({
+        student_id: student.id,
+        class_id: classId,
+        round: currentRound,
+        comments,
+        favorites,
+        completed_at: new Date().toISOString(),
+      });
+    if (insertErr) {
+      console.error("game_session insert failed:", insertErr.message);
+      return { ok: false, error: "We couldn't save your comments. Please try again." };
+    }
+  }
+
+  revalidatePath("/student/dashboard");
+  revalidatePath("/student/play");
   return { ok: true };
 }
