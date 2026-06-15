@@ -31,6 +31,14 @@
 //      id), but this page receives students.id. We resolve via
 //      student.email → auth user lookup → profiles.id.
 //
+// #38 FIXES:
+//   1. "Their favorite" section now shows approval status badge
+//      (APPROVED / AWAITING APPROVAL / NOT APPROVED).
+//   2. Rejection reason displayed in the favorite section when rejected.
+//   3. Favorited pic removed from the regular comments list (deduplicated).
+//   4. "+ Add a note" available on the favorited entry in the favorite
+//      section (previously only in the regular list).
+//
 // Auth: gated on the teacher owning the class this student is enrolled in.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
@@ -71,6 +79,8 @@ type RoundData = {
   round: number;
   entries: Entry[];
   favoriteComment: string | null;
+  favoriteCommentStatus: string | null;
+  favoriteCommentRejectionReason: string | null;
   completedAt: string | null;
   sessionId: string; // unique key for dedup
 };
@@ -153,7 +163,7 @@ async function getStudentJourney(studentId: string) {
   // completed_at ASC so sessions appear in chronological play order.
   const { data: sessions } = await admin
     .from("game_sessions")
-    .select("id, comments, favorites, favorite_comment, round, completed_at")
+    .select("id, comments, favorites, favorite_comment, favorite_comment_status, favorite_comment_rejection_reason, round, completed_at")
     .eq("student_id", studentId)
     .eq("class_id", enrollment.class_id)
     .order("completed_at", { ascending: true });
@@ -166,18 +176,28 @@ async function getStudentJourney(studentId: string) {
   }
 
   // Fetch all referenced entries in one go.
+  // #40 FIX: branch on is_starter for bucket selection. Starter (warm-up
+  // deck) entries live in teacher-deck (public, getPublicUrl). Student
+  // entries live in media (private, createSignedUrl). The old code used
+  // STARTER_BUCKET for everything, which broke thumbnails for any student
+  // photo a peer commented on.
   const entryMap: Record<string, { id: string; description_text: string | null; publicUrl: string | null }> = {};
   if (allEntryIds.size > 0) {
     const { data: entryRows } = await admin
       .from("entries")
-      .select("id, media_url, description_text")
+      .select("id, media_url, description_text, is_starter")
       .in("id", Array.from(allEntryIds));
     for (const r of entryRows || []) {
       let publicUrl: string | null = null;
       if (r.media_url) {
         try {
-          const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url);
-          publicUrl = data?.publicUrl ?? null;
+          if (r.is_starter) {
+            const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url);
+            publicUrl = data?.publicUrl ?? null;
+          } else {
+            const { data } = await admin.storage.from(MEDIA_BUCKET).createSignedUrl(r.media_url, 3600);
+            publicUrl = data?.signedUrl ?? null;
+          }
         } catch {}
       }
       entryMap[r.id] = { id: r.id, description_text: r.description_text, publicUrl };
@@ -232,6 +252,8 @@ async function getStudentJourney(studentId: string) {
       round: i + 1,  // #36 B1: sequential numbering (1, 2, 3 …)
       entries,
       favoriteComment: s.favorite_comment || null,
+      favoriteCommentStatus: s.favorite_comment_status || null,
+      favoriteCommentRejectionReason: s.favorite_comment_rejection_reason || null,
       completedAt: s.completed_at || null,
       sessionId: s.id,
     });
@@ -399,21 +421,49 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
     );
 
   // Render a single round's content block (entries + favorite highlight).
+  // #38: favorite section now shows approval status badge, rejection reason,
+  //      and noteBlock. Favorited entry is excluded from the "all entries"
+  //      list below to avoid duplication.
   const renderRoundContent = (rd: RoundData) => {
     const favorite = rd.entries.find((e) => e.isFavorite) || null;
+    // #38: exclude the favorited entry from the regular list
+    const nonFavoriteEntries = rd.entries.filter((e) => !e.isFavorite);
+
+    // #38: map favorite_comment_status to a display badge
+    const favBadge = (status: string | null) => {
+      if (!status) return null;
+      const map: Record<string, { bg: string; fg: string; label: string }> = {
+        approved: { bg: C.green + "20", fg: C.green, label: "APPROVED" },
+        pending:  { bg: C.light + "20", fg: C.light, label: "AWAITING APPROVAL" },
+        rejected: { bg: C.red + "20",   fg: C.red,   label: "NOT APPROVED" },
+      };
+      const s = map[status];
+      if (!s) return null;
+      return (
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase",
+          background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 4,
+          marginLeft: 8, verticalAlign: "middle",
+        }}>
+          {s.label}
+        </span>
+      );
+    };
 
     return (
       <>
         {/* Favorite highlight for this round */}
         {favorite && (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase",
-              color: C.light, marginBottom: 8, fontWeight: 600 }}>
-              Their favorite
-            </div>
-            <div style={{ display: "flex", gap: 14, alignItems: "flex-start",
+            <div style={{ display: "flex", flexDirection: "column", gap: 10,
               background: C.panel, border: `1px solid ${C.panelEdge}`,
               borderRadius: 14, padding: 14 }}>
+              <div style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase",
+                color: C.light, fontWeight: 600 }}>
+                Their favorite
+                {favBadge(rd.favoriteCommentStatus)}
+              </div>
+              <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               {favorite.publicUrl && (
                 <img src={favorite.publicUrl} alt=""
                   style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 10,
@@ -437,7 +487,9 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                     </p>
                   </>
                 )}
-                {rd.favoriteComment && (
+                {/* #40: "Why it was their favorite" only on the warm-up round (round 1).
+                   Students write a why-note only during enrollment, not student rounds. */}
+                {rd.favoriteComment && rd.round === 1 && (
                   <>
                     <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>
                       Why it was their favorite:
@@ -447,17 +499,33 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                     </p>
                   </>
                 )}
+                {/* #38: Show rejection reason when favorite comment was rejected */}
+                {rd.favoriteCommentStatus === "rejected" && rd.favoriteCommentRejectionReason && (
+                  <div style={{ marginTop: 10, background: C.red + "10",
+                    border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
+                    borderRadius: 6, padding: "6px 10px" }}>
+                    <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
+                      REJECTION REASON
+                    </div>
+                    <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                      {rd.favoriteCommentRejectionReason}
+                    </p>
+                  </div>
+                )}
+                {/* #38: Add noteBlock to the favorite entry so teacher can add a note */}
+                {noteBlock(favorite, rd.round)}
               </div>
+            </div>
             </div>
           </div>
         )}
 
-        {/* All entries for this round */}
+        {/* All entries for this round (excluding the favorite, shown above) */}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {rd.entries.map((e) => (
+          {nonFavoriteEntries.map((e) => (
             <div key={`${rd.sessionId}-${e.id}`} style={{ display: "flex", gap: 12, alignItems: "flex-start",
-              background: e.isFavorite ? C.light + "18" : C.panel,
-              border: `1px solid ${e.isFavorite ? C.light : C.panelEdge}`,
+              background: C.panel,
+              border: `1px solid ${C.panelEdge}`,
               borderRadius: 10, padding: 10 }}>
               {e.publicUrl && (
                 <img src={e.publicUrl} alt=""
@@ -476,9 +544,6 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                 </p>
                 {noteBlock(e, rd.round)}
               </div>
-              {e.isFavorite && (
-                <div style={{ color: C.light, fontSize: 16, flexShrink: 0 }}>★</div>
-              )}
             </div>
           ))}
         </div>
@@ -530,7 +595,9 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
               {student.email}
             </div>
             <div style={{ fontSize: 12, color: C.textFaint, marginTop: 2 }}>
-              {rounds.length} {rounds.length === 1 ? "round" : "rounds"} played
+              {rounds.length <= 1
+                ? (rounds.length === 1 ? "Warm-up played" : "No rounds played")
+                : `${rounds.length - 1} ${rounds.length - 1 === 1 ? "round" : "rounds"} played`}
               {totalRounds ? ` of ${totalRounds}` : ""}
             </div>
           </div>
@@ -626,33 +693,54 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
               </h2>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* #37: Render rounds in ascending order (1, 2, 3) */}
-              {rounds.map((rd) => {
-                // Current or most recent round is expanded; past rounds collapse.
-                const isCurrent = rd.round === currentRound || (
-                  currentRound === 0 && rd === rounds[rounds.length - 1]
-                );
+              {/* #40: Warm-up vs Student Round naming.
+                  rd.round is sequential (1 = warm-up session, 2 = student round 1, etc.)
+                  currentRound from computeCurrentRound = the active STUDENT round (1, 2, 3).
+                  Mapping: student round N lives at rd.round = N + 1.
+                  Sort: live student round first → completed student rounds asc → warm-up last. */}
+              {[...rounds].sort((a, b) => {
+                const aIsWarmup = a.round === 1;
+                const bIsWarmup = b.round === 1;
+                const aIsCurrent = !aIsWarmup && (a.round - 1) === currentRound;
+                const bIsCurrent = !bIsWarmup && (b.round - 1) === currentRound;
+                // Live round first
+                if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
+                // Warm-up last
+                if (aIsWarmup !== bIsWarmup) return aIsWarmup ? 1 : -1;
+                // Otherwise ascending
+                return a.round - b.round;
+              }).map((rd) => {
+                const isWarmup = rd.round === 1;
+                const studentRoundNum = rd.round - 1;
+                const isCurrent = !isWarmup && studentRoundNum === currentRound;
+                // Fallback: if no round matches currentRound, expand the most recent
+                const anyLiveMatch = rounds.some(r => r.round > 1 && (r.round - 1) === currentRound);
+                const isExpanded = isCurrent || (!anyLiveMatch && rd === rounds[rounds.length - 1]);
+                const displayLabel = isWarmup ? "Warm-up Round" : `Round ${studentRoundNum}`;
 
-                if (isCurrent) {
-                  // Expanded — no <details> wrapper
+                if (isExpanded) {
                   return (
                     <section key={rd.sessionId}>
-                      <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-                        color: C.light, marginBottom: 10 }}>
-                        Round {rd.round}
-                        {rd.round === currentRound && (
-                          <span style={{ marginLeft: 8, fontSize: 11, color: C.textFaint,
-                            letterSpacing: 0, textTransform: "none", fontWeight: 400 }}>
-                            current
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        {isCurrent && (
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase",
+                            background: C.green + "20", color: C.green,
+                            padding: "3px 10px", borderRadius: 4,
+                          }}>
+                            LIVE ROUND
                           </span>
                         )}
-                      </h2>
+                        <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                          color: C.light, margin: 0 }}>
+                          {displayLabel}
+                        </h2>
+                      </div>
                       {renderRoundContent(rd)}
                     </section>
                   );
                 }
 
-                // Collapsed past round — uses CSS-driven toggle text
                 return (
                   <details key={rd.sessionId} className="round-toggle"
                     style={{ background: C.panel,
@@ -663,7 +751,7 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                     }}>
                       <span style={{ fontSize: 11, color: C.light, fontWeight: 700,
                         letterSpacing: 1, textTransform: "uppercase" }}>
-                        Round {rd.round}
+                        {displayLabel}
                       </span>
                       <span style={{ fontSize: 12, color: C.textDim, fontWeight: 400 }}>
                         {rd.entries.length} {rd.entries.length === 1 ? "photo" : "photos"}

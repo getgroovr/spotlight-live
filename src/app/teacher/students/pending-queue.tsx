@@ -1,24 +1,36 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/pending-queue.tsx   (REPLACES)
 //
-// Client component: renders the pending-submissions section on the
-// teacher students page. Each card shows the student's photo thumbnail,
-// name, round number, description excerpt, plus Approve / Reject buttons.
+// Client component: renders pending-submissions AND pending-favorite-
+// comments sections on the teacher students page.
 //
-// Both buttons reveal a textarea for the teacher's note:
-//   - Approve: textarea is OPTIONAL — teacher can confirm with or without
-//     a comment. The comment is stored in teacher_comments with entry_id.
-//   - Reject: textarea is REQUIRED — the reason is stored in both
-//     teacher_comments and entries.rejection_reason.
+// SECTION 1 — Pending submissions (unchanged from #37):
+//   Each card shows the student's photo thumbnail, name, round number,
+//   description excerpt, plus Approve / Reject buttons.
+//   - Approve: optional textarea for a note → approveEntry
+//   - Reject: required textarea for a reason → rejectEntry
 //
-// Both actions call server actions in ./actions.ts and rely on
-// revalidatePath to refresh the page — the approved/rejected entry
-// disappears from the pending list on refresh.
+// SECTION 2 — Pending favorite comments (NEW #38):
+//   Each card shows the student's name, the comment they left on the
+//   favorited pic, their "why it's my favorite" text, and a small
+//   thumbnail of the favorited pic. Approve is a single confirm click;
+//   reject requires a reason.
+//   - Approve: one-click confirm → approveFavoriteComment
+//   - Reject: required textarea for a reason → rejectFavoriteComment
+//
+// Both sections call server actions in ./actions.ts and rely on
+// revalidatePath to refresh the page — reviewed items disappear on
+// refresh.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState, useTransition } from "react";
-import { approveEntry, rejectEntry } from "./actions";
+import {
+  approveEntry,
+  rejectEntry,
+  approveFavoriteComment,
+  rejectFavoriteComment,
+} from "./actions";
 
 const C = {
   bg: "#FBF6EC",
@@ -34,8 +46,12 @@ const C = {
   liveGreenText: "#3D5A1F",
   danger: "#C04030",
   dangerBg: "#FCEAE8",
+  blue: "#4A7FB5",
+  blueBg: "#E8F0F8",
 };
 const F = "'Outfit',sans-serif";
+
+// ── Types ─────────────────────────────────────────────────────────────────
 
 export type PendingEntryData = {
   id: string;
@@ -45,7 +61,18 @@ export type PendingEntryData = {
   studentName: string;
 };
 
-// ── Individual pending card ───────────────────────────────────────────────
+export type PendingFavoriteCommentData = {
+  sessionId: string;
+  studentName: string;
+  favoritedEntryThumbnailUrl: string | null;
+  commentOnPic: string;
+  whyFavorite: string;
+  roundNumber: number;
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 1 — PENDING ENTRY CARDS
+// ═══════════════════════════════════════════════════════════════════════════
 
 function PendingCard({ entry }: { entry: PendingEntryData }) {
   const [mode, setMode] = useState<"idle" | "approving" | "rejecting">("idle");
@@ -355,29 +382,359 @@ function PendingCard({ entry }: { entry: PendingEntryData }) {
   );
 }
 
-// ── Queue wrapper ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 2 — PENDING FAVORITE COMMENT CARDS
+// ═══════════════════════════════════════════════════════════════════════════
 
-export function PendingQueue({ entries }: { entries: PendingEntryData[] }) {
-  if (entries.length === 0) return null;
+function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
+  const [mode, setMode] = useState<"idle" | "rejecting">("idle");
+  const [reason, setReason] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  function handleApprove() {
+    setFeedback(null);
+    startTransition(async () => {
+      const result = await approveFavoriteComment(item.sessionId);
+      if (!result.ok) setFeedback(result.error || "Failed to approve.");
+    });
+  }
+
+  function handleReject() {
+    if (!reason.trim()) {
+      setFeedback("Please provide a reason.");
+      return;
+    }
+    setFeedback(null);
+    startTransition(async () => {
+      const result = await rejectFavoriteComment(item.sessionId, reason.trim());
+      if (!result.ok) setFeedback(result.error || "Failed to reject.");
+      else {
+        setMode("idle");
+        setReason("");
+      }
+    });
+  }
+
+  return (
+    <div
+      style={{
+        background: C.panelSoft,
+        border: `1px solid ${C.panelEdge}`,
+        borderRadius: 12,
+        padding: 14,
+        display: "flex",
+        gap: 14,
+        alignItems: "flex-start",
+        flexWrap: "wrap",
+        opacity: isPending ? 0.5 : 1,
+        transition: "opacity 0.2s ease",
+      }}
+    >
+      {/* Favorited pic thumbnail (small) */}
+      {item.favoritedEntryThumbnailUrl ? (
+        <img
+          src={item.favoritedEntryThumbnailUrl}
+          alt=""
+          style={{
+            width: 60,
+            height: 60,
+            objectFit: "cover",
+            borderRadius: 8,
+            border: `1px solid ${C.panelEdge}`,
+            flexShrink: 0,
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 60,
+            height: 60,
+            borderRadius: 8,
+            border: `1px dashed ${C.panelEdge}`,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 10,
+            color: C.textFaint,
+            background: C.bg,
+          }}
+        >
+          no pic
+        </div>
+      )}
+
+      {/* Content + actions */}
+      <div style={{ flex: 1, minWidth: 200 }}>
+        {/* Student name + round */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 6,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>
+            {item.studentName}
+          </span>
+          <span style={{ fontSize: 12, color: C.textFaint }}>
+            · Round {item.roundNumber}
+          </span>
+        </div>
+
+        {/* Comment on the favorited pic */}
+        {item.commentOnPic && (
+          <div style={{ marginBottom: 6 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: C.textFaint,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              Comment on pic
+            </span>
+            <p
+              style={{
+                fontSize: 13,
+                color: C.textDim,
+                fontStyle: "italic",
+                lineHeight: 1.5,
+                margin: "2px 0 0",
+                wordBreak: "break-word",
+              }}
+            >
+              &ldquo;{item.commentOnPic}&rdquo;
+            </p>
+          </div>
+        )}
+
+        {/* Why it's my favorite */}
+        {item.whyFavorite && (
+          <div style={{ marginBottom: 10 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: C.textFaint,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              Why it&rsquo;s my favorite
+            </span>
+            <p
+              style={{
+                fontSize: 13,
+                color: C.textDim,
+                fontStyle: "italic",
+                lineHeight: 1.5,
+                margin: "2px 0 0",
+                wordBreak: "break-word",
+              }}
+            >
+              &ldquo;{item.whyFavorite}&rdquo;
+            </p>
+          </div>
+        )}
+
+        {/* Action buttons — idle mode */}
+        {mode === "idle" && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleApprove}
+              disabled={isPending}
+              style={{
+                fontFamily: F,
+                fontSize: 12,
+                fontWeight: 700,
+                padding: "5px 14px",
+                borderRadius: 6,
+                border: `1px solid ${C.liveGreen}`,
+                background: C.liveGreen,
+                color: "#fff",
+                cursor: isPending ? "default" : "pointer",
+                opacity: isPending ? 0.5 : 1,
+              }}
+            >
+              ✓ Approve
+            </button>
+            <button
+              onClick={() => {
+                setMode("rejecting");
+                setFeedback(null);
+              }}
+              disabled={isPending}
+              style={{
+                fontFamily: F,
+                fontSize: 12,
+                fontWeight: 700,
+                padding: "5px 14px",
+                borderRadius: 6,
+                border: `1px solid ${C.danger}`,
+                background: "transparent",
+                color: C.danger,
+                cursor: isPending ? "default" : "pointer",
+              }}
+            >
+              ✗ Reject
+            </button>
+          </div>
+        )}
+
+        {/* Rejection reason form */}
+        {mode === "rejecting" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Reason for rejection (the student will see this)…"
+              rows={2}
+              autoFocus
+              style={{
+                fontFamily: F,
+                fontSize: 13,
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: `1px solid ${C.panelEdge}`,
+                resize: "vertical",
+                lineHeight: 1.5,
+              }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleReject}
+                disabled={isPending || !reason.trim()}
+                style={{
+                  fontFamily: F,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.danger}`,
+                  background: C.danger,
+                  color: "#fff",
+                  cursor:
+                    !reason.trim() || isPending ? "default" : "pointer",
+                  opacity: !reason.trim() || isPending ? 0.5 : 1,
+                }}
+              >
+                Send rejection
+              </button>
+              <button
+                onClick={() => {
+                  setMode("idle");
+                  setReason("");
+                  setFeedback(null);
+                }}
+                style={{
+                  fontFamily: F,
+                  fontSize: 12,
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.panelEdge}`,
+                  background: "transparent",
+                  color: C.textDim,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Error feedback */}
+        {feedback && (
+          <p
+            style={{
+              fontSize: 12,
+              color: C.danger,
+              margin: "6px 0 0",
+              lineHeight: 1.4,
+            }}
+          >
+            {feedback}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUEUE WRAPPER — renders both sections
+// ═══════════════════════════════════════════════════════════════════════════
+
+export function PendingQueue({
+  entries,
+  favoriteComments = [],
+}: {
+  entries: PendingEntryData[];
+  favoriteComments?: PendingFavoriteCommentData[];
+}) {
+  const nothingPending = entries.length === 0 && favoriteComments.length === 0;
+  if (nothingPending) return null;
 
   return (
     <div style={{ marginBottom: 24 }}>
-      <h2
-        style={{
-          fontSize: 12,
-          letterSpacing: 2,
-          textTransform: "uppercase",
-          color: C.light,
-          margin: "0 0 10px",
-        }}
-      >
-        Pending submissions ({entries.length})
-      </h2>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {entries.map((e) => (
-          <PendingCard key={e.id} entry={e} />
-        ))}
-      </div>
+      {/* ── Pending photo submissions ─────────────────────────────────── */}
+      {entries.length > 0 && (
+        <>
+          <h2
+            style={{
+              fontSize: 12,
+              letterSpacing: 2,
+              textTransform: "uppercase",
+              color: C.light,
+              margin: "0 0 10px",
+            }}
+          >
+            Pending submissions ({entries.length})
+          </h2>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              marginBottom: favoriteComments.length > 0 ? 20 : 0,
+            }}
+          >
+            {entries.map((e) => (
+              <PendingCard key={e.id} entry={e} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Pending favorite comments ─────────────────────────────────── */}
+      {favoriteComments.length > 0 && (
+        <>
+          <h2
+            style={{
+              fontSize: 12,
+              letterSpacing: 2,
+              textTransform: "uppercase",
+              color: C.blue,
+              margin: "0 0 10px",
+            }}
+          >
+            Pending favorite comments ({favoriteComments.length})
+          </h2>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            {favoriteComments.map((fc) => (
+              <FavoriteCommentCard key={fc.sessionId} item={fc} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

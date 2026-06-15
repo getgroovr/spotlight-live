@@ -3,14 +3,11 @@
 //
 // Teacher students page. Three-section layout:
 //   1. Class settings header (ClassHeader component)
-//   2. Pending submissions queue (PendingQueue component) — NEW
+//   2. Pending queue (PendingQueue component)
+//      - Pending photo submissions (entries with status = 'pending')
+//      - Pending favorite comments (game_sessions with
+//        favorite_comment_status = 'pending')  — NEW #38
 //   3. Student profile grid
-//
-// The pending queue shows entries with status = 'pending' for the
-// selected class. Teacher can approve (→ 'live') or reject (→ 'rejected'
-// with a reason). Approved entries disappear from the queue and the
-// student's photo enters the game. Rejected entries disappear too; the
-// student sees the reason on their dashboard.
 //
 // Auth pattern: SSR cookie client for auth.uid(), service client for
 // joins and admin auth (resolving student emails). All queries scoped
@@ -19,6 +16,11 @@
 // #34 FIX: Pending queue thumbnails were broken — used "teacher-deck"
 // bucket with getPublicUrl, but student entries upload to "media" bucket
 // and need createSignedUrl (same as student-archive.ts). Fixed below.
+//
+// #38: Added favorite comment moderation query. game_sessions rows with
+//      favorite_comment_status = 'pending' are fetched, student name
+//      and favorited-pic thumbnail resolved, and passed to PendingQueue
+//      as the favoriteComments prop.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -30,7 +32,11 @@ import {
   type ClassTiming,
 } from "@/lib/round-timing";
 import { ClassHeader } from "./class-header";
-import { PendingQueue, type PendingEntryData } from "./pending-queue";
+import {
+  PendingQueue,
+  type PendingEntryData,
+  type PendingFavoriteCommentData,
+} from "./pending-queue";
 
 const MEDIA_BUCKET = "media";
 
@@ -74,6 +80,7 @@ type PageData =
       selectedClass: ClassRow;
       students: StudentCard[];
       pendingEntries: PendingEntryData[];
+      pendingFavoriteComments: PendingFavoriteCommentData[];
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -172,7 +179,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }),
   );
 
-  // ── Pending entries (NEW) ───────────────────────────────────────────
+  // ── Pending entries ─────────────────────────────────────────────────
   const { data: pendingRows } = await admin
     .from("entries")
     .select(
@@ -205,9 +212,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
 
     // ── FIX: use "media" bucket + createSignedUrl (not "teacher-deck" + getPublicUrl) ──
-    // Student entries upload to the "media" bucket (see AddEntryForm → addEntry).
-    // The old code used the wrong bucket and a sync public-url method that
-    // produced broken URLs for the private media bucket.
     let thumbnailUrl: string | null = null;
     if (pe.media_url) {
       try {
@@ -227,7 +231,84 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     });
   }
 
-  return { classes, selectedClass, students, pendingEntries };
+  // ── Pending favorite comments (NEW #38) ─────────────────────────────
+  // game_sessions where favorite_comment_status = 'pending' for this
+  // class. game_sessions.student_id = students.id (no bridge needed).
+  const { data: pendingFcRows } = await admin
+    .from("game_sessions")
+    .select(
+      "id, student_id, round, favorite_comment, comments, favorites",
+    )
+    .eq("class_id", selectedClass.id)
+    .eq("favorite_comment_status", "pending");
+
+  const pendingFavoriteComments: PendingFavoriteCommentData[] = [];
+
+  for (const gs of pendingFcRows || []) {
+    // Resolve student name directly from students table.
+    const { data: studentRow } = await admin
+      .from("students")
+      .select("screen_name, name, email")
+      .eq("id", gs.student_id)
+      .maybeSingle();
+    const studentName =
+      studentRow?.screen_name ||
+      studentRow?.name ||
+      studentRow?.email ||
+      "Unknown student";
+
+    // Parse favorites + comments JSON to find the favorited pic and
+    // the comment the student left on it.
+    const favorites = (gs.favorites || {}) as Record<string, boolean>;
+    const comments = (gs.comments || {}) as Record<string, string>;
+    const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
+    const commentOnPic = favEntryId ? comments[favEntryId] || "" : "";
+
+    // Get a thumbnail of the favorited pic.
+    // Starter entries (teacher's warm-up deck) are in the PUBLIC
+    // "teacher-deck" bucket → getPublicUrl.  Student entries are in
+    // the PRIVATE "media" bucket → createSignedUrl.
+    let favThumbnailUrl: string | null = null;
+    if (favEntryId) {
+      const { data: favEntry } = await admin
+        .from("entries")
+        .select("media_url, is_starter")
+        .eq("id", favEntryId)
+        .maybeSingle();
+      if (favEntry?.media_url) {
+        if (favEntry.is_starter) {
+          const { data: pub } = admin.storage
+            .from("teacher-deck")
+            .getPublicUrl(favEntry.media_url);
+          favThumbnailUrl = pub?.publicUrl ?? null;
+        } else {
+          try {
+            const { data } = await admin.storage
+              .from(MEDIA_BUCKET)
+              .createSignedUrl(favEntry.media_url, 3600);
+            favThumbnailUrl = data?.signedUrl ?? null;
+          } catch {}
+        }
+      }
+    }
+
+    pendingFavoriteComments.push({
+      sessionId: gs.id,
+      studentName,
+      favoritedEntryThumbnailUrl: favThumbnailUrl,
+      commentOnPic,
+      whyFavorite: gs.favorite_comment || "",
+      roundNumber: gs.round || 0,
+    });
+  }
+
+  return {
+    classes,
+    selectedClass,
+    students,
+    pendingEntries,
+    pendingFavoriteComments,
+  };
 }
 
 function buildStatusLine(cls: ClassRow): string {
@@ -348,7 +429,13 @@ export default async function TeacherStudents({
     );
   }
 
-  const { classes, selectedClass, students, pendingEntries } = data;
+  const {
+    classes,
+    selectedClass,
+    students,
+    pendingEntries,
+    pendingFavoriteComments,
+  } = data;
   const statusLine = buildStatusLine(selectedClass);
 
   return (
@@ -390,11 +477,14 @@ export default async function TeacherStudents({
           statusLine={statusLine}
         />
 
-        {/* ── SECTION 2: Pending submissions queue ──
+        {/* ── SECTION 2: Pending queue (submissions + favorite comments) ──
             Sits between settings and the student grid.
-            Renders nothing if there are no pending entries. */}
+            Renders nothing if there's nothing pending. */}
         <div style={{ marginTop: 20 }}>
-          <PendingQueue entries={pendingEntries} />
+          <PendingQueue
+            entries={pendingEntries}
+            favoriteComments={pendingFavoriteComments}
+          />
         </div>
 
         {/* ── SECTION 3: Student grid ── */}
@@ -561,7 +651,7 @@ export default async function TeacherStudents({
                         marginTop: "auto",
                       }}
                     >
-                      Round {s.round} ·{" "}
+                      {s.round === 1 ? "Warm-up" : `Round ${(s.round ?? 1) - 1}`} ·{" "}
                       {new Date(s.completedAt).toLocaleDateString()}
                     </div>
                   )}

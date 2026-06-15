@@ -3,11 +3,13 @@
 //
 // Server actions for the teacher students page:
 //
-//   1. saveClassSettings — class management header (slice 1, step 3)
-//   2. approveEntry      — approve a pending student submission
-//   3. rejectEntry        — reject a pending submission with a reason
+//   1. saveClassSettings       — class management header (slice 1, step 3)
+//   2. approveEntry            — approve a pending student submission
+//   3. rejectEntry             — reject a pending submission with a reason
+//   4. approveFavoriteComment  — NEW #38: approve a pending favorite comment
+//   5. rejectFavoriteComment   — NEW #38: reject a pending favorite comment
 //
-// AUTH PATTERN (all three):
+// AUTH PATTERN (all actions):
 //   - SSR cookie client to resolve auth.uid()
 //   - Verify role = 'teacher' on profiles
 //   - Verify ownership (class belongs to this teacher)
@@ -24,10 +26,23 @@
 //         view. rejectEntry ALSO writes to entries.rejection_reason for
 //         backward compatibility with older data paths.
 //
+// #38: Favorite comment moderation. game_sessions now has:
+//        favorite_comment_status   (null | pending | approved | rejected)
+//        favorite_comment_reviewed_by, favorite_comment_reviewed_at
+//        favorite_comment_rejection_reason
+//      The pending queue surfaces sessions where favorite_comment_status
+//      = 'pending'. Approve/reject flip the status. Rejection reason is
+//      stored on game_sessions directly (no teacher_comments write for
+//      this path — the student reads it from the session row).
+//
 // TWO-TRACK STUDENT IDS: teacher_comments.student_id uses students.id
 //   (not profiles.id / auth user id). The approval flow resolves this
 //   via the lookup chain: entry.student_id → auth user email → students
 //   table. See resolveStudentsId helper.
+//
+//   NOTE: game_sessions.student_id IS students.id already (written by
+//   enrollStudent in play/actions.ts), so the favorite-comment actions
+//   do NOT need the resolveStudentsId bridge.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -194,6 +209,8 @@ async function getTeacherAdmin(): Promise<
     admin: createServiceClient(supabaseUrl, serviceKey),
   };
 }
+
+// ── Entry ownership verification ──────────────────────────────────────────
 
 // Verify the entry is pending and belongs to a class this teacher owns.
 // Also returns student_id, class_id, round_number for the archive step.
@@ -448,6 +465,123 @@ export async function rejectEntry(
     console.warn(
       `[actions] Could not resolve students.id for profiles.id=${ownership.studentId} — rejection reason saved on entry but not in teacher_comments.`,
     );
+  }
+
+  revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ── approveFavoriteComment ────────────────────────────────────────────────
+//
+// #38: Approves a pending favorite comment on a game_session.
+//
+// Flips favorite_comment_status from 'pending' → 'approved'.
+// No teacher_comments write — the approve is a simple status flip.
+// If the teacher wants to leave a note for the student, they can do
+// it from the student detail page.
+//
+// game_sessions.student_id is students.id (not profiles.id), written
+// by enrollStudent. No resolveStudentsId bridge needed here.
+
+export async function approveFavoriteComment(
+  sessionId: string,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  // Load the session and verify it's pending.
+  const { data: session } = await auth.admin
+    .from("game_sessions")
+    .select("id, class_id, favorite_comment_status")
+    .eq("id", sessionId)
+    .maybeSingle();
+
+  if (!session) return { ok: false, error: "Session not found." };
+  if (session.favorite_comment_status !== "pending") {
+    return { ok: false, error: "This favorite comment has already been reviewed." };
+  }
+
+  // Verify teacher owns the class.
+  const { data: cls } = await auth.admin
+    .from("classes")
+    .select("id")
+    .eq("id", session.class_id)
+    .eq("teacher_id", auth.userId)
+    .maybeSingle();
+  if (!cls) return { ok: false, error: "You don't own this class." };
+
+  // Flip to approved.
+  const { error: updErr } = await auth.admin
+    .from("game_sessions")
+    .update({
+      favorite_comment_status: "approved",
+      favorite_comment_reviewed_by: auth.userId,
+      favorite_comment_reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", session.id);
+
+  if (updErr) {
+    return { ok: false, error: `Could not approve: ${updErr.message}` };
+  }
+
+  revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ── rejectFavoriteComment ─────────────────────────────────────────────────
+//
+// #38: Rejects a pending favorite comment on a game_session.
+//
+// Flips favorite_comment_status from 'pending' → 'rejected' and stores
+// the reason in favorite_comment_rejection_reason. The student sees this
+// on their dashboard and can edit + resubmit their favorite comment,
+// which resets the status back to 'pending'.
+
+export async function rejectFavoriteComment(
+  sessionId: string,
+  reason: string,
+): Promise<ActionResult> {
+  if (!reason || reason.trim().length === 0) {
+    return { ok: false, error: "Please provide a reason for the rejection." };
+  }
+
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  // Load the session and verify it's pending.
+  const { data: session } = await auth.admin
+    .from("game_sessions")
+    .select("id, class_id, favorite_comment_status")
+    .eq("id", sessionId)
+    .maybeSingle();
+
+  if (!session) return { ok: false, error: "Session not found." };
+  if (session.favorite_comment_status !== "pending") {
+    return { ok: false, error: "This favorite comment has already been reviewed." };
+  }
+
+  // Verify teacher owns the class.
+  const { data: cls } = await auth.admin
+    .from("classes")
+    .select("id")
+    .eq("id", session.class_id)
+    .eq("teacher_id", auth.userId)
+    .maybeSingle();
+  if (!cls) return { ok: false, error: "You don't own this class." };
+
+  // Flip to rejected + store reason.
+  const { error: updErr } = await auth.admin
+    .from("game_sessions")
+    .update({
+      favorite_comment_status: "rejected",
+      favorite_comment_rejection_reason: reason.trim(),
+      favorite_comment_reviewed_by: auth.userId,
+      favorite_comment_reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", session.id);
+
+  if (updErr) {
+    return { ok: false, error: `Could not reject: ${updErr.message}` };
   }
 
   revalidatePath("/teacher/students");
