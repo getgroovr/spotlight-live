@@ -1,19 +1,26 @@
-// /student/play — the in-class game view for a signed-in student.
+// ─────────────────────────────────────────────────────────────────────────
+// src/app/student/play/page.tsx — the in-class game view for a signed-in
+// student.
 //
-// This is the "first student-led game" surface. Destination of the
-// "Go to the game →" button on the finish-joining / profile page. Distinct
-// from /play (visitor demo, cross-class, ≥9 photos). This view is scoped to
-// the signed-in student's class (profiles.class_id) and gated only on
-// "at least one entry exists" — usually the student's own.
+// Destination of the "Go to the game →" button on the dashboard. Distinct
+// from /play (visitor demo, cross-class, ≥9 photos). This view is scoped
+// to the signed-in student's class (profiles.class_id).
 //
-// Auth: anonymous visitors get the no-session holding page (we don't redirect
-// to login here yet — the dashboard's login flow is the main door).
+// Auth: anonymous visitors get the no-session holding page.
 //
 // #39: mode="student" tells the game engine to save comments via
 // saveStudentRound (which writes the correct round number) instead of
 // enrollStudent (which hardcodes round=1). B3 fix.
+//
+// #44 B18 FIX: Added game-over and game-not-started checks. Previously
+// the page loaded the deck and rendered GameShell unconditionally — a
+// student could play round 3, submit comments, and THEN get told the
+// game was over. Now loadClassDeck checks timing first and returns
+// "game-over" or "game-not-started" reasons before loading entries.
+// ─────────────────────────────────────────────────────────────────────────
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
+import Link from "next/link";
 
 export const metadata = {
   title: "Spotlight — Your Class",
@@ -36,8 +43,61 @@ export default async function StudentPlayPage() {
 function ClassPlayHoldingPage({
   reason,
 }: {
-  reason: "no-supabase" | "no-session" | "no-class" | "no-entries";
+  reason:
+    | "no-supabase"
+    | "no-session"
+    | "no-class"
+    | "no-entries"
+    | "game-over"
+    | "game-not-started";
 }) {
+  // B18 (#44): game-over gets its own celebratory holding page.
+  if (reason === "game-over") {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: "#D9BE8E",
+          color: "#3a2a1a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "24px",
+          fontFamily:
+            "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+        }}
+      >
+        <div style={{ maxWidth: 460, textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🎉</div>
+          <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 12px" }}>
+            The game is complete!
+          </h1>
+          <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 24px" }}>
+            All rounds are finished. Head to your dashboard to see your
+            comments, your teacher&apos;s notes, and find out who got the
+            most favorite votes.
+          </p>
+          <Link
+            href="/student/dashboard"
+            style={{
+              display: "inline-block",
+              background: "#D98A2B",
+              color: "#fff",
+              padding: "12px 28px",
+              borderRadius: 12,
+              fontSize: 15,
+              fontWeight: 700,
+              textDecoration: "none",
+              letterSpacing: 0.5,
+            }}
+          >
+            See your results →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const headline =
     reason === "no-session"
       ? "Please sign in"
@@ -45,6 +105,8 @@ function ClassPlayHoldingPage({
       ? "You're not in a class yet"
       : reason === "no-entries"
       ? "Nothing to play yet"
+      : reason === "game-not-started"
+      ? "Hang tight!"
       : "Your class isn't set up yet";
 
   const body =
@@ -54,6 +116,8 @@ function ClassPlayHoldingPage({
       ? "Finish joining your class on your profile page first."
       : reason === "no-entries"
       ? "Add your first photo and a few words about it on your profile page — that's your entry in the game. Once it's in, you'll see it here, and your classmates' photos will appear as soon as the teacher approves them."
+      : reason === "game-not-started"
+      ? "Your teacher hasn't started the game yet. Once they do, you'll be able to play here. In the meantime, make sure your profile is set up and your first photo is uploaded on your dashboard."
       : "Ask your teacher to check the Spotlight setup.";
 
   return (
@@ -75,6 +139,25 @@ function ClassPlayHoldingPage({
           {headline}
         </h1>
         <p style={{ fontSize: 15, lineHeight: 1.6, margin: 0 }}>{body}</p>
+        {reason === "game-not-started" && (
+          <Link
+            href="/student/dashboard"
+            style={{
+              display: "inline-block",
+              marginTop: 20,
+              background: "#D98A2B",
+              color: "#fff",
+              padding: "12px 28px",
+              borderRadius: 12,
+              fontSize: 15,
+              fontWeight: 700,
+              textDecoration: "none",
+              letterSpacing: 0.5,
+            }}
+          >
+            Go to your dashboard →
+          </Link>
+        )}
       </div>
     </div>
   );

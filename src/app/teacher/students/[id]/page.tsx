@@ -596,9 +596,8 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
             </div>
             <div style={{ fontSize: 12, color: C.textFaint, marginTop: 2 }}>
               {rounds.length <= 1
-                ? (rounds.length === 1 ? "Warm-up played" : "No rounds played")
-                : `${rounds.length - 1} ${rounds.length - 1 === 1 ? "round" : "rounds"} played`}
-              {totalRounds ? ` of ${totalRounds}` : ""}
+                ? (rounds.length === 1 ? "Warm-up round played" : "No rounds played")
+                : `${rounds.length - 1} ${rounds.length - 1 === 1 ? "round" : "rounds"} played${totalRounds ? ` of ${totalRounds}` : ""}`}
             </div>
           </div>
         </div>

@@ -12,7 +12,7 @@
 // class" to "every public class.")
 //
 // SHAPE TRANSLATION (snake_case DB → camelCase engine)
-//   entries_public row                       engine entry
+//   entries row (starter only)              engine entry
 //   ----------------------------             -------------------------------
 //   id                       (uuid)          (used as student.id, since each
 //                                             starter entry is presented as
@@ -46,6 +46,16 @@
 //   anon-role storage RLS puzzle. This replaces the previous
 //   createSignedUrl approach which silently returned null for anon
 //   visitors against the private `media` bucket (see migration 08).
+//
+// B8 FIX (#41):
+//   Switched from entries_public (view) to entries (table) with an explicit
+//   .eq("is_starter", true) filter. The view didn't expose is_starter, so
+//   non-starter entries in public classes (student submissions) leaked into
+//   the pool. Those entries have media_url paths in the PRIVATE `media`
+//   bucket — getPublicUrl against `teacher-deck` returned URLs that 404'd,
+//   producing blank tiles on /play. Reading from `entries` directly is safe
+//   because we only SELECT the columns we need (no reading_audio_url leak)
+//   and the transform into EngineStudent strips everything else anyway.
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
@@ -115,18 +125,25 @@ export async function loadGenericDeck(): Promise<DeckResult> {
   const classIds = (classes ?? []).map((c) => c.id);
   if (classIds.length === 0) return { ok: false, reason: "no-class", have: 0 };
 
-  // Pull starter entries across all those classes. We read entries_public
-  // (the column-safe view that omits teacher-only audio) — the engine should
-  // never see reading_audio_url even by accident.
+  // Pull starter entries across all those classes.
   //
-  // We don't filter by is_starter here because (a) it isn't in the view's
-  // column list, and (b) public classes contain only starters by
-  // construction at this stage. When a later slice mixes student submissions
-  // into a non-public class deck, that becomes a separate function anyway.
+  // B8 FIX (#41): read from `entries` (the table) instead of `entries_public`
+  // (the view). The view omits is_starter from its column list, so we
+  // couldn't filter on it — and non-starter entries (student submissions)
+  // in public classes leaked into the pool. Their media_url paths point to
+  // the PRIVATE `media` bucket, but we getPublicUrl against `teacher-deck`,
+  // producing 404 URLs → blank tiles on /play.
+  //
+  // Reading from `entries` directly is safe: this code runs server-side,
+  // we SELECT only the columns we need (no reading_audio_url), and the
+  // transform into EngineStudent[] strips everything else. The explicit
+  // is_starter=true filter guarantees we only get teacher-uploaded starters
+  // whose media lives in the `teacher-deck` PUBLIC bucket.
   const { data: rows, error } = await supabase
-    .from("entries_public")
+    .from("entries")
     .select("id, media_url, media_type, description_text, description_l1, uploaded_at")
     .in("class_id", classIds)
+    .eq("is_starter", true)
     .eq("status", "live");
 
   if (error || !rows) return { ok: false, reason: "underfilled", have: 0 };

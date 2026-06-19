@@ -643,12 +643,17 @@ export async function addEntry(
     };
   }
 
+  // B16 FIX (#44): Explicitly set status='pending' — never rely on the DB
+  // default. Entries MUST go through the teacher approval queue regardless
+  // of round number. Also set description_l1 (NOT NULL column).
   const { error: entryErr } = await admin.from("entries").insert({
     student_id: user.id,
     class_id: entryClassId,
     media_url: entryPath,
     media_type: "photo",
     description_text: entryDescription,
+    description_l1: entryDescription,  // #44: was missing, column is NOT NULL
+    status: "pending",                 // #44 B16: explicit, not DB default
     round_number: targetRound,
   });
   if (entryErr) {

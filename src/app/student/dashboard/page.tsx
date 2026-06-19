@@ -57,9 +57,15 @@
 //   L2 — Teacher's Warm-up Round moved to the very bottom of the page.
 //   L3 — Results button text: "See who got the most favorite votes in
 //         each round →".
+//
+// B2 (#41): CLASSMATE COMMENTS IN COMPLETED ROUNDS
+//   Each completed student round now shows the entries the student
+//   commented on during that round (photos + descriptions + their
+//   comment text). The favorite is shown first with a small label.
+//   This data comes from the new roundSessions field in the archive.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
-import { getStudentArchive, type OwnEntry, type ClassArchive } from "@/lib/student-archive";
+import { getStudentArchive, type OwnEntry, type ClassArchive, type RoundSessionData } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
 import FinishJoiningForm from "./FinishJoiningForm";
 import AddEntryForm from "./AddEntryForm";
@@ -641,7 +647,7 @@ export default async function StudentProfile() {
     );
   }
 
-  const { student, classes, ownEntries, currentClassTiming } = data;
+  const { student, classes, ownEntries, currentClassTiming, roundSessions } = data;
   const displayName = student.screen_name || student.name || "there";
 
   const newest = classes[0] || null;
@@ -683,6 +689,10 @@ export default async function StudentProfile() {
 
   const entryByRound = new Map<number, OwnEntry>();
   for (const e of ownEntries) entryByRound.set(e.roundNumber, e);
+
+  // B2 (#41): map student round number → session data for classmate comments.
+  const sessionByRound = new Map<number, RoundSessionData>();
+  for (const s of roundSessions) sessionByRound.set(s.roundNumber, s);
 
   const totalRounds = currentClassTiming?.totalRounds ?? null;
   const currentRound = currentClassTiming?.currentRound ?? 0;
@@ -883,6 +893,7 @@ export default async function StudentProfile() {
 
                 {completedRounds.map((r) => {
                   const entry = entryByRound.get(r);
+                  const session = sessionByRound.get(r);
                   return (
                     <details key={`completed-${r}`} className="round-toggle" style={{
                       background: C.panelSoft,
@@ -942,6 +953,82 @@ export default async function StudentProfile() {
                             lineHeight: 1.6, margin: 0 }}>
                             No photo was submitted for this round.
                           </p>
+                        )}
+
+                        {/* ── B2 (#41): Classmate comments for this round ── */}
+                        {session && session.commentedEntries.length > 0 && (
+                          <div style={{ marginTop: 18, paddingTop: 14,
+                            borderTop: `1px solid ${C.panelEdge}` }}>
+                            <div style={{
+                              fontSize: 12, letterSpacing: 1, fontWeight: 600,
+                              color: C.textDim, textTransform: "uppercase",
+                              marginBottom: 10,
+                            }}>
+                              Your comments this round
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                              {session.commentedEntries.map((ce) => (
+                                <div key={ce.id} style={{
+                                  display: "flex", gap: 14, alignItems: "flex-start",
+                                  background: C.bg, border: `1px solid ${C.panelEdge}`,
+                                  borderRadius: 12, padding: 12,
+                                }}>
+                                  {ce.publicUrl ? (
+                                    <img src={ce.publicUrl} alt=""
+                                      style={{
+                                        width: 70, height: 70, objectFit: "cover",
+                                        borderRadius: 8, border: `1px solid ${C.panelEdge}`,
+                                        flexShrink: 0,
+                                      }} />
+                                  ) : (
+                                    <div style={{
+                                      width: 70, height: 70, borderRadius: 8,
+                                      flexShrink: 0, background: C.panel,
+                                      border: `1px solid ${C.panelEdge}`,
+                                    }} />
+                                  )}
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    {ce.isFavorite && (
+                                      <div style={{
+                                        fontSize: 10, letterSpacing: 1.5, fontWeight: 700,
+                                        color: C.light, textTransform: "uppercase",
+                                        marginBottom: 4,
+                                      }}>
+                                        ★ Your favorite
+                                      </div>
+                                    )}
+                                    {ce.description_text && (
+                                      <p style={{
+                                        fontSize: 13, color: C.text, fontStyle: "italic",
+                                        lineHeight: 1.5, margin: "0 0 8px",
+                                        borderLeft: `2px solid ${C.light}`, paddingLeft: 10,
+                                        wordBreak: "break-word",
+                                      }}>
+                                        &quot;{ce.description_text}&quot;
+                                      </p>
+                                    )}
+                                    {ce.comment && (
+                                      <>
+                                        <div style={{
+                                          fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                                          color: C.textFaint, textTransform: "uppercase",
+                                          marginBottom: 3,
+                                        }}>
+                                          What you said
+                                        </div>
+                                        <p style={{
+                                          fontSize: 14, color: C.text, lineHeight: 1.5,
+                                          margin: 0, wordBreak: "break-word",
+                                        }}>
+                                          {ce.comment}
+                                        </p>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         )}
                       </div>
                     </details>

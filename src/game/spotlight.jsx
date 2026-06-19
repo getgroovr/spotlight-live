@@ -648,12 +648,9 @@ function DoneScreen({
 
       {donePhase === "review" && (
         <>
-          <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 4px" }}>
+          <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 16px" }}>
             Pick your favorite
           </h2>
-          <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, margin: "0 auto 16px" }}>
-            Tap the photo you liked the most.
-          </p>
 
           <ReviewGrid
             students={students}
@@ -664,6 +661,12 @@ function DoneScreen({
 
           <div style={{ marginTop: 18, display: "flex", flexDirection: "column",
             alignItems: "center", gap: 6 }}>
+            {!favoriteId && (
+              <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, margin: "0 0 6px",
+                maxWidth: 280, lineHeight: 1.5 }}>
+                ↑ Tap the photo you liked the most to continue
+              </p>
+            )}
             <button
               onClick={() => setDonePhase(mode === "student" ? "save" : "enroll")}
               disabled={!favoriteId}

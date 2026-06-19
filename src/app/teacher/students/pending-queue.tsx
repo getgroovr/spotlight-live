@@ -21,6 +21,13 @@
 // Both sections call server actions in ./actions.ts and rely on
 // revalidatePath to refresh the page — reviewed items disappear on
 // refresh.
+//
+// #41 FIX: Favorite comment cards now show "Warm-up Round" when
+//   roundNumber === 1 (the enrollment/warm-up session), and
+//   "Round N-1" for student rounds (game_sessions.round is 1-indexed
+//   with warm-up at position 1, so student round display = round - 1).
+//   Entry cards are unchanged — entries.round_number already represents
+//   the student round directly (1, 2, 3…).
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -302,7 +309,7 @@ function PendingCard({ entry }: { entry: PendingEntryData }) {
           </div>
         )}
 
-        {/* Rejection reason form (required textarea) */}
+        {/* Rejection reason form */}
         {mode === "rejecting" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <textarea
@@ -416,11 +423,19 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
     });
   }
 
+  // #41: game_sessions.round = 1 is the warm-up; student rounds start at
+  // position 2 in the DB. Teacher-facing display: "Warm-up Round" for 1,
+  // "Round N-1" for student rounds.
+  const roundLabel =
+    item.roundNumber === 1
+      ? "Warm-up Round"
+      : `Round ${item.roundNumber - 1}`;
+
   return (
     <div
       style={{
-        background: C.panelSoft,
-        border: `1px solid ${C.panelEdge}`,
+        background: C.blueBg,
+        border: `1px solid ${C.blue}44`,
         borderRadius: 12,
         padding: 14,
         display: "flex",
@@ -431,27 +446,27 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
         transition: "opacity 0.2s ease",
       }}
     >
-      {/* Favorited pic thumbnail (small) */}
+      {/* Thumbnail of the favorited entry */}
       {item.favoritedEntryThumbnailUrl ? (
         <img
           src={item.favoritedEntryThumbnailUrl}
           alt=""
           style={{
-            width: 60,
-            height: 60,
+            width: 64,
+            height: 64,
             objectFit: "cover",
             borderRadius: 8,
-            border: `1px solid ${C.panelEdge}`,
+            border: `1px solid ${C.blue}44`,
             flexShrink: 0,
           }}
         />
       ) : (
         <div
           style={{
-            width: 60,
-            height: 60,
+            width: 64,
+            height: 64,
             borderRadius: 8,
-            border: `1px dashed ${C.panelEdge}`,
+            border: `1px dashed ${C.blue}44`,
             flexShrink: 0,
             display: "flex",
             alignItems: "center",
@@ -465,7 +480,7 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
         </div>
       )}
 
-      {/* Content + actions */}
+      {/* Info + actions */}
       <div style={{ flex: 1, minWidth: 200 }}>
         {/* Student name + round */}
         <div
@@ -481,7 +496,7 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
             {item.studentName}
           </span>
           <span style={{ fontSize: 12, color: C.textFaint }}>
-            · Round {item.roundNumber}
+            · {roundLabel}
           </span>
         </div>
 

@@ -76,6 +76,18 @@
 //   So when we read entries back, we must join on profiles.id, NOT
 //   students.id. The earlier version of this file joined on students.id
 //   and silently returned ownEntry=null even when an entry existed.
+//
+// B2 (#41): ROUND SESSIONS — classmate comments for completed student rounds
+//   The archive now returns roundSessions: one per completed student round
+//   in the current class. Each session carries the entries the student
+//   commented on during that round, with signed/public URLs and their
+//   comment text. The dashboard renders these below the student's own entry
+//   in each completed round's expanded view.
+//
+//   Bucket handling: warm-up entries (is_starter=true) live in the PUBLIC
+//   teacher-deck bucket → getPublicUrl. Student entries (is_starter=false)
+//   live in the PRIVATE media bucket → createSignedUrl. The round-session
+//   builder checks is_starter per entry and branches accordingly.
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
@@ -141,6 +153,13 @@ export type CurrentClassTiming = {
   isGameOver: boolean;
 };
 
+// B2 (#41): one completed student round's worth of classmate comments.
+export type RoundSessionData = {
+  roundNumber: number;        // student round number (1, 2, 3…) — NOT the DB round value
+  completedAt: string | null;
+  commentedEntries: ArchiveEntry[];
+};
+
 export type ArchiveResult =
   | { error: "no-session" | "not-enrolled" | "Server not configured." }
   | { student: { id: string; name: string | null; screen_name: string | null; email: string | null };
@@ -151,7 +170,9 @@ export type ArchiveResult =
       // #27: all own entries in current class, one per round, sorted asc.
       ownEntries: OwnEntry[];
       // #27: timing snapshot for the current class (null when none).
-      currentClassTiming: CurrentClassTiming | null };
+      currentClassTiming: CurrentClassTiming | null;
+      // B2 (#41): per-round classmate comments for the current class.
+      roundSessions: RoundSessionData[] };
 
 export async function getStudentArchive(): Promise<ArchiveResult> {
   const supabase = await createClient();
@@ -193,7 +214,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     .order("enrolled_at", { ascending: false });
 
   if (!enrollments || enrollments.length === 0) {
-    return { student, classes: [], ownEntry: null, ownEntries: [], currentClassTiming: null };
+    return { student, classes: [], ownEntry: null, ownEntries: [], currentClassTiming: null, roundSessions: [] };
   }
 
   // Preload ALL of this student's teacher notes once, then bucket per class.
@@ -401,5 +422,132 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
   const ownEntry: OwnEntry | null =
     ownEntries.length > 0 ? ownEntries[ownEntries.length - 1] : null;
 
-  return { student, classes, ownEntry, ownEntries, currentClassTiming };
+  // ── B2 (#41): roundSessions — classmate comments per student round ────
+  //
+  // Fetch ALL non-warm-up game_sessions for the current class. For each
+  // completed session, pull the entries the student commented on, resolve
+  // media URLs (is_starter → teacher-deck public, else → media signed),
+  // and pack into RoundSessionData. The dashboard renders these in the
+  // expanded completed-round view.
+  //
+  // game_sessions.round mapping:
+  //   DB round 1 = warm-up (handled above in the per-enrollment loop)
+  //   DB round N = student round N−1
+  // So studentRound = dbRound − 1.
+  let roundSessions: RoundSessionData[] = [];
+
+  if (currentClassId) {
+    const { data: studentRoundSessions } = await admin
+      .from("game_sessions")
+      .select("round, completed_at, comments, favorites")
+      .eq("student_id", student.id)
+      .eq("class_id", currentClassId)
+      .gt("round", 1) // exclude warm-up (round=1)
+      .order("round", { ascending: true });
+
+    // Pre-build note map for the current class (reuse allNotes).
+    const classNoteByEntry: Record<string, string> = {};
+    for (const t of allNotes || []) {
+      if (t.class_id !== currentClassId) continue;
+      if (t.entry_id) classNoteByEntry[t.entry_id as string] = t.body as string;
+    }
+
+    for (const sess of studentRoundSessions || []) {
+      const dbRound = sess.round as number;
+      const studentRound = dbRound - 1;
+
+      const comments = (sess.comments ?? {}) as Record<string, string>;
+      const favorites = (sess.favorites ?? {}) as Record<string, boolean>;
+      const commentIds = Object.keys(comments);
+      const favoriteId = Object.keys(favorites).find((k) => favorites[k]) ?? null;
+
+      let commentedEntries: ArchiveEntry[] = [];
+
+      if (commentIds.length > 0) {
+        // Fetch the entries this student commented on. Include is_starter
+        // so we can pick the right bucket for media URLs.
+        const { data: entryRows } = await admin
+          .from("entries")
+          .select("id, media_url, description_text, is_starter")
+          .in("id", commentIds);
+
+        if (entryRows) {
+          commentedEntries = await Promise.all(
+            entryRows.map(async (r) => {
+              let url: string | null = null;
+              const mediaPath = r.media_url as string | null;
+              const isStarter = r.is_starter as boolean;
+
+              if (mediaPath) {
+                if (isStarter) {
+                  // Starter entries → teacher-deck PUBLIC bucket → getPublicUrl
+                  try {
+                    const { data } = admin.storage
+                      .from(STARTER_BUCKET)
+                      .getPublicUrl(mediaPath);
+                    url = data?.publicUrl ?? null;
+                    if (!url) {
+                      console.error(
+                        `[student-archive] getPublicUrl returned no URL for starter ${r.id}, path: ${mediaPath}`,
+                      );
+                    }
+                  } catch (e) {
+                    console.error(
+                      `[student-archive] getPublicUrl threw for starter ${r.id}`,
+                      e,
+                    );
+                  }
+                } else {
+                  // Student entries → media PRIVATE bucket → createSignedUrl
+                  try {
+                    const { data, error } = await admin.storage
+                      .from(MEDIA_BUCKET)
+                      .createSignedUrl(mediaPath, SIGNED_URL_TTL_SECONDS);
+                    if (error || !data?.signedUrl) {
+                      console.error(
+                        `[student-archive] createSignedUrl failed for entry ${r.id}, path: ${mediaPath}`,
+                        error,
+                      );
+                    } else {
+                      url = data.signedUrl;
+                    }
+                  } catch (e) {
+                    console.error(
+                      `[student-archive] createSignedUrl threw for entry ${r.id}`,
+                      e,
+                    );
+                  }
+                }
+              }
+
+              return {
+                id: r.id as string,
+                description_text: (r.description_text as string | null) ?? null,
+                publicUrl: url,
+                comment: comments[r.id as string] || "",
+                isFavorite: (r.id as string) === favoriteId,
+                // Teacher notes here are scoped to this student — they
+                // won't contain notes about OTHER students' entries. This
+                // will be null for classmate entries, which is correct.
+                teacherNote: classNoteByEntry[r.id as string] ?? null,
+              };
+            }),
+          );
+
+          // Sort: favorite first, then others in original order.
+          commentedEntries.sort((a, b) =>
+            a.isFavorite === b.isFavorite ? 0 : a.isFavorite ? -1 : 1,
+          );
+        }
+      }
+
+      roundSessions.push({
+        roundNumber: studentRound,
+        completedAt: (sess.completed_at as string | null) ?? null,
+        commentedEntries,
+      });
+    }
+  }
+
+  return { student, classes, ownEntry, ownEntries, currentClassTiming, roundSessions };
 }

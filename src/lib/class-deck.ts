@@ -34,6 +34,11 @@
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
+import {
+  computeCurrentRound,
+  isGameOver as checkGameOver,
+  type ClassTiming,
+} from "@/lib/round-timing";
 import type { EngineStudent } from "@/lib/deck";
 
 const MEDIA_BUCKET = "media";
@@ -47,8 +52,8 @@ const FALLBACK_PALETTE = [
 ];
 
 export type ClassDeckResult =
-  | { ok: true; students: EngineStudent[]; classId: string }
-  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries"; classId: string | null };
+  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number }
+  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
   const ssr = await createClient();
@@ -70,6 +75,36 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     .maybeSingle();
   const classId = profile?.class_id ?? null;
   if (!classId) return { ok: false, reason: "no-class", classId: null };
+
+  // ── B18 FIX (#44): Check game timing BEFORE loading the deck. ──────
+  // If the game is over, don't let the student play — they should see
+  // the game-over screen, not a playable deck. If the game hasn't
+  // started yet, show a "not yet" holding page.
+  const { data: classRow } = await admin
+    .from("classes")
+    .select("total_rounds, round_duration_hours, game_starts_at")
+    .eq("id", classId)
+    .maybeSingle();
+
+  if (!classRow?.game_starts_at) {
+    return { ok: false, reason: "game-not-started", classId };
+  }
+
+  const timing: ClassTiming = {
+    total_rounds: classRow.total_rounds,
+    game_starts_at: classRow.game_starts_at,
+    round_duration_hours:
+      classRow.round_duration_hours === null
+        ? null
+        : Number(classRow.round_duration_hours),
+  };
+  const now = new Date();
+
+  if (checkGameOver(timing, now)) {
+    return { ok: false, reason: "game-over", classId };
+  }
+
+  const currentRound = computeCurrentRound(timing, now);
 
   // Two reads, then merge — clearer than a compound .or() filter, and avoids
   // any string-interpolation worries on the filter syntax. Two small queries
@@ -123,8 +158,24 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
 
   // Sign one path. Returns null (engine falls back to placeholder) on failure
   // — we LOG (never swallow silently again; that bug cost a session).
+  //
+  // B17 FIX (#44): entries.media_url is normally a storage PATH in the
+  // PRIVATE "media" bucket (where student uploads go). But test seed data
+  // may store a full URL (e.g., a public URL from the teacher-deck bucket
+  // or an external URL). Full URLs pass through as-is; paths get signed.
+  //
+  // IMPORTANT: class-deck NEVER searches the teacher-deck bucket. The
+  // teacher deck is for the warm-up round only and will become per-teacher
+  // sub-decks. These are distinct systems.
   async function sign(path: string | null): Promise<string | null> {
     if (!path) return null;
+
+    // Full URL? Pass through — nothing to sign.
+    if (path.startsWith("http://") || path.startsWith("https://")) {
+      return path;
+    }
+
+    // Storage path → sign from the media bucket.
     try {
       const { data, error } = await admin.storage
         .from(MEDIA_BUCKET)
@@ -179,5 +230,5 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // "I'm in the game" cue. Otherwise preserves Map iteration order.
   students.sort((a, b) => (a.id === user.id ? -1 : b.id === user.id ? 1 : 0));
 
-  return { ok: true, students, classId };
+  return { ok: true, students, classId, currentRound };
 }

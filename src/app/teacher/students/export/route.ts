@@ -1,33 +1,39 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/export/route.ts   (REPLACES existing)
 //
-// Whole-class CSV export, reoriented around the actual WRITTEN LANGUAGE rather
-// than metadata. One row per enrollment (per student per round). The columns
-// the teacher cares about are the words: each comment the student wrote, the
-// "why this was my favorite" note, the student's own photo description, and
-// the teacher's own notes back. Counts/timestamps/flags were dropped per the
-// #23 decision ("the actual language is key").
+// Whole-class spreadsheet export, reshaped for LANGUAGE REVIEW (#42).
 //
-// CSV-per-class scoping (agreed chat #32):
-//   If `?class=<id>` is present and the teacher owns that class, all queries
-//   scope to that single class. If absent, falls back to the whole-teacher
-//   behavior (all classes). The class id is passed from the students page
-//   where `selectedClass.id` is already available.
+// One row per comment — the teacher sees every student's written output
+// across all rounds in a scannable format. Grouped by student, then by
+// round, with divider rows between students.
 //
-// Comment findability: game_sessions.comments is keyed by the STARTER entry id
-// the student was commenting on. We look those ids up in `entries` and prefix
-// each comment with that photo's own caption ([caption] comment…) so the
-// teacher can tell which photo a comment is about and look it back up in the
-// online student view. (Exact label-matching to /teacher/students/[id] would
-// need that page; this caption-prefix is the self-contained version.)
+// Structure (per student):
+//   Student header row   → screen name, real name, email
+//   Round header row     → "Warm-up Round" or "Round 1", "Round 2", …
+//   Comment rows         → photo description | student's comment (one per photo)
+//   Own photo row        → the student's own entry description for that round
+//   (repeat for each round)
+//   Divider rows         → blank row between students
 //
-// The "Their own photo (description)" column reads `entries` (the student's
-// non-starter contribution). It stays BLANK until the entry-write FK bug is
-// fixed — once entries rows land, it populates with no further change here.
+// Stripped: favorites, status badges, teacher notes. This is purely about
+// the language the students produced.
 //
-// Auth/scoping unchanged: SSR client for auth.uid(), service client for the
-// joins, every query scoped to classes this teacher owns. Available anytime —
-// NOT gated to end-of-class (confirmed not needed).
+// Seed voters (emails ending in @test.local) are excluded — they're test
+// data, not real student output.
+//
+// Round numbering:
+//   DB game_sessions.round 1 = warm-up → "Warm-up Round"
+//   DB game_sessions.round N (N>1) = student round N−1 → "Round N−1"
+//
+// Two-track ID handling:
+//   game_sessions.student_id = students.id
+//   entries.student_id = profiles.id (= auth.users.id)
+//   To fetch own entries, we resolve students.email → auth user → profiles.id.
+//
+// CSV-per-class scoping (from #32):
+//   ?class=<id> scopes to one class. Otherwise all teacher's classes.
+//
+// Auth: SSR client for auth.uid(), service client for the joins.
 // ─────────────────────────────────────────────────────────────────────────
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase-server";
@@ -36,8 +42,7 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 
 // RFC-4180 quoting: wrap in quotes if the cell holds a comma, quote, or newline;
-// double up any embedded quotes. (Newlines inside a quoted cell are fine and
-// render as line breaks within the cell in Excel/Sheets.)
+// double up any embedded quotes.
 function csvCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const s = String(v);
@@ -63,8 +68,6 @@ export async function GET(request: NextRequest) {
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
   // ── Class scoping ─────────────────────────────────────────────────────
-  // If ?class=<id> is present, scope to that single class (after confirming
-  // the teacher owns it). Otherwise, fall back to all classes the teacher owns.
   const requestedClassId = request.nextUrl.searchParams.get("class");
 
   let classIds: string[];
@@ -72,7 +75,6 @@ export async function GET(request: NextRequest) {
   let filenameSuffix: string;
 
   if (requestedClassId) {
-    // Verify ownership of the specific class.
     const { data: cls } = await admin
       .from("classes")
       .select("id, name")
@@ -84,11 +86,9 @@ export async function GET(request: NextRequest) {
     }
     classIds = [cls.id];
     classNameById = new Map([[cls.id, cls.name]]);
-    // Sanitize class name for the filename.
     const safeName = cls.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
     filenameSuffix = safeName;
   } else {
-    // All classes this teacher owns.
     const { data: classes } = await admin
       .from("classes")
       .select("id, name")
@@ -103,154 +103,195 @@ export async function GET(request: NextRequest) {
     filenameSuffix = "all-classes";
   }
 
-  // Enrollments in those classes, joined to the student rows.
+  // ── Enrollments — student list per class ──────────────────────────────
   const { data: enrollments } = await admin
     .from("enrollments")
-    .select("student_id, class_id, round, enrolled_at, students(id, name, screen_name, email)")
+    .select("student_id, class_id, students(id, name, screen_name, email)")
     .in("class_id", classIds)
-    .order("enrolled_at", { ascending: false });
+    .order("enrolled_at", { ascending: true });
 
-  // Teacher notes for these classes, grouped by student (oldest first, tagged by round).
-  const { data: notes } = await admin
-    .from("teacher_comments")
-    .select("student_id, round, body, created_at")
-    .in("class_id", classIds)
-    .order("created_at", { ascending: true });
-  const notesByStudent = new Map<string, string[]>();
-  for (const n of notes || []) {
-    const arr = notesByStudent.get(n.student_id) || [];
-    const prefix = n.round != null ? `R${n.round}: ` : "";
-    arr.push(prefix + n.body);
-    notesByStudent.set(n.student_id, arr);
-  }
-
-  // ── First pass: gather each enrollment's session (scoped to class+round) ──
-  type Gathered = {
-    student: { id: string; name: string | null; screen_name: string | null; email: string | null };
-    classId: string;
-    round: number | null;
-    comments: Record<string, string> | null;
-    favoriteComment: string | null;
+  // Build a deduplicated student-per-class list, excluding seed voters.
+  type StudentInfo = {
+    id: string;
+    name: string | null;
+    screen_name: string | null;
+    email: string | null;
   };
-  const gathered: Gathered[] = [];
-  const commentKeySet = new Set<string>();
-  const studentIdSet = new Set<string>();
+  type StudentClass = { student: StudentInfo; classId: string };
+
+  const seen = new Set<string>();
+  const studentClasses: StudentClass[] = [];
 
   for (const e of enrollments || []) {
-    const s = e.students as unknown as Gathered["student"] | null;
+    const s = e.students as unknown as StudentInfo | null;
     if (!s) continue;
-    studentIdSet.add(s.id);
-
-    const { data: session } = await admin
-      .from("game_sessions")
-      .select("comments, favorite_comment")
-      .eq("student_id", s.id)
-      .eq("class_id", e.class_id)
-      .eq("round", e.round)
-      .order("completed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const comments = (session?.comments as Record<string, string> | null) || null;
-    if (comments) for (const k of Object.keys(comments)) commentKeySet.add(k);
-
-    gathered.push({
-      student: s,
-      classId: e.class_id,
-      round: e.round,
-      comments,
-      favoriteComment: session?.favorite_comment || null,
-    });
+    // Exclude seed voters
+    if (s.email && s.email.endsWith("@test.local")) continue;
+    const key = `${s.id}:${e.class_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    studentClasses.push({ student: s, classId: e.class_id });
   }
 
-  // ── Caption lookup: the photo each comment was about ──────────────────
+  // ── Resolve profiles.id for each student (two-track ID bridge) ────────
+  // entries.student_id = profiles.id = auth.users.id, but we have students.id.
+  // Bridge: student.email → auth user → profiles.id.
+  const { data: authList } = await admin.auth.admin.listUsers({ perPage: 1000 });
+  const authByEmail = new Map<string, string>();
+  for (const u of authList?.users || []) {
+    if (u.email) authByEmail.set(u.email.toLowerCase(), u.id);
+  }
+
+  // ── Fetch ALL game_sessions for these students in these classes ────────
+  const studentIds = [...new Set(studentClasses.map((sc) => sc.student.id))];
+
+  const { data: allSessions } = await admin
+    .from("game_sessions")
+    .select("student_id, class_id, round, comments, completed_at")
+    .in("student_id", studentIds)
+    .in("class_id", classIds)
+    .order("round", { ascending: true });
+
+  // Index sessions by student_id:class_id
+  type SessionRow = {
+    student_id: string;
+    class_id: string;
+    round: number;
+    comments: Record<string, string> | null;
+    completed_at: string | null;
+  };
+  const sessionsByKey = new Map<string, SessionRow[]>();
+  for (const s of (allSessions || []) as SessionRow[]) {
+    const key = `${s.student_id}:${s.class_id}`;
+    const arr = sessionsByKey.get(key) || [];
+    arr.push(s);
+    sessionsByKey.set(key, arr);
+  }
+
+  // ── Collect all entry IDs referenced in comments for caption lookup ────
+  const allEntryIds = new Set<string>();
+  for (const s of (allSessions || []) as SessionRow[]) {
+    if (s.comments) {
+      for (const id of Object.keys(s.comments)) allEntryIds.add(id);
+    }
+  }
+
   const captionById = new Map<string, string>();
-  if (commentKeySet.size > 0) {
+  if (allEntryIds.size > 0) {
     const { data: capRows } = await admin
       .from("entries")
       .select("id, description_text")
-      .in("id", Array.from(commentKeySet));
+      .in("id", Array.from(allEntryIds));
     for (const r of capRows || []) {
       captionById.set(r.id, r.description_text || "");
     }
   }
 
-  // ── Each student's OWN photo description (non-starter entry) ───────────
-  // Blank until the entry-write FK bug is fixed; forward-compatible.
-  const ownDescByStudent = new Map<string, string>();
-  if (studentIdSet.size > 0) {
+  // ── Fetch own entries (student's non-starter submissions) per round ────
+  // Keyed by profilesId:classId:roundNumber
+  const ownDescByKey = new Map<string, string>();
+  const profilesIds = studentClasses
+    .map((sc) => {
+      if (!sc.student.email) return null;
+      return authByEmail.get(sc.student.email.toLowerCase()) ?? null;
+    })
+    .filter((id): id is string => id !== null);
+
+  if (profilesIds.length > 0) {
     const { data: ownRows } = await admin
       .from("entries")
-      .select("student_id, description_text, uploaded_at, is_starter")
-      .in("student_id", Array.from(studentIdSet))
+      .select("student_id, class_id, round_number, description_text")
+      .in("student_id", [...new Set(profilesIds)])
+      .in("class_id", classIds)
       .eq("is_starter", false)
       .order("uploaded_at", { ascending: false });
     for (const r of ownRows || []) {
-      if (!ownDescByStudent.has(r.student_id)) {
-        ownDescByStudent.set(r.student_id, r.description_text || "");
+      const key = `${r.student_id}:${r.class_id}:${r.round_number}`;
+      // First seen = most recent upload (ordered desc above)
+      if (!ownDescByKey.has(key)) {
+        ownDescByKey.set(key, r.description_text || "");
       }
     }
   }
 
-  function renderComments(comments: Record<string, string> | null): string {
-    if (!comments) return "";
-    return Object.entries(comments)
-      .map(([entryId, text]) => {
-        const cap = captionById.get(entryId);
-        const label = cap ? `[${cap}]` : "[photo]";
-        return `${label} ${text}`;
-      })
-      .join("\n");
-  }
+  // ── Build CSV rows ────────────────────────────────────────────────────
+  // Two columns: "Photo description" | "Student's comment"
+  // Header/divider rows use column A only.
+  const COL_COUNT = 2;
+  const header = ["Photo description", "Student's comment"];
+  const blank: string[] = Array(COL_COUNT).fill("");
+  const rows: string[][] = [header];
 
-  // ── Build rows ────────────────────────────────────────────────────────
-  const header = [
-    "Student", "Real name", "Email", "Class", "Round",
-    "Their comments", "Favorite — why", "Their own photo (description)", "Teacher notes",
-  ];
+  for (let si = 0; si < studentClasses.length; si++) {
+    const { student, classId } = studentClasses[si];
+    const displayName = student.screen_name || student.name || student.email || "Unknown";
+    const className = classNameById.get(classId) || "";
 
-  function rowFor(g: Gathered): string[] {
-    return [
-      g.student.screen_name || g.student.name || g.student.email || "",
-      g.student.name || "",
-      g.student.email || "",
-      classNameById.get(g.classId) || "",
-      g.round != null ? String(g.round) : "",
-      renderComments(g.comments),
-      g.favoriteComment || "",
-      ownDescByStudent.get(g.student.id) || "",
-      (notesByStudent.get(g.student.id) || []).join("\n"),
-    ];
-  }
+    // Resolve profiles.id for own-entry lookup
+    const profilesId = student.email
+      ? authByEmail.get(student.email.toLowerCase()) ?? null
+      : null;
 
-  // Group rows by student so the blank separators fall BETWEEN students, not
-  // between a single student's own rounds (forward-compatible with multi-round).
-  const order: string[] = [];
-  const byStudent = new Map<string, Gathered[]>();
-  for (const g of gathered) {
-    if (!byStudent.has(g.student.id)) {
-      byStudent.set(g.student.id, []);
-      order.push(g.student.id);
+    // Student header row
+    rows.push([
+      `${displayName}, ${student.name || ""}, ${student.email || ""} — ${className}`,
+      "",
+    ]);
+
+    // Get this student's sessions for this class
+    const key = `${student.id}:${classId}`;
+    const sessions = sessionsByKey.get(key) || [];
+
+    if (sessions.length === 0) {
+      rows.push(["(no rounds played)", ""]);
     }
-    byStudent.get(g.student.id)!.push(g);
-  }
 
-  const blank = header.map(() => ""); // a row of empty cells = a clean empty row in Excel
-  const body: string[][] = [];
-  order.forEach((sid, idx) => {
-    for (const g of byStudent.get(sid)!) body.push(rowFor(g));
-    if (idx < order.length - 1) {
-      body.push(blank);
-      body.push(blank);
+    for (const sess of sessions) {
+      const isWarmup = sess.round === 1;
+      const displayRound = isWarmup
+        ? "Warm-up Round"
+        : `Round ${sess.round - 1}`;
+
+      // Round header row
+      rows.push([displayRound, ""]);
+
+      // Comment rows — one per photo commented on
+      const comments = sess.comments || {};
+      const commentEntries = Object.entries(comments);
+
+      if (commentEntries.length === 0) {
+        rows.push(["(no comments this round)", ""]);
+      } else {
+        for (const [entryId, commentText] of commentEntries) {
+          const photoDesc = captionById.get(entryId) || "";
+          rows.push([photoDesc, commentText]);
+        }
+      }
+
+      // Own photo description for this round (student rounds only)
+      if (!isWarmup && profilesId) {
+        const studentRoundNum = sess.round - 1;
+        const ownKey = `${profilesId}:${classId}:${studentRoundNum}`;
+        const ownDesc = ownDescByKey.get(ownKey);
+        if (ownDesc) {
+          rows.push([`Own photo: ${ownDesc}`, ""]);
+        }
+      }
     }
-  });
+
+    // Divider between students
+    if (si < studentClasses.length - 1) {
+      rows.push(blank);
+      rows.push(blank);
+    }
+  }
 
   // \uFEFF = UTF-8 BOM so Excel reads accented characters correctly.
-  const csv = "\uFEFF" + [header, ...body]
+  const csv = "\uFEFF" + rows
     .map((r) => r.map(csvCell).join(","))
     .join("\r\n");
 
-  const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const stamp = new Date().toISOString().slice(0, 10);
   return new NextResponse(csv, {
     status: 200,
     headers: {

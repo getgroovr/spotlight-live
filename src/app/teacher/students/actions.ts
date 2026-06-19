@@ -408,6 +408,11 @@ export async function approveEntry(
   }
 
   revalidatePath("/teacher/students");
+  // #40: student dashboard and student-play also read entries.status — must
+  // be revalidated so the student sees the new APPROVED/NOT APPROVED state
+  // on next page load instead of stale cached data.
+  revalidatePath("/student/dashboard");
+  revalidatePath("/student/play");
   return { ok: true };
 }
 
@@ -468,6 +473,8 @@ export async function rejectEntry(
   }
 
   revalidatePath("/teacher/students");
+  revalidatePath("/student/dashboard");
+  revalidatePath("/student/play");
   return { ok: true };
 }
 
@@ -525,6 +532,8 @@ export async function approveFavoriteComment(
   }
 
   revalidatePath("/teacher/students");
+  revalidatePath("/student/dashboard");
+  revalidatePath("/student/play");
   return { ok: true };
 }
 
@@ -585,5 +594,7 @@ export async function rejectFavoriteComment(
   }
 
   revalidatePath("/teacher/students");
+  revalidatePath("/student/dashboard");
+  revalidatePath("/student/play");
   return { ok: true };
 }
