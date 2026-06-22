@@ -188,6 +188,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     .eq("class_id", selectedClass.id)
     .eq("status", "pending")
     .eq("is_starter", false)
+    .order("round_number", { ascending: true })
     .order("uploaded_at", { ascending: true });
 
   // Resolve auth user emails → student display names.
@@ -651,7 +652,7 @@ export default async function TeacherStudents({
                         marginTop: "auto",
                       }}
                     >
-                      {s.round === 1 ? "Warm-up" : `Round ${(s.round ?? 1) - 1}`} ·{" "}
+                      {s.round === 0 ? "Warm-up" : `Round ${s.round}`} ·{" "}
                       {new Date(s.completedAt).toLocaleDateString()}
                     </div>
                   )}

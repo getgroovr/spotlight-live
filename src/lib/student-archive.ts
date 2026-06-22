@@ -102,6 +102,13 @@ const STARTER_BUCKET = "teacher-deck";
 const MEDIA_BUCKET = "media";
 const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour — same as class-deck.ts
 
+// B28 (#48): External URLs (picsum, CDN, etc.) must NOT be passed to
+// createSignedUrl — that's for storage-path-only entries. External URLs
+// pass through untouched, same as class-deck's sign() function.
+function isExternalUrl(path: string): boolean {
+  return path.startsWith("http://") || path.startsWith("https://");
+}
+
 export type ArchiveEntry = {
   id: string;
   description_text: string | null;
@@ -155,7 +162,7 @@ export type CurrentClassTiming = {
 
 // B2 (#41): one completed student round's worth of classmate comments.
 export type RoundSessionData = {
-  roundNumber: number;        // student round number (1, 2, 3…) — NOT the DB round value
+  roundNumber: number;        // student round number (1, 2, 3…) — matches DB round directly (round-0 convention)
   completedAt: string | null;
   commentedEntries: ArchiveEntry[];
 };
@@ -229,7 +236,7 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
 
   for (const en of enrollments) {
     const classId = en.class_id as string;
-    const round = (en.round as number) ?? 1;
+    const round = (en.round as number) ?? 0;
     const className =
       (en.classes as unknown as { name: string } | null)?.name || "Class";
 
@@ -270,10 +277,15 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
         entries = rows.map((r) => {
           let publicUrl: string | null = null;
           if (r.media_url) {
-            try {
-              const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url);
-              publicUrl = data?.publicUrl ?? null;
-            } catch {}
+            const mediaPath = r.media_url as string;
+            if (isExternalUrl(mediaPath)) {
+              publicUrl = mediaPath;
+            } else {
+              try {
+                const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(mediaPath);
+                publicUrl = data?.publicUrl ?? null;
+              } catch {}
+            }
           }
           return {
             id: r.id,
@@ -381,23 +393,29 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
       uniqueRows.map(async (r) => {
         let signedUrl: string | null = null;
         if (r.media_url) {
-          try {
-            const { data, error } = await admin.storage
-              .from(MEDIA_BUCKET)
-              .createSignedUrl(r.media_url as string, SIGNED_URL_TTL_SECONDS);
-            if (error) {
+          const mediaPath = r.media_url as string;
+          if (isExternalUrl(mediaPath)) {
+            // B28 (#48): external URLs (picsum, CDN) pass through untouched.
+            signedUrl = mediaPath;
+          } else {
+            try {
+              const { data, error } = await admin.storage
+                .from(MEDIA_BUCKET)
+                .createSignedUrl(mediaPath, SIGNED_URL_TTL_SECONDS);
+              if (error) {
+                console.error(
+                  `[student-archive] createSignedUrl failed for own entry ${r.id}`,
+                  error,
+                );
+              } else {
+                signedUrl = data?.signedUrl ?? null;
+              }
+            } catch (e) {
               console.error(
-                `[student-archive] createSignedUrl failed for own entry ${r.id}`,
-                error,
+                `[student-archive] createSignedUrl threw for own entry ${r.id}`,
+                e,
               );
-            } else {
-              signedUrl = data?.signedUrl ?? null;
             }
-          } catch (e) {
-            console.error(
-              `[student-archive] createSignedUrl threw for own entry ${r.id}`,
-              e,
-            );
           }
         }
         return {
@@ -430,20 +448,33 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
   // and pack into RoundSessionData. The dashboard renders these in the
   // expanded completed-round view.
   //
-  // game_sessions.round mapping:
-  //   DB round 1 = warm-up (handled above in the per-enrollment loop)
-  //   DB round N = student round N−1
-  // So studentRound = dbRound − 1.
+  // game_sessions.round mapping (round-0 convention):
+  //   DB round 0 = warm-up (handled above in the per-enrollment loop)
+  //   DB round N = Student Round N (no offset needed)
   let roundSessions: RoundSessionData[] = [];
 
   if (currentClassId) {
+    // B33 diagnostic: log the lookup parameters so we can trace empty results.
+    console.log(
+      `[student-archive] roundSessions lookup: student.id=${student.id}, currentClassId=${currentClassId}`,
+    );
+
     const { data: studentRoundSessions } = await admin
       .from("game_sessions")
       .select("round, completed_at, comments, favorites")
       .eq("student_id", student.id)
       .eq("class_id", currentClassId)
-      .gt("round", 1) // exclude warm-up (round=1)
+      .gt("round", 0) // exclude warm-up (round=0)
       .order("round", { ascending: true });
+
+    // B33 diagnostic: log what came back.
+    console.log(
+      `[student-archive] roundSessions found: ${studentRoundSessions?.length ?? 0} sessions`,
+      studentRoundSessions?.map((s) => ({
+        round: s.round,
+        commentKeys: Object.keys((s.comments ?? {}) as Record<string, unknown>).length,
+      })),
+    );
 
     // Pre-build note map for the current class (reuse allNotes).
     const classNoteByEntry: Record<string, string> = {};
@@ -454,7 +485,8 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
 
     for (const sess of studentRoundSessions || []) {
       const dbRound = sess.round as number;
-      const studentRound = dbRound - 1;
+      // Round-0 convention: DB round = student round (no offset needed).
+      const studentRound = dbRound;
 
       const comments = (sess.comments ?? {}) as Record<string, string>;
       const favorites = (sess.favorites ?? {}) as Record<string, boolean>;
@@ -479,7 +511,10 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
               const isStarter = r.is_starter as boolean;
 
               if (mediaPath) {
-                if (isStarter) {
+                if (isExternalUrl(mediaPath)) {
+                  // B28 (#48): external URLs pass through untouched.
+                  url = mediaPath;
+                } else if (isStarter) {
                   // Starter entries → teacher-deck PUBLIC bucket → getPublicUrl
                   try {
                     const { data } = admin.storage
@@ -547,6 +582,21 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
         commentedEntries,
       });
     }
+
+    // B33 fix verification: log how many entries actually resolved per
+    // round. Before the spotlight engine was switched to entry-id keying,
+    // this would log `entriesResolved: 0` even when commentKeys was non-zero
+    // (the student-id keys didn't match anything in `entries.id`). After
+    // the fix, entriesResolved should equal commentKeys for live-played
+    // rounds. Mismatch here means either the keys are still wrong or some
+    // entries got deleted between play and dashboard load.
+    console.log(
+      `[student-archive] roundSessions resolved:`,
+      roundSessions.map((rs) => ({
+        round: rs.roundNumber,
+        entriesResolved: rs.commentedEntries.length,
+      })),
+    );
   }
 
   return { student, classes, ownEntry, ownEntries, currentClassTiming, roundSessions };

@@ -78,7 +78,8 @@ export async function GET(req: NextRequest) {
   if (!enrollment) {
     return new NextResponse("You are not enrolled in that class.", { status: 404 });
   }
-  const round = (enrollment.round as number) ?? 1;
+  // Round-0 convention: enrollment.round=0 is warm-up, 1+ is student rounds.
+  const round = (enrollment.round as number) ?? 0;
   const className =
     (enrollment.classes as unknown as { name: string } | null)?.name || "";
 

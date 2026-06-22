@@ -19,6 +19,12 @@
 //   to exist (right after verifyOtp) — we copy the student's most-recent
 //   enrollment class onto profiles.class_id. my_class_id() now returns the
 //   correct current cohort. (History reads use is_enrolled_in, not this.)
+//
+// Session 48: diagnostic logging added. verifyOtp was failing silently and
+// the catch-all `redirect("/play")` made every failure mode look identical
+// from the outside. We now log the real reason to the server console AND
+// pass it through to /play as a `?auth_err=...` query param so it's visible
+// in the browser URL too.
 // ─────────────────────────────────────────────────────────────────────────
 import { type EmailOtpType } from "@supabase/supabase-js";
 import { type NextRequest } from "next/server";
@@ -69,25 +75,52 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") as EmailOtpType | null;
   const next = searchParams.get("next") ?? "/student/dashboard";
 
-  if (token_hash && type) {
-    const supabase = await createClient();
-    if (supabase) {
-      // verifyOtp returns the verified user directly. Use that rather than a
-      // follow-up getUser() — within this same request the freshly-set session
-      // cookie isn't reliably re-readable yet, so getUser() can return null and
-      // the class sync would silently skip. The verifyOtp response always has it.
-      const { data, error } = await supabase.auth.verifyOtp({ type, token_hash });
-      if (!error) {
-        const user = data.user;
-        if (user?.email) {
-          await syncCurrentClass(user.id, user.email);
-        }
-        // Session cookie is now set — go to the dashboard.
-        redirect(next);
-      }
-    }
+  // Diagnostic: confirm we actually got here, and with what.
+  console.log("[auth/confirm] hit", {
+    has_token_hash: !!token_hash,
+    type,
+    next,
+  });
+
+  if (!token_hash || !type) {
+    console.error("[auth/confirm] missing params", { token_hash, type });
+    redirect("/play?auth_err=missing_params");
   }
 
-  // Missing/expired token, or verification failed — back to /play.
-  redirect("/play");
+  const supabase = await createClient();
+  if (!supabase) {
+    console.error("[auth/confirm] supabase client not configured");
+    redirect("/play?auth_err=not_configured");
+  }
+
+  const { data, error } = await supabase.auth.verifyOtp({ type, token_hash });
+
+  if (error) {
+    // The one we expect to learn from. Common causes:
+    //   - "Token has expired or is invalid"  (already consumed by an email
+    //     scanner/prefetcher, or older than the Supabase OTP expiry window
+    //     — default 3600s)
+    //   - "Invalid token"
+    //   - Network / Supabase project misconfiguration
+    console.error("[auth/confirm] verifyOtp failed:", {
+      message: error.message,
+      status: error.status,
+      name: error.name,
+    });
+    redirect(
+      `/play?auth_err=verify_failed&msg=${encodeURIComponent(error.message)}`,
+    );
+  }
+
+  console.log("[auth/confirm] verifyOtp ok", {
+    user_id: data.user?.id,
+    email: data.user?.email,
+  });
+
+  const user = data.user;
+  if (user?.email) {
+    await syncCurrentClass(user.id, user.email);
+  }
+  // Session cookie is now set — go to the dashboard.
+  redirect(next);
 }

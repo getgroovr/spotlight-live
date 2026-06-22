@@ -191,7 +191,9 @@ async function getStudentJourney(studentId: string) {
       let publicUrl: string | null = null;
       if (r.media_url) {
         try {
-          if (r.is_starter) {
+          if (r.media_url.startsWith("http://") || r.media_url.startsWith("https://")) {
+            publicUrl = r.media_url;
+          } else if (r.is_starter) {
             const { data } = admin.storage.from(STARTER_BUCKET).getPublicUrl(r.media_url);
             publicUrl = data?.publicUrl ?? null;
           } else {
@@ -277,8 +279,12 @@ async function getStudentJourney(studentId: string) {
       let publicUrl: string | null = null;
       if (e.media_url) {
         try {
-          const { data } = await admin.storage.from(MEDIA_BUCKET).createSignedUrl(e.media_url, 3600);
-          publicUrl = data?.signedUrl ?? null;
+          if (e.media_url.startsWith("http://") || e.media_url.startsWith("https://")) {
+            publicUrl = e.media_url;
+          } else {
+            const { data } = await admin.storage.from(MEDIA_BUCKET).createSignedUrl(e.media_url, 3600);
+            publicUrl = data?.signedUrl ?? null;
+          }
         } catch {}
       }
       submissions.push({

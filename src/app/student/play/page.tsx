@@ -2,21 +2,9 @@
 // src/app/student/play/page.tsx — the in-class game view for a signed-in
 // student.
 //
-// Destination of the "Go to the game →" button on the dashboard. Distinct
-// from /play (visitor demo, cross-class, ≥9 photos). This view is scoped
-// to the signed-in student's class (profiles.class_id).
-//
-// Auth: anonymous visitors get the no-session holding page.
-//
-// #39: mode="student" tells the game engine to save comments via
-// saveStudentRound (which writes the correct round number) instead of
-// enrollStudent (which hardcodes round=1). B3 fix.
-//
-// #44 B18 FIX: Added game-over and game-not-started checks. Previously
-// the page loaded the deck and rendered GameShell unconditionally — a
-// student could play round 3, submit comments, and THEN get told the
-// game was over. Now loadClassDeck checks timing first and returns
-// "game-over" or "game-not-started" reasons before loading entries.
+// B30 (#48): currentRound + totalRounds from loadClassDeck are passed to
+// GameShell for the boxing-match round splash. When a student round is
+// active, GameShell shows a "Round N" splash before loading the deck.
 // ─────────────────────────────────────────────────────────────────────────
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
@@ -26,15 +14,21 @@ export const metadata = {
   title: "Spotlight — Your Class",
 };
 
-// Signed URLs expire, and the deck shifts as entries are uploaded/approved.
-// Must NEVER go static.
 export const dynamic = "force-dynamic";
 
 export default async function StudentPlayPage() {
   const deck = await loadClassDeck();
 
   if (deck.ok) {
-    return <GameShell initialStudents={deck.students} mode="student" />;
+    return (
+      <GameShell
+        initialStudents={deck.students}
+        mode="student"
+        warmupComplete={deck.warmupComplete}
+        currentRound={deck.currentRound}
+        totalRounds={deck.totalRounds}
+      />
+    );
   }
 
   return <ClassPlayHoldingPage reason={deck.reason} />;
@@ -51,7 +45,6 @@ function ClassPlayHoldingPage({
     | "game-over"
     | "game-not-started";
 }) {
-  // B18 (#44): game-over gets its own celebratory holding page.
   if (reason === "game-over") {
     return (
       <div

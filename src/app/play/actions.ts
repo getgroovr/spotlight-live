@@ -22,8 +22,8 @@
 //
 // Slice 1B (Profile v1):
 //   - enrollStudent : end-of-game join. EMAIL ONLY. Creates/reuses a student,
-//     an enrollment, a round-1 game_session (nine comments + the favorite),
-//     then sends a magic link. Name/screen name/the "why" come later.
+//     an enrollment, a round-0 (warm-up) game_session (nine comments + the
+//     favorite), then sends a magic link. Name/screen name/the "why" come later.
 //   - saveProfile   : profile-page form once logged in. Saves real name +
 //     screen name, an optional self-photo, and the "why was this your
 //     favorite?" note.
@@ -83,6 +83,13 @@
 //      writing the why-note to game_sessions, so it appears in the
 //      teacher's pending queue for approval. Resubmissions (after a
 //      rejection) reset the reviewed fields.
+//
+// B23 (#47): Rejection/resubmission workflow:
+//   - resubmitEntry: student uploads new photo + description for a
+//     rejected entry. Status resets to 'pending'. Entry row is updated
+//     in place so teacher_comments history is preserved.
+//   - resubmitFavoriteComment: student edits rejected favorite comment
+//     text. Status resets to 'pending' on game_sessions.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -151,6 +158,9 @@ async function findFirstAvailableRound(
 // column on the entries side.  (game_sessions.round exists but is unrelated
 // to entries.round_number — that's the session sequence number, not the
 // round-assignment slot.)
+//
+// Round-0 convention: enrollStudent writes round=0 for the warm-up session
+// and enrollment. Student gameplay rounds (from saveStudentRound) start at 1.
 // ─────────────────────────────────────────────────────────────────────────
 export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -237,20 +247,20 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   const { error: enrollErr } = await admin
     .from("enrollments")
     .upsert(
-      { student_id: studentId, class_id: classId, round: 1, status: "active" },
+      { student_id: studentId, class_id: classId, round: 0, status: "active" },
       { onConflict: "student_id,class_id" }
     );
   if (enrollErr) {
     return { ok: false, error: `Enrollment failed: ${enrollErr.message}` };
   }
 
-  // ── Save the round-1 game session (the nine comments + the favorite) ──
+  // ── Save the warm-up (round 0) game session (the nine comments + the favorite) ──
   const { error: sessionErr } = await admin
     .from("game_sessions")
     .insert({
       student_id: studentId,
       class_id: classId,
-      round: 1,
+      round: 0,
       comments,
       favorites,
     });
@@ -782,14 +792,15 @@ export async function removeEntry(
 //
 // This is the student counterpart of enrollStudent (which handles the
 // warm-up round during enrollment). The key difference: enrollStudent
-// always writes round=1 and triggers enrollment + magic link, while
-// saveStudentRound resolves the CURRENT round from class timing and
+// always writes round=0 (warm-up) and triggers enrollment + magic link,
+// while saveStudentRound resolves the CURRENT round from class timing and
 // writes (or updates) the game_session for that round. No enrollment
 // or magic link — the student is already logged in.
 //
-// B3 fix: before this action existed, /student/play fell through to
-// enrollStudent, which hardcoded round=1. Every student round session
-// was incorrectly labeled round 1.
+// Round-0 convention:
+//   round 0 = warm-up (enrollStudent)
+//   round 1 = Student Round 1 (saveStudentRound, computeCurrentRound=1)
+//   round 2 = Student Round 2, etc.
 //
 // Form fields (set by spotlight.jsx in student mode):
 //   comments  — JSON string: { "<entryId>": "comment text", … }
@@ -926,5 +937,261 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
 
   revalidatePath("/student/dashboard");
   revalidatePath("/student/play");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// resubmitEntry — NEW B23 (#47).  Replaces a rejected entry with a new
+// photo and/or description, resetting its status to 'pending' so it
+// reappears in the teacher's pending queue.
+//
+// Only works on entries with status='rejected'. The student uploads a
+// new photo (required) and writes a new description (required). The old
+// media file is deleted from storage (soft fail). The entry row is
+// UPDATED in place (same id, same round_number) — not deleted + re-
+// inserted — so the teacher_comments history for this entry_id is
+// preserved.
+//
+// Form fields:
+//   entry_id          — the rejected entry to resubmit
+//   entry_photo       — the replacement photo (File, required)
+//   entry_description — the replacement description (string, required)
+//
+// Authorization: entry.student_id === user.id (same as addEntry).
+// ─────────────────────────────────────────────────────────────────────────
+export async function resubmitEntry(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
+
+  const supabase = await createClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
+
+  const entryId = String(formData.get("entry_id") || "").trim();
+  const entryPhoto = formData.get("entry_photo");
+  const entryDescription = String(formData.get("entry_description") || "").trim();
+
+  if (!entryId) {
+    return { ok: false, error: "Missing entry id." };
+  }
+  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
+    return { ok: false, error: "Please choose a new photo." };
+  }
+  if (!entryDescription) {
+    return { ok: false, error: "Please write a short description." };
+  }
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // ── Verify entry exists, is rejected, belongs to this user ──────────
+  const { data: entry } = await admin
+    .from("entries")
+    .select("id, student_id, class_id, media_url, round_number, status")
+    .eq("id", entryId)
+    .maybeSingle();
+
+  if (!entry) {
+    return { ok: false, error: "Entry not found." };
+  }
+  if (entry.student_id !== user.id) {
+    return { ok: false, error: "You can only resubmit your own entries." };
+  }
+  if (entry.status !== "rejected") {
+    return { ok: false, error: "This entry hasn't been rejected — no resubmission needed." };
+  }
+
+  // ── Delete old media from storage (soft fail) ───────────────────────
+  if (entry.media_url) {
+    const { error: delErr } = await admin.storage
+      .from("media")
+      .remove([entry.media_url]);
+    if (delErr) {
+      console.error("[resubmitEntry] old media delete failed (continuing):", delErr.message);
+    }
+  }
+
+  // ── Upload new photo ────────────────────────────────────────────────
+  const ext =
+    entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
+  const entryPath = `${entry.class_id}/${user.id}-${Date.now()}.${ext}`;
+  const { error: upErr } = await admin.storage
+    .from("media")
+    .upload(entryPath, entryPhoto, {
+      contentType: entryPhoto.type || "image/jpeg",
+      upsert: true,
+    });
+  if (upErr) {
+    return {
+      ok: false,
+      error: `Your photo didn't upload. Please try again. (${upErr.message})`,
+    };
+  }
+
+  // ── Update entry: new photo + description, reset to pending ─────────
+  const { error: updErr } = await admin
+    .from("entries")
+    .update({
+      media_url: entryPath,
+      description_text: entryDescription,
+      description_l1: entryDescription,
+      status: "pending",
+      rejection_reason: null,
+      reviewed_by: null,
+      reviewed_at: null,
+      uploaded_at: new Date().toISOString(),
+    })
+    .eq("id", entryId);
+
+  if (updErr) {
+    return {
+      ok: false,
+      error: `We couldn't save your changes. Please try again. (${updErr.message})`,
+    };
+  }
+
+  revalidatePath("/student/dashboard");
+  revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// resubmitFavoriteComment — NEW B23 (#47).  Lets a student edit and
+// resubmit a rejected favorite comment.
+//
+// Finds the warm-up game_session (round=0) for the student's current
+// class, verifies favorite_comment_status='rejected', updates the
+// favorite_comment text, and resets the status to 'pending'.
+//
+// Form fields:
+//   favorite_comment — the new text (string, required, min 15 chars)
+//
+// No entry_id or session_id needed — there's exactly one warm-up
+// session per enrollment, and the student can only be in one active
+// class at a time.
+// ─────────────────────────────────────────────────────────────────────────
+export async function resubmitFavoriteComment(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return {
+      ok: false,
+      error: "The server isn't configured. Please tell your teacher.",
+    };
+  }
+
+  const supabase = await createClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
+  }
+
+  const why = String(formData.get("favorite_comment") || "").trim();
+  if (!why || why.length < 15) {
+    return {
+      ok: false,
+      error: "Please write at least 15 characters about why this was your favorite.",
+    };
+  }
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // ── Resolve student + class ─────────────────────────────────────────
+  const { data: student } = await admin
+    .from("students")
+    .select("id")
+    .eq("email", user.email.toLowerCase())
+    .maybeSingle();
+  if (!student) {
+    return {
+      ok: false,
+      error: "We couldn't find your enrollment. Try the play page and re-join.",
+    };
+  }
+
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("class_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  const classId = profile?.class_id ?? null;
+  if (!classId) {
+    return {
+      ok: false,
+      error: "We couldn't find your class. Please tell your teacher.",
+    };
+  }
+
+  // ── Find the warm-up session (round=0) ──────────────────────────────
+  const { data: session } = await admin
+    .from("game_sessions")
+    .select("id, favorite_comment_status")
+    .eq("student_id", student.id)
+    .eq("class_id", classId)
+    .eq("round", 0)
+    .maybeSingle();
+
+  if (!session) {
+    return { ok: false, error: "We couldn't find your warm-up session." };
+  }
+  if (session.favorite_comment_status !== "rejected") {
+    return {
+      ok: false,
+      error: "Your favorite comment hasn't been rejected — no resubmission needed.",
+    };
+  }
+
+  // ── Update: new text, reset to pending ──────────────────────────────
+  const { error: updErr } = await admin
+    .from("game_sessions")
+    .update({
+      favorite_comment: why,
+      favorite_comment_status: "pending",
+      favorite_comment_rejection_reason: null,
+      favorite_comment_reviewed_by: null,
+      favorite_comment_reviewed_at: null,
+    })
+    .eq("id", session.id);
+
+  if (updErr) {
+    return {
+      ok: false,
+      error: `We couldn't save your changes. Please try again. (${updErr.message})`,
+    };
+  }
+
+  revalidatePath("/student/dashboard");
+  revalidatePath("/teacher/students");
   return { ok: true };
 }

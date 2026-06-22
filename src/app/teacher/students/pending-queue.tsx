@@ -23,11 +23,18 @@
 // refresh.
 //
 // #41 FIX: Favorite comment cards now show "Warm-up Round" when
-//   roundNumber === 1 (the enrollment/warm-up session), and
-//   "Round N-1" for student rounds (game_sessions.round is 1-indexed
-//   with warm-up at position 1, so student round display = round - 1).
+//   roundNumber === 0 (the enrollment/warm-up session), and
+//   "Round N" for student rounds. With the round-0 convention (#45),
+//   game_sessions.round=0 is warm-up and round=N maps directly to
+//   Student Round N — no offset needed.
 //   Entry cards are unchanged — entries.round_number already represents
 //   the student round directly (1, 2, 3…).
+//
+// #45: Round-0 convention fix for favorite comment cards. Warm-up is
+//   round 0 in the DB, student rounds start at 1 (no offset).
+//   Simplified section headers: "Picture submittals" and "Favorite
+//   comments" — no tags or helper text. Added combined attention
+//   banner with total count.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -423,13 +430,12 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
     });
   }
 
-  // #41: game_sessions.round = 1 is the warm-up; student rounds start at
-  // position 2 in the DB. Teacher-facing display: "Warm-up Round" for 1,
-  // "Round N-1" for student rounds.
+  // #45: round-0 convention — warm-up is round 0 in the DB.
+  // Student game rounds start at 1 and display directly (no offset).
   const roundLabel =
-    item.roundNumber === 1
+    item.roundNumber === 0
       ? "Warm-up Round"
-      : `Round ${item.roundNumber - 1}`;
+      : `Round ${item.roundNumber}`;
 
   return (
     <div
@@ -696,9 +702,37 @@ export function PendingQueue({
   const nothingPending = entries.length === 0 && favoriteComments.length === 0;
   if (nothingPending) return null;
 
+  const totalPending = entries.length + favoriteComments.length;
+
   return (
     <div style={{ marginBottom: 24 }}>
-      {/* ── Pending photo submissions ─────────────────────────────────── */}
+
+      {/* ── Attention banner ── */}
+      <div style={{
+        background: C.light + "14",
+        border: `1px solid ${C.light}44`,
+        borderRadius: 12,
+        padding: "12px 16px",
+        marginBottom: 16,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+      }}>
+        <span style={{
+          fontSize: 18,
+          lineHeight: 1,
+          flexShrink: 0,
+        }}>📋</span>
+        <span style={{
+          fontSize: 14,
+          fontWeight: 700,
+          color: C.text,
+        }}>
+          {totalPending} {totalPending === 1 ? "item needs" : "items need"} your review
+        </span>
+      </div>
+
+      {/* ── Picture submittals ── */}
       {entries.length > 0 && (
         <>
           <h2
@@ -710,14 +744,14 @@ export function PendingQueue({
               margin: "0 0 10px",
             }}
           >
-            Pending submissions ({entries.length})
+            Picture submittals ({entries.length})
           </h2>
           <div
             style={{
               display: "flex",
               flexDirection: "column",
               gap: 10,
-              marginBottom: favoriteComments.length > 0 ? 20 : 0,
+              marginBottom: favoriteComments.length > 0 ? 24 : 0,
             }}
           >
             {entries.map((e) => (
@@ -727,7 +761,7 @@ export function PendingQueue({
         </>
       )}
 
-      {/* ── Pending favorite comments ─────────────────────────────────── */}
+      {/* ── Favorite comments ── */}
       {favoriteComments.length > 0 && (
         <>
           <h2
@@ -739,7 +773,7 @@ export function PendingQueue({
               margin: "0 0 10px",
             }}
           >
-            Pending favorite comments ({favoriteComments.length})
+            Favorite comments ({favoriteComments.length})
           </h2>
           <div
             style={{ display: "flex", flexDirection: "column", gap: 10 }}
