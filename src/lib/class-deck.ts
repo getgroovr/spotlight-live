@@ -52,7 +52,7 @@ const FALLBACK_PALETTE = [
 ];
 
 export type ClassDeckResult =
-  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number }
+  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean }
   | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
@@ -106,11 +106,41 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
 
   const currentRound = computeCurrentRound(timing, now);
 
+  // ── B22 FIX (#45): Check if this student already has a completed
+  // warm-up (round=0) game_session. If so, GameShell should skip the
+  // warm-up phase and go straight to the current round's game.
+  // game_sessions.student_id is on the STUDENTS track (not profiles),
+  // so we look up the student row via email match.
+  let warmupComplete = false;
+  if (user.email) {
+    const { data: studentRow } = await admin
+      .from("students")
+      .select("id")
+      .eq("email", user.email.toLowerCase())
+      .maybeSingle();
+    if (studentRow) {
+      const { data: warmupSession } = await admin
+        .from("game_sessions")
+        .select("id")
+        .eq("student_id", studentRow.id)
+        .eq("class_id", classId)
+        .eq("round", 0)
+        .maybeSingle();
+      warmupComplete = !!warmupSession;
+    }
+  }
+
   // Two reads, then merge — clearer than a compound .or() filter, and avoids
   // any string-interpolation worries on the filter syntax. Two small queries
   // against a class-sized table is nothing.
+  //
+  // B38 (session 51): added `round_number` so we can filter the deck to
+  // entries from the CURRENT round only. Before this, the deck pulled live
+  // entries from any round, which meant a student who submitted for round 1
+  // but skipped round 2 would still appear in round 2's spotlight with
+  // their stale round 1 photo. Now they appear as a placeholder instead.
   const selectCols =
-    "id, student_id, media_url, media_type, description_text, description_l1, uploaded_at, status";
+    "id, student_id, media_url, media_type, description_text, description_l1, uploaded_at, status, round_number";
 
   const { data: liveRows } = await admin
     .from("entries")
@@ -134,27 +164,49 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     return { ok: false, reason: "no-entries", classId };
   }
 
-  // Group by student so each student becomes ONE tile with an entry stack
-  // (newest first), matching the students.js archive model. Map preserves
-  // insertion order, so the iteration order below mirrors the uploaded_at
-  // DESC ordering of the queries above.
+  // ── B38: round-filtered grouping ────────────────────────────────────
+  // Group by student_id, but ONLY keep entries whose round_number matches
+  // the current round. A student with a round 1 entry and no round 2 entry,
+  // playing during round 2, gets an EMPTY entry list here — and falls into
+  // the placeholder branch below.
+  //
+  // Own pending entries pass the same round filter, so a student who just
+  // uploaded for the current round sees their own pending photo in the
+  // grid (the pre-B38 behavior, preserved).
   const byStudent = new Map<string, typeof rows>();
   for (const r of rows) {
+    if ((r.round_number as number) !== currentRound) continue;
     const sid = r.student_id as string;
     const list = byStudent.get(sid) || [];
     list.push(r);
     byStudent.set(sid, list);
   }
 
-  // Hydrate display fields for everyone in one read.
-  const studentIds = Array.from(byStudent.keys());
-  const { data: profiles } = await admin
+  // ── B38: fetch all profiles enrolled in this class ─────────────────
+  // profiles.class_id is the "current class" pointer for each enrolled
+  // student (set by route.ts's syncCurrentClass on magic-link landing,
+  // and by the all-in-one SQL's Phase 2 + Phase 4 for the test seed).
+  // Anyone enrolled-but-not-in-byStudent for this round becomes a
+  // placeholder tile. We ALSO pull profiles for any submitter who isn't
+  // already covered (covers the edge case where a student switched
+  // classes — their profile.class_id moved on but their old entries
+  // remain).
+  const submitterIds = Array.from(byStudent.keys());
+  const { data: enrolledProfiles } = await admin
     .from("profiles")
     .select("id, display_name, username, color, bio")
-    .in("id", studentIds);
-  const profileById = new Map(
-    (profiles ?? []).map((p) => [p.id as string, p]),
-  );
+    .eq("class_id", classId);
+  const { data: submitterProfiles } = submitterIds.length > 0
+    ? await admin
+        .from("profiles")
+        .select("id, display_name, username, color, bio")
+        .in("id", submitterIds)
+    : { data: [] as Array<{ id: string; display_name?: string; username?: string; color?: string; bio?: string }> };
+
+  // Merge — id collisions are identical rows, either source wins.
+  const profileById = new Map<string, { id: string; display_name?: string; username?: string; color?: string; bio?: string }>();
+  for (const p of submitterProfiles ?? []) profileById.set(p.id as string, p as any);
+  for (const p of enrolledProfiles ?? []) profileById.set(p.id as string, p as any);
 
   // Sign one path. Returns null (engine falls back to placeholder) on failure
   // — we LOG (never swallow silently again; that bug cost a session).
@@ -191,38 +243,93 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     }
   }
 
-  const students: EngineStudent[] = [];
+  // ── B38: build the student list. One tile per enrolled profile. ─────
+  // Real submitter (has at least one this-round entry) → real EngineStudent
+  //   built from their entry data, same as the pre-B38 path.
+  // Non-submitter (enrolled but no this-round entry) → placeholder with
+  //   isPlaceholder:true, a single synthetic entry with primary:null so
+  //   the spotlight's image-or-Avatar fallback renders the greyed avatar.
+  //   The synthetic entry id is namespaced (`placeholder:<sid>:r<round>`)
+  //   so it can never collide with a real entries.id UUID — important
+  //   because comments + favorites are keyed by entry.id throughout the
+  //   system (B33 fix) and we don't want anyone to accidentally comment
+  //   on a placeholder.
+  //
+  // ClassEngineStudent extends EngineStudent with isPlaceholder?:boolean.
+  // We declare it locally (deck.ts's EngineStudent type doesn't know about
+  // it; visitor flow doesn't use placeholders) and the return cast back to
+  // EngineStudent[] is fine because consumers that DO care (spotlight.jsx,
+  // in plain JSX) just read the optional flag.
+  type ClassEngineStudent = EngineStudent & { isPlaceholder?: boolean };
+  const students: ClassEngineStudent[] = [];
   let paletteIndex = 0;
-  for (const [sid, entries] of byStudent) {
-    const prof = profileById.get(sid) as
-      | { display_name?: string; username?: string; color?: string; bio?: string }
-      | undefined;
-    const engineEntries = await Promise.all(
-      entries.map(async (r) => ({
-        primary: await sign(r.media_url as string | null),
-        description: null,
-        mediaType:
-          ((r.media_type as string) === "video" ? "video" : "photo") as
-            | "photo"
-            | "video",
-        uploadedAt: ((r.uploaded_at as string) || "").slice(0, 10),
-        descriptionText: (r.description_text as string) || "",
-        descriptionL1: (r.description_l1 as string) || "",
-        readingAudio: null,
-      })),
-    );
-    students.push({
-      id: sid,
-      name: prof?.display_name || prof?.username || "Classmate",
-      color: prof?.color || FALLBACK_PALETTE[paletteIndex % FALLBACK_PALETTE.length],
-      bio: prof?.bio || "",
-      entries: engineEntries,
-      peerComments: [],
-      // Mark the current student's own tile so the engine can skip them in
-      // the comment cycle (you don't comment on yourself). The tile still
-      // SHOWS in the grid — it's just opted out of the comment step.
-      isSelf: sid === user.id,
-    });
+
+  for (const [sid, profile] of profileById) {
+    const thisRoundEntries = byStudent.get(sid) ?? [];
+    const isSelf = sid === user.id;
+    const name = profile.display_name || profile.username || "Classmate";
+    const color = profile.color || FALLBACK_PALETTE[paletteIndex % FALLBACK_PALETTE.length];
+    const bio = profile.bio || "";
+
+    if (thisRoundEntries.length > 0) {
+      // Real submitter — same projection as the pre-B38 code.
+      const engineEntries = await Promise.all(
+        thisRoundEntries.map(async (r) => ({
+          // B33 fix (session 50): entries must carry their own id so the
+          // spotlight engine can key comments and favorites by entry.id
+          // (the contract the rest of the system — enrollStudent,
+          // student-archive's lookup — assumes). Before this, the engine's
+          // entryIdOf helper silently fell back to student.id because
+          // liveEntry(s).id was undefined, which broke the classmate-comment
+          // render in completed-round folders (logged commentKeys: 8 but
+          // entriesResolved: 0).
+          id: r.id as string,
+          primary: await sign(r.media_url as string | null),
+          description: null,
+          mediaType:
+            ((r.media_type as string) === "video" ? "video" : "photo") as
+              | "photo"
+              | "video",
+          uploadedAt: ((r.uploaded_at as string) || "").slice(0, 10),
+          descriptionText: (r.description_text as string) || "",
+          descriptionL1: (r.description_l1 as string) || "",
+          readingAudio: null,
+        })),
+      );
+      students.push({
+        id: sid,
+        name,
+        color,
+        bio,
+        entries: engineEntries,
+        peerComments: [],
+        // Mark the current student's own tile so the engine can skip them in
+        // the comment cycle (you don't comment on yourself). The tile still
+        // SHOWS in the grid — it's just opted out of the comment step.
+        isSelf,
+      });
+    } else {
+      // B38: placeholder for the student who didn't submit this round.
+      students.push({
+        id: sid,
+        name,
+        color,
+        bio,
+        entries: [{
+          id: `placeholder:${sid}:r${currentRound}`,
+          primary: null,                         // → spotlight renders Avatar fallback
+          description: null,
+          mediaType: "photo" as const,
+          uploadedAt: "",
+          descriptionText: "",
+          descriptionL1: "",
+          readingAudio: null,
+        }],
+        peerComments: [],
+        isSelf,
+        isPlaceholder: true,
+      });
+    }
     paletteIndex++;
   }
 
@@ -230,5 +337,5 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // "I'm in the game" cue. Otherwise preserves Map iteration order.
   students.sort((a, b) => (a.id === user.id ? -1 : b.id === user.id ? 1 : 0));
 
-  return { ok: true, students, classId, currentRound };
+  return { ok: true, students, classId, currentRound, totalRounds: timing.total_rounds, warmupComplete };
 }

@@ -63,10 +63,14 @@ function shuffle(a) {
 //   back to the visitor key so existing keys continue to be readable. All
 //   real reads/writes happen client-side anyway.
 function saveKey() {
-  if (typeof window === "undefined") return "spotlight:progress:visitor";
+  // B33 fix: bumped to v2 when comments/favorites switched from student-id
+  // keying to entry-id keying. Old v1 progress would resume with mismatched
+  // keys and silently lose data on save; the new key forces a clean start
+  // for any in-flight game (worst case: one student starts over).
+  if (typeof window === "undefined") return "spotlight:progress:v2:visitor";
   return window.location.pathname.startsWith("/student")
-    ? "spotlight:progress:student"
-    : "spotlight:progress:visitor";
+    ? "spotlight:progress:v2:student"
+    : "spotlight:progress:v2:visitor";
 }
 function saveProgress(data) {
   try {
@@ -94,6 +98,22 @@ function clearProgress() { try { localStorage.removeItem(saveKey()); } catch (e)
 function hasResumableProgress() {
   const p = loadProgress();
   return !!(p && p.shownIds.size > 0);
+}
+
+// B33 fix: comments and favorites are keyed by ENTRY ID throughout the
+// system — the all-in-one SQL seeds warm-up comments that way, enrollStudent
+// resolves favorites by looking the key up in `entries.id`, and
+// student-archive's classmate-comment lookup queries `entries WHERE id IN
+// (...)`. The engine previously keyed by student.id, which only happened to
+// work in the visitor flow because the hardcoded STUDENTS deck used IDs
+// that coincided with entry IDs. Once real auth UUIDs entered the picture
+// (live class mode), that coincidence broke and classmate comments stopped
+// rendering in completed rounds. This helper centralizes the lookup so any
+// future change to "what counts as the student's primary entry for this
+// round" only has to be made in one place. Fallback to student.id keeps
+// the visitor flow working if liveEntry is unavailable for any reason.
+function entryIdOf(student) {
+  return liveEntry(student)?.id || student.id;
 }
 
 function Avatar({ student, size = 56, lit = false }) {
@@ -341,6 +361,17 @@ function StageGrid({ order, shownIds, running }) {
 // on a single screen. Max-width tightened from 720 → 580; gap 12 → 8;
 // padding 10 → 7; comment text 12 → 11.
 // ─────────────────────────────────────────────────────────────────────────
+// B31: the student's own tile appears in the grid (their submitted photo,
+// not an avatar — students want to see their own picture next to their
+// classmates') but is greyed out and unclickable. Picking yourself as a
+// favorite isn't allowed; the grid just acknowledges your tile is here.
+//
+// B38: classmates who didn't submit a photo for this round also appear in
+// the grid as greyed-out, unclickable tiles — the slot falls back to their
+// profile avatar (initial + color) with a "(no photo this round)" caption
+// where the comment text would normally sit. They can't be picked as a
+// favorite. Treatment is parallel to isSelf: same opacity + grayscale +
+// disabled button, different caption.
 function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
   return (
     <div style={{
@@ -348,17 +379,31 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
       maxWidth: 580, margin: "0 auto",
     }}>
       {students.map((s) => {
+        const isSelf = !!s.isSelf;
+        const isPlaceholder = !!s.isPlaceholder;
+        const inactive = isSelf || isPlaceholder;
         const live = liveEntry(s);
         const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
-        const isFav = favoriteId === s.id;
-        const comment = myComments[s.id] || "";
+        // B33 fix: favoriteId and myComments are keyed by entry.id, not
+        // student.id. See entryIdOf() comment above for full rationale.
+        const eid = entryIdOf(s);
+        const isFav = favoriteId === eid;
+        const comment = myComments[eid] || "";
         return (
           <button
             key={s.id}
-            onClick={() => onSelectFavorite(s.id)}
+            onClick={inactive ? undefined : () => onSelectFavorite(eid)}
+            disabled={inactive}
+            aria-label={
+              isSelf
+                ? "Your own photo (can't pick yourself)"
+                : isPlaceholder
+                  ? `${s.name} didn't submit a photo this round`
+                  : undefined
+            }
             style={{
               all: "unset",
-              cursor: "pointer",
+              cursor: inactive ? "default" : "pointer",
               background: isFav ? C.light + "22" : C.panel,
               border: `2px solid ${isFav ? C.light : s.color + "55"}`,
               borderRadius: 12,
@@ -368,6 +413,8 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
               transition: "all 0.18s ease",
               boxShadow: isFav ? `0 0 20px ${C.light}66` : "none",
               transform: isFav ? "scale(1.02)" : "scale(1)",
+              opacity: inactive ? 0.5 : 1,
+              filter: inactive ? "grayscale(0.6)" : "none",
             }}
           >
             {isFav && (
@@ -379,6 +426,16 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
                 fontSize: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
                 animation: "popIn 0.25s ease",
               }}>★</div>
+            )}
+            {isSelf && (
+              <div style={{
+                position: "absolute", top: 4, left: 4, zIndex: 1,
+                fontFamily: F, fontSize: 10, fontWeight: 800,
+                color: C.stageDeep, background: C.light,
+                padding: "2px 7px", borderRadius: 8,
+                letterSpacing: 0.5,
+                boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
+              }}>YOU</div>
             )}
             {hasPhoto ? (
               <img src={live.primary} alt=""
@@ -397,7 +454,11 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
             <div style={{ fontFamily: F, fontSize: 11, color: C.text,
               lineHeight: 1.35, minHeight: 28, textAlign: "left",
               wordBreak: "break-word" }}>
-              {comment || <span style={{ color: C.textFaint }}>(no comment)</span>}
+              {isSelf
+                ? <span style={{ color: C.textFaint, fontStyle: "italic" }}>your photo</span>
+                : isPlaceholder
+                  ? <span style={{ color: C.textFaint, fontStyle: "italic" }}>no photo this round</span>
+                  : (comment || <span style={{ color: C.textFaint }}>(no comment)</span>)}
             </div>
           </button>
         );
@@ -529,27 +590,44 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// StudentSaveForm — #39: the student-mode equivalent of EnrollForm. No
-// email / no enrollment — just saves comments + favorite to the current
-// round's game_session via saveStudentRound.
+// StudentFavoriteEdit — B32: focused on the student's chosen favorite. One
+// big card showing the favorite photo, an editable comment field prefilled
+// with what they wrote during the spotlight round, and "Save my comments".
+// After saving, the screen stays interactive — they can revise and save
+// again, each save overwriting the prior. "← Pick a different favorite"
+// bounces back to the grid; "Back to your profile →" appears once they've
+// saved at least once.
 // ─────────────────────────────────────────────────────────────────────────
-function StudentSaveForm({ myComments, favoriteId, onBack }) {
+function StudentFavoriteEdit({
+  favoriteStudent, myComments, favoriteId, onBack, onCommentChange,
+}) {
+  const [comment, setComment] = useState(myComments[favoriteId] || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
+  const [savedOnce, setSavedOnce] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
 
   const handleSubmit = async () => {
     if (loading) return;
     setError("");
     setLoading(true);
     try {
+      const trimmed = comment.trim();
+      // Push the edit up so if they go back to the grid, it shows the
+      // revised text under their tile.
+      onCommentChange(favoriteId, trimmed);
+      const updatedComments = { ...myComments, [favoriteId]: trimmed };
       const fd = new FormData();
-      fd.append("comments", JSON.stringify(myComments));
+      fd.append("comments", JSON.stringify(updatedComments));
       fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
       const result = await saveStudentRound(fd);
       if (result.ok) {
-        clearProgress();
-        setDone(true);
+        // Only clear local progress on the first successful save — a
+        // resave after that should keep the round playable until they
+        // navigate away themselves.
+        if (!savedOnce) clearProgress();
+        setSavedOnce(true);
+        setJustSaved(true);
       } else {
         setError(result.error);
       }
@@ -560,49 +638,65 @@ function StudentSaveForm({ myComments, favoriteId, onBack }) {
     }
   };
 
-  if (done) {
-    return (
-      <div style={{ textAlign: "center", padding: "2rem 1rem", maxWidth: 440, margin: "0 auto" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
-        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 10px" }}>
-          Comments saved
-        </h2>
-        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.7, maxWidth: 380, margin: "0 auto 20px" }}>
-          Your comments and favorite pick have been saved for this round.
-          Head back to your profile to see everything.
-        </p>
-        <a
-          href="/student/dashboard"
-          style={{
-            display: "inline-block", fontFamily: F, fontSize: 15, fontWeight: 700,
-            padding: "12px 34px", background: C.light, color: C.stageDeep,
-            border: "none", borderRadius: 30, textDecoration: "none",
-            letterSpacing: 0.5, boxShadow: `0 8px 24px ${C.light}55`,
-          }}
-        >
-          Back to your profile →
-        </a>
-      </div>
-    );
-  }
+  const live = liveEntry(favoriteStudent);
+  const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
 
   return (
-    <div style={{ maxWidth: 420, margin: "0 auto", padding: "0.5rem 0" }}>
-      <div style={{ textAlign: "center", marginBottom: 22 }}>
-        <div style={{ fontSize: 36, marginBottom: 8 }}>💬</div>
-        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
-          Save your comments
-        </h2>
-        <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6, maxWidth: 360, margin: "0 auto" }}>
-          Your comments on each photo and your favorite pick will be saved
-          for this round.
-        </p>
+    <div style={{ maxWidth: 420, margin: "0 auto", padding: "0.5rem 0", textAlign: "center" }}>
+      <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
+        Your favorite
+      </h2>
+      <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
+        maxWidth: 360, margin: "0 auto 18px" }}>
+        Feel free to edit or revise your comment on your favorite pic —
+        it may be seen by your classmates.
+      </p>
+
+      <div style={{
+        maxWidth: 260, margin: "0 auto 16px",
+        background: C.panel, border: `2px solid ${C.light}`,
+        borderRadius: 14, padding: 8,
+        boxShadow: `0 0 24px ${C.light}55`,
+      }}>
+        {hasPhoto ? (
+          <img src={live.primary} alt=""
+            style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover",
+              borderRadius: 10, display: "block" }} />
+        ) : (
+          <div style={{ width: "100%", aspectRatio: "1/1",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: favoriteStudent.color + "33", borderRadius: 10 }}>
+            <Avatar student={favoriteStudent} size={56} />
+          </div>
+        )}
       </div>
+
+      <textarea
+        value={comment}
+        onChange={(e) => { setComment(e.target.value); setJustSaved(false); }}
+        placeholder="What did you like about this one?"
+        rows={3}
+        style={{
+          width: "100%", boxSizing: "border-box",
+          fontFamily: F, fontSize: 14, color: C.text,
+          background: "#fff", border: `1px solid ${C.panelEdge}`,
+          borderRadius: 10, padding: "10px 12px",
+          lineHeight: 1.5, resize: "vertical", outline: "none",
+          marginBottom: 14, textAlign: "left",
+        }}
+      />
 
       {error && (
         <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
           background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
           {error}
+        </div>
+      )}
+
+      {justSaved && !error && (
+        <div style={{ fontFamily: F, fontSize: 13, color: "#2E7D32", marginBottom: 12,
+          background: "#E8F5E9", border: "1px solid #C8E6C9", borderRadius: 8, padding: "9px 12px" }}>
+          ✓ Saved. You can keep editing and save again.
         </div>
       )}
 
@@ -616,15 +710,23 @@ function StudentSaveForm({ myComments, favoriteId, onBack }) {
           cursor: loading ? "not-allowed" : "pointer",
           letterSpacing: 0.5, marginBottom: 12 }}
       >
-        {loading ? "Saving…" : "Save my comments →"}
+        {loading ? "Saving…" : (savedOnce ? "Save again →" : "Save my comments →")}
       </button>
 
-      <div style={{ textAlign: "center" }}>
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center",
+        gap: 18, flexWrap: "wrap" }}>
         <button onClick={onBack}
           style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
             border: "none", cursor: "pointer", textDecoration: "underline" }}>
-          ← Back to the photos
+          ← Pick a different favorite
         </button>
+        {savedOnce && (
+          <a href="/student/dashboard"
+            style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
+              textDecoration: "underline" }}>
+            Back to your profile →
+          </a>
+        )}
       </div>
     </div>
   );
@@ -634,13 +736,19 @@ function StudentSaveForm({ myComments, favoriteId, onBack }) {
 // DoneScreen — tighter header. Removed: emoji block, "9 of 9", "Nice work."
 // Kept only the prompt + the grid + the button.
 //
-// #39: mode="student" swaps the EnrollForm for StudentSaveForm.
+// #39: mode="student" swaps the EnrollForm for StudentFavoriteEdit (B32).
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
-  myComments, students, totalStudents, onPlayAgain, mode = "visitor",
+  myComments, students, totalStudents, onPlayAgain, onCommentChange, mode = "visitor",
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
+
+  // B33 fix: favoriteId is an entry.id (not a student.id). Find the student
+  // whose live entry matches.
+  const favoriteStudent = favoriteId
+    ? students.find((s) => entryIdOf(s) === favoriteId)
+    : null;
 
   return (
     <div style={{ textAlign: "center", animation: "fadeIn 0.5s ease", padding: "0.5rem 0" }}>
@@ -704,10 +812,12 @@ function DoneScreen({
         />
       )}
 
-      {donePhase === "save" && (
-        <StudentSaveForm
+      {donePhase === "save" && favoriteStudent && (
+        <StudentFavoriteEdit
+          favoriteStudent={favoriteStudent}
           myComments={myComments}
           favoriteId={favoriteId}
+          onCommentChange={onCommentChange}
           onBack={() => setDonePhase("review")}
         />
       )}
@@ -726,10 +836,12 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
 
   // ─────────────────────────────────────────────────────────────────────
   // isSelf-derived view of the deck (added in slice 1 engine-adaptation):
-  //   playableStudents = everyone EXCEPT the current student. The
-  //                      spotlight cycle uses this — you don't comment on
-  //                      yourself, so your own tile is shown in the grid
-  //                      but never lands in the spotlight.
+  //   playableStudents = everyone EXCEPT the current student AND any
+  //                      placeholder tiles (B38). The spotlight cycle uses
+  //                      this — you don't comment on yourself, and you
+  //                      can't comment on a classmate who didn't submit
+  //                      a photo this round, but both still SHOW in the
+  //                      grid as real participants (greyed).
   //   playableCount    = how many tiles the player actually plays. Used
   //                      everywhere we previously read `students.length`
   //                      for "is the game done" / progress counters.
@@ -741,10 +853,10 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
   //                      nobody else to comment on yet, so the splash
   //                      shows a "waiting for classmates" message
   //                      instead of the Enter-the-stage button.
-  // For the visitor deck (no isSelf flags), playableStudents === students,
-  // so all the in-class adjustments below are no-ops there.
+  // For the visitor deck (no isSelf/isPlaceholder flags), playableStudents
+  // === students, so all the in-class adjustments below are no-ops there.
   // ─────────────────────────────────────────────────────────────────────
-  const playableStudents = students.filter((s) => !s.isSelf);
+  const playableStudents = students.filter((s) => !s.isSelf && !s.isPlaceholder);
   const playableCount = playableStudents.length;
   const hasSelf = students.length > playableCount;
   const soloSelf = hasSelf && playableCount === 0;
@@ -783,10 +895,12 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
 
   const stop = useCallback(() => {
     if (phase !== "running") return;
-    // Exclude the student's own tile from the pool — you don't comment on
-    // yourself. In the visitor deck nobody is isSelf, so this is a no-op
-    // there and the pool is the same as before.
-    const pool = students.filter((s) => !shownIds.has(s.id) && !s.isSelf);
+    // Exclude the student's own tile AND any placeholder tiles from the
+    // pool — you don't comment on yourself (isSelf), and you can't comment
+    // on a classmate who didn't submit this round (isPlaceholder, B38).
+    // In the visitor deck nobody is isSelf/isPlaceholder, so this is a
+    // no-op there and the pool is the same as before.
+    const pool = students.filter((s) => !shownIds.has(s.id) && !s.isSelf && !s.isPlaceholder);
     const pick = pool[Math.floor(Math.random() * pool.length)];
     setSelected(pick);
     const live = liveEntry(pick);
@@ -839,6 +953,26 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
   // Gated on `mounted` — see the SSR hydration comment above. Before mount
   // we always render the "Enter the stage" branch, matching the server.
   const canResume = mounted && view === "splash" && hasResumableProgress();
+
+  // B35: student mode skips the spotlight splash entirely. The boxing-match
+  // round splash in shell.jsx already announces the round, so showing
+  // another splash with Resume/Start-over is redundant friction. Auto-resume
+  // if there's saved progress, auto-start otherwise. The visitor flow still
+  // uses the splash (it's the marketing surface for the public game).
+  // The soloSelf case still shows the "waiting on classmates" splash, since
+  // there's nothing to auto-start into.
+  useEffect(() => {
+    if (!mounted) return;
+    if (view !== "splash") return;
+    if (mode !== "student") return;
+    if (soloSelf) return;
+    if (hasResumableProgress()) {
+      resume();
+    } else {
+      resetAll();
+      setView("game");
+    }
+  }, [mounted, view, mode, soloSelf, resume, resetAll]);
 
   if (view === "splash") {
     return (
@@ -1045,8 +1179,8 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
             student={students.find((s) => s.id === selected.id) || selected}
             onWatchDescription={() => setPhase("descr")}
             onContinue={finishStudent}
-            myComment={myComments[selected.id] || ""}
-            onSaveComment={(text) => saveComment(selected.id, text)}
+            myComment={myComments[entryIdOf(selected)] || ""}
+            onSaveComment={(text) => saveComment(entryIdOf(selected), text)}
           />
         </div>
       )}
@@ -1083,14 +1217,21 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
         // The cross-round lock will be enforced server-side once the
         // round-timing feature lands.
         //
-        // Pass playableStudents (not students) so the student can't pick
-        // their own tile as a favorite. In the visitor flow this is a
-        // no-op since nobody is isSelf there.
+        // B31: pass `students` (the full deck including self) so the
+        // student's own tile appears in the 9-cell grid, greyed out and
+        // unclickable. ReviewGrid handles the isSelf rendering. The
+        // can't-pick-yourself rule is enforced inside the grid via the
+        // disabled button, not by filtering self out.
+        //
+        // onCommentChange lets the StudentFavoriteEdit screen push a
+        // revised comment back into spotlight's myComments state, so if
+        // the student returns to the grid they see the new text.
         <DoneScreen
           myComments={myComments}
-          students={playableStudents}
+          students={students}
           totalStudents={students.length}
           onPlayAgain={resetAll}
+          onCommentChange={saveComment}
           mode={mode}
         />
       )}

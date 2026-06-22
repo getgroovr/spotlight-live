@@ -63,6 +63,14 @@
 //   commented on during that round (photos + descriptions + their
 //   comment text). The favorite is shown first with a small label.
 //   This data comes from the new roundSessions field in the archive.
+//
+// B23 (#47): REJECTION/RESUBMISSION WORKFLOW
+//   - "Action needed" alert at top of dashboard when any entry or
+//     favorite comment has status='rejected'.
+//   - Rejected entries show ResubmitEntryForm (edit photo + desc).
+//   - Rejected favorite comments show ResubmitFavoriteCommentForm.
+//   - B24b: "Go to the game" button shows warning when any entry
+//     in the current round is rejected.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { getStudentArchive, type OwnEntry, type ClassArchive, type RoundSessionData } from "@/lib/student-archive";
@@ -70,6 +78,8 @@ import ProfileArchive from "./ProfileArchive";
 import FinishJoiningForm from "./FinishJoiningForm";
 import AddEntryForm from "./AddEntryForm";
 import RemoveEntryButton from "./RemoveEntryButton";
+import ResubmitEntryForm from "./ResubmitEntryForm";
+import ResubmitFavoriteCommentForm from "./ResubmitFavoriteCommentForm";
 import { StudentDashboardCsvButton } from "./csv-button";
 
 export const dynamic = "force-dynamic";
@@ -263,6 +273,15 @@ function FilledTopSlotCard({
   // falls back to entries.rejection_reason for older data.
   const rejectionFeedback = entry.teacherNote || entry.rejectionReason;
 
+  // Layout (post Mike's "tighten and spread horizontally" pass): the card is
+  // now one horizontal row — image on the left, ALL metadata (badge, header,
+  // status, description, teacher note, action affordances) stacked in the
+  // right column. Previously description + teacher note hung below the row
+  // as full-width blocks, making the card unnecessarily tall when both the
+  // photo and the description were short. With everything on the right, the
+  // card's height is whichever-column-is-taller, and on a typical live tile
+  // (image + 2-line description) that's roughly the image height — much
+  // shorter than before.
   return (
     <section style={{
       background: C.panel,
@@ -273,52 +292,52 @@ function FilledTopSlotCard({
           : `1px solid ${C.panelEdge}`,
       borderRadius: 16, padding: "20px 22px", marginBottom: 16,
     }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{
+        display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap",
+      }}>
+        {/* IMAGE */}
+        {entry.signedUrl ? (
+          <img
+            src={entry.signedUrl}
+            alt=""
+            style={{
+              width: imageSize, height: imageSize, objectFit: "cover",
+              borderRadius: 12, border: `2px solid ${C.light}`, flexShrink: 0,
+            }}
+          />
+        ) : (
+          <div style={{
+            width: imageSize, height: imageSize, borderRadius: 12,
+            border: `2px dashed ${C.panelEdge}`, flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 12, color: C.textFaint, textAlign: "center", padding: 8,
+          }}>
+            photo unavailable
+          </div>
+        )}
 
-        {/* TOP ROW — image + compact metadata column */}
+        {/* RIGHT COLUMN — everything else, top to bottom */}
         <div style={{
-          display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap",
+          flex: 1, minWidth: 200,
+          display: "flex", flexDirection: "column",
+          alignItems: "flex-start", gap: 8,
         }}>
-          {/* IMAGE */}
-          {entry.signedUrl ? (
-            <img
-              src={entry.signedUrl}
-              alt=""
-              style={{
-                width: imageSize, height: imageSize, objectFit: "cover",
-                borderRadius: 12, border: `2px solid ${C.light}`, flexShrink: 0,
-              }}
-            />
-          ) : (
+          {isLive && (
             <div style={{
-              width: imageSize, height: imageSize, borderRadius: 12,
-              border: `2px dashed ${C.panelEdge}`, flexShrink: 0,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 12, color: C.textFaint, textAlign: "center", padding: 8,
+              display: "inline-flex", alignItems: "center", gap: 8,
+              background: C.liveGreenBg,
+              color: C.liveGreenText,
+              border: `1px solid ${C.liveGreen}`,
+              padding: "4px 12px", borderRadius: 999,
+              fontSize: 11, letterSpacing: 2, fontWeight: 700,
+              textTransform: "uppercase",
             }}>
-              photo unavailable
+              ● Current round — live now
             </div>
           )}
-
-          {/* METADATA COLUMN */}
           <div style={{
-            flex: 1, minWidth: 0,
-            display: "flex", flexDirection: "column",
-            alignItems: "flex-start", gap: 10,
+            display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
           }}>
-            {isLive && (
-              <div style={{
-                display: "inline-flex", alignItems: "center", gap: 8,
-                background: C.liveGreenBg,
-                color: C.liveGreenText,
-                border: `1px solid ${C.liveGreen}`,
-                padding: "4px 12px", borderRadius: 999,
-                fontSize: 11, letterSpacing: 2, fontWeight: 700,
-                textTransform: "uppercase",
-              }}>
-                ● Current round — live now
-              </div>
-            )}
             <h3 style={{
               fontSize: 13, letterSpacing: 1.5, textTransform: "uppercase",
               color: C.light, margin: 0,
@@ -326,92 +345,75 @@ function FilledTopSlotCard({
               Student Round {entry.roundNumber}
             </h3>
             <StatusBadge status={entry.status} />
+          </div>
 
-            {/* #35: Teacher feedback for rejected entries — unified display.
-                Uses teacherNote (from teacher_comments) with fallback to
-                rejectionReason (from entries.rejection_reason) for older data. */}
-            {entry.status === "rejected" && rejectionFeedback && (
+          {/* DESCRIPTION — moved into the right column.
+              B27 (#48): suppressed for rejected entries — description is
+              rendered in the Action needed waiting room above. */}
+          {entry.status !== "rejected" && entry.description_text && (
+            <div style={{ marginTop: 2 }}>
               <div style={{
-                background: C.dangerBg,
-                border: `1px solid ${C.danger}44`,
-                borderRadius: 8, padding: "8px 12px",
-                width: "100%",
+                fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
               }}>
-                <div style={{
-                  fontSize: 11, letterSpacing: 1, fontWeight: 600,
-                  color: C.danger, textTransform: "uppercase", marginBottom: 4,
-                }}>
-                  Your teacher said
-                </div>
-                <p style={{
-                  fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
-                  wordBreak: "break-word",
-                }}>
-                  {rejectionFeedback}
-                </p>
+                Your description
               </div>
-            )}
+              <p style={{
+                fontSize: 13, color: C.text, fontStyle: "italic",
+                lineHeight: 1.5, margin: 0,
+                borderLeft: `2px solid ${C.light}`, paddingLeft: 10,
+                wordBreak: "break-word",
+              }}>
+                &quot;{entry.description_text}&quot;
+              </p>
+            </div>
+          )}
 
-            {/* #34: Remove button + help text — approval-aware.
-                - approved (live): hidden entirely. Student can't replace.
-                - rejected: show Remove so they can re-upload a different photo.
-                - pending + unlocked: show Remove + "you can replace" (original). */}
-            {entry.status === "live" ? null : !isLocked ? (
-              <>
-                <RemoveEntryButton entryId={entry.id} roundNumber={entry.roundNumber} />
-                <p style={{
-                  fontSize: 11, color: C.textDim, lineHeight: 1.5, margin: 0,
-                }}>
-                  {entry.status === "rejected"
-                    ? "Remove this photo and try a different one."
-                    : "You can replace this photo until the round starts."}
-                </p>
-              </>
-            ) : null}
-          </div>
+          {/* TEACHER NOTE — moved into the right column.
+              #35: suppressed for rejected entries to avoid double-display
+              (the rejection box above already shows the teacher's feedback). */}
+          {entry.status !== "rejected" && entry.teacherNote && (
+            <div style={{ marginTop: 2, alignSelf: "stretch" }}>
+              <div style={{
+                fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
+              }}>
+                Your teacher said
+              </div>
+              <p style={{
+                fontSize: 13, color: C.text, lineHeight: 1.5, margin: 0,
+                background: C.panelSoft, border: `1px solid ${C.panelEdge}`,
+                borderRadius: 8, padding: "6px 10px",
+                wordBreak: "break-word",
+              }}>
+                {entry.teacherNote}
+              </p>
+            </div>
+          )}
+
+          {/* ACTION AFFORDANCES — pointer to waiting room (rejected), or
+              Remove + replace help (pending + unlocked). For approved/live
+              entries: nothing — the APPROVED badge is the only affordance.
+              B29 (#48): for rejected, the full resubmit context lives in
+              the Action needed section above the round cards. */}
+          {entry.status === "rejected" ? (
+            <p style={{
+              fontSize: 12, color: C.danger, fontWeight: 600,
+              lineHeight: 1.5, margin: "2px 0 0",
+            }}>
+              ↑ Edit and resubmit in the Action needed section above.
+            </p>
+          ) : entry.status === "live" ? null : !isLocked ? (
+            <>
+              <RemoveEntryButton entryId={entry.id} roundNumber={entry.roundNumber} />
+              <p style={{
+                fontSize: 11, color: C.textDim, lineHeight: 1.5, margin: 0,
+              }}>
+                You can replace this photo until the round starts.
+              </p>
+            </>
+          ) : null}
         </div>
-
-        {/* DESCRIPTION — full card width below the top row */}
-        {entry.description_text && (
-          <div>
-            <div style={{
-              fontSize: 11, letterSpacing: 1, fontWeight: 600,
-              color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
-            }}>
-              Your description
-            </div>
-            <p style={{
-              fontSize: 14, color: C.text, fontStyle: "italic",
-              lineHeight: 1.6, margin: 0,
-              borderLeft: `2px solid ${C.light}`, paddingLeft: 12,
-              wordBreak: "break-word",
-            }}>
-              &quot;{entry.description_text}&quot;
-            </p>
-          </div>
-        )}
-
-        {/* TEACHER NOTE — full card width below the description.
-            #35: suppressed for rejected entries to avoid double-display
-            (the rejection box above already shows the teacher's feedback). */}
-        {entry.status !== "rejected" && entry.teacherNote && (
-          <div>
-            <div style={{
-              fontSize: 11, letterSpacing: 1, fontWeight: 600,
-              color: C.textFaint, textTransform: "uppercase", marginBottom: 4,
-            }}>
-              Your teacher said
-            </div>
-            <p style={{
-              fontSize: 14, color: C.text, lineHeight: 1.6, margin: 0,
-              background: C.panelSoft, border: `1px solid ${C.panelEdge}`,
-              borderRadius: 8, padding: "8px 12px",
-              wordBreak: "break-word",
-            }}>
-              {entry.teacherNote}
-            </p>
-          </div>
-        )}
       </div>
     </section>
   );
@@ -521,6 +523,16 @@ function WarmupBody({ a }: { a: ClassArchive }) {
                     {a.favoriteCommentRejectionReason}
                   </p>
                 </div>
+              )}
+              {/* B23 → #49: Resubmit form moved to the "Action needed"
+                  waiting room at the top of the dashboard. Show a pointer. */}
+              {a.favoriteCommentStatus === "rejected" && (
+                <p style={{
+                  fontSize: 12, color: C.danger, fontWeight: 600,
+                  lineHeight: 1.5, margin: "8px 0 0",
+                }}>
+                  ↑ Edit and resubmit in the Action needed section above.
+                </p>
               )}
               {favorite.teacherNote && (
                 <div style={{ marginTop: 10, paddingTop: 10,
@@ -719,6 +731,16 @@ export default async function StudentProfile() {
   const currentClass = classes.find((c) => c.isCurrent) ?? null;
   const pastClasses = classes.filter((c) => !c.isCurrent);
 
+  // B23 (#47): detect rejected items for action-needed alert + B24b.
+  const rejectedEntries = ownEntries.filter((e) => e.status === "rejected");
+  const hasRejectedEntries = rejectedEntries.length > 0;
+  const hasRejectedFavoriteComment =
+    currentClass?.favoriteCommentStatus === "rejected";
+  const hasActionNeeded = hasRejectedEntries || hasRejectedFavoriteComment;
+  // B24b: is the CURRENT round's entry rejected?
+  const currentRoundEntry = currentRound > 0 ? entryByRound.get(currentRound) : null;
+  const currentRoundRejected = currentRoundEntry?.status === "rejected";
+
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
       fontFamily: F, color: C.text }}>
@@ -756,18 +778,244 @@ export default async function StudentProfile() {
           </div>
         </div>
 
-        {/* ── GO TO THE GAME ── */}
+        {/* ── ACTION NEEDED — "waiting room" for rejected items ──
+             Mirrors the teacher dashboard pattern: rejected photos and
+             comments are surfaced here at the top of the page in their
+             own subsections, outside the round containers they belong to.
+             The round cards and warm-up section below show a brief
+             "see above" note instead of duplicating the resubmit forms. */}
+        {hasActionNeeded && !isGameOver && (
+          <div style={{
+            background: C.dangerBg,
+            border: `2px solid ${C.danger}`,
+            borderRadius: 16,
+            padding: "18px 20px",
+            marginBottom: 20,
+          }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              marginBottom: 16,
+            }}>
+              <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>⚠️</span>
+              <div style={{
+                fontSize: 15, fontWeight: 700, color: C.danger,
+              }}>
+                Action needed
+              </div>
+            </div>
+
+            {/* ── Rejected photo submittals ── */}
+            {hasRejectedEntries && (
+              <div style={{ marginBottom: hasRejectedFavoriteComment ? 18 : 0 }}>
+                <div style={{
+                  fontSize: 11, letterSpacing: 2, fontWeight: 700,
+                  color: C.danger, textTransform: "uppercase",
+                  marginBottom: 10,
+                }}>
+                  Photo submittal{rejectedEntries.length > 1 ? "s" : ""} sent back ({rejectedEntries.length})
+                </div>
+
+                {rejectedEntries.map((entry) => {
+                  const rejectionFeedback = entry.teacherNote || entry.rejectionReason;
+                  return (
+                    <div key={entry.id} style={{
+                      background: "#fff",
+                      border: `1px solid ${C.panelEdge}`,
+                      borderRadius: 12,
+                      padding: 14,
+                      marginBottom: 10,
+                    }}>
+                      <div style={{
+                        display: "flex", gap: 14, alignItems: "flex-start",
+                        flexWrap: "wrap",
+                      }}>
+                        {/* Thumbnail */}
+                        {entry.signedUrl ? (
+                          <img src={entry.signedUrl} alt="" style={{
+                            width: 80, height: 80, objectFit: "cover",
+                            borderRadius: 10, border: `1px solid ${C.panelEdge}`,
+                            flexShrink: 0,
+                          }} />
+                        ) : (
+                          <div style={{
+                            width: 80, height: 80, borderRadius: 10,
+                            border: `1px dashed ${C.panelEdge}`, flexShrink: 0,
+                            display: "flex", alignItems: "center",
+                            justifyContent: "center", fontSize: 10,
+                            color: C.textFaint,
+                          }}>
+                            no photo
+                          </div>
+                        )}
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: 12, fontWeight: 700, color: C.light,
+                            letterSpacing: 1, textTransform: "uppercase",
+                            marginBottom: 6,
+                          }}>
+                            Round {entry.roundNumber}
+                          </div>
+
+                          {/* What you wrote */}
+                          {entry.description_text && (
+                            <p style={{
+                              fontSize: 13, color: C.text, fontStyle: "italic",
+                              lineHeight: 1.4, margin: "0 0 8px",
+                              wordBreak: "break-word",
+                            }}>
+                              &quot;{entry.description_text}&quot;
+                            </p>
+                          )}
+
+                          {/* Teacher feedback */}
+                          {rejectionFeedback && (
+                            <div style={{
+                              background: C.dangerBg,
+                              border: `1px solid ${C.danger}44`,
+                              borderRadius: 8, padding: "6px 10px",
+                              marginBottom: 8,
+                            }}>
+                              <div style={{
+                                fontSize: 10, letterSpacing: 1, fontWeight: 600,
+                                color: C.danger, textTransform: "uppercase",
+                                marginBottom: 2,
+                              }}>
+                                Your teacher said
+                              </div>
+                              <p style={{
+                                fontSize: 12, color: C.text, lineHeight: 1.4,
+                                margin: 0, wordBreak: "break-word",
+                              }}>
+                                {rejectionFeedback}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Resubmit form — right here in the waiting room */}
+                      <div style={{ marginTop: 8 }}>
+                        <ResubmitEntryForm
+                          entryId={entry.id}
+                          currentDescription={entry.description_text}
+                          roundNumber={entry.roundNumber}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ── Rejected favorite comment ── */}
+            {hasRejectedFavoriteComment && currentClass && (
+              <div>
+                <div style={{
+                  fontSize: 11, letterSpacing: 2, fontWeight: 700,
+                  color: C.danger, textTransform: "uppercase",
+                  marginBottom: 10,
+                }}>
+                  Favorite comment sent back (1)
+                </div>
+
+                <div style={{
+                  background: "#fff",
+                  border: `1px solid ${C.panelEdge}`,
+                  borderRadius: 12,
+                  padding: 14,
+                }}>
+                  <div style={{
+                    fontSize: 12, fontWeight: 700, color: C.light,
+                    letterSpacing: 1, textTransform: "uppercase",
+                    marginBottom: 6,
+                  }}>
+                    Warm-up Round
+                  </div>
+
+                  {/* The comment text */}
+                  {currentClass.favoriteComment && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{
+                        fontSize: 10, letterSpacing: 1, fontWeight: 600,
+                        color: C.textFaint, textTransform: "uppercase",
+                        marginBottom: 2,
+                      }}>
+                        What you wrote
+                      </div>
+                      <p style={{
+                        fontSize: 13, color: C.text, lineHeight: 1.4,
+                        margin: 0, fontStyle: "italic",
+                        wordBreak: "break-word",
+                      }}>
+                        &quot;{currentClass.favoriteComment}&quot;
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Teacher feedback */}
+                  {currentClass.favoriteCommentRejectionReason && (
+                    <div style={{
+                      background: C.dangerBg,
+                      border: `1px solid ${C.danger}44`,
+                      borderRadius: 8, padding: "6px 10px",
+                      marginBottom: 8,
+                    }}>
+                      <div style={{
+                        fontSize: 10, letterSpacing: 1, fontWeight: 600,
+                        color: C.danger, textTransform: "uppercase",
+                        marginBottom: 2,
+                      }}>
+                        Your teacher said
+                      </div>
+                      <p style={{
+                        fontSize: 12, color: C.text, lineHeight: 1.4,
+                        margin: 0, wordBreak: "break-word",
+                      }}>
+                        {currentClass.favoriteCommentRejectionReason}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Resubmit form — right here in the waiting room */}
+                  {currentClass.favoriteComment && (
+                    <ResubmitFavoriteCommentForm
+                      currentText={currentClass.favoriteComment}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── GO TO THE GAME (B24b: warn when current round entry rejected) ── */}
         {!isGameOver && (
-          <a
-            href="/student/play"
-            style={{ display: "block", textAlign: "center", textDecoration: "none",
-              width: "100%", boxSizing: "border-box", padding: "13px",
-              fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
-              color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
-              marginBottom: 28 }}
-          >
-            Go to the game →
-          </a>
+          <>
+            {currentRoundRejected && (
+              <div style={{
+                background: C.dangerBg,
+                border: `1px solid ${C.danger}44`,
+                borderRadius: 10,
+                padding: "10px 14px",
+                marginBottom: 8,
+                fontSize: 12, color: C.danger, lineHeight: 1.5,
+              }}>
+                Your photo for the current round was not approved. Fix your submission below before playing — the game won&apos;t include your photo until it&apos;s resubmitted and approved.
+              </div>
+            )}
+            <a
+              href="/student/play"
+              style={{ display: "block", textAlign: "center", textDecoration: "none",
+                width: "100%", boxSizing: "border-box", padding: "13px",
+                fontFamily: F, fontSize: 15, fontWeight: 700,
+                background: currentRoundRejected ? C.textDim : C.light,
+                color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+                marginBottom: 28 }}
+            >
+              Go to the game →
+            </a>
+          </>
         )}
 
         {/* ── ROUND STACK (#27) ── */}
