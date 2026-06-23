@@ -80,6 +80,7 @@ import AddEntryForm from "./AddEntryForm";
 import RemoveEntryButton from "./RemoveEntryButton";
 import ResubmitEntryForm from "./ResubmitEntryForm";
 import ResubmitFavoriteCommentForm from "./ResubmitFavoriteCommentForm";
+import AutoRefresh from "./AutoRefresh";
 import { StudentDashboardCsvButton } from "./csv-button";
 
 export const dynamic = "force-dynamic";
@@ -754,6 +755,7 @@ export default async function StudentProfile() {
       `}</style>
 
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <AutoRefresh />
 
         {/* ── HEADER ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
@@ -1054,16 +1056,93 @@ export default async function StudentProfile() {
               const entry = entryByRound.get(r);
               const isLocked = currentRound > 0 && r <= currentRound;
               const isLive = r === currentRound && currentRound > 0;
+              const session = sessionByRound.get(r);
 
               if (entry) {
                 return (
-                  <FilledTopSlotCard
-                    key={`top-${r}`}
-                    entry={entry}
-                    isLive={isLive}
-                    isLocked={isLocked}
-                    imageSize={isLive ? 140 : 120}
-                  />
+                  <div key={`top-${r}`}>
+                    <FilledTopSlotCard
+                      entry={entry}
+                      isLive={isLive}
+                      isLocked={isLocked}
+                      imageSize={isLive ? 140 : 120}
+                    />
+
+                    {/* ── B36: live-round comments below the card ── */}
+                    {session && session.commentedEntries.length > 0 && (
+                      <div style={{ marginTop: -6, marginBottom: 16 }}>
+                        <div style={{
+                          fontSize: 12, letterSpacing: 1, fontWeight: 600,
+                          color: C.textDim, textTransform: "uppercase",
+                          marginBottom: 10,
+                        }}>
+                          Your comments this round
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          {session.commentedEntries.map((ce) => (
+                            <div key={ce.id} style={{
+                              display: "flex", gap: 14, alignItems: "flex-start",
+                              background: C.bg, border: `1px solid ${C.panelEdge}`,
+                              borderRadius: 12, padding: 12,
+                            }}>
+                              {ce.publicUrl ? (
+                                <img src={ce.publicUrl} alt=""
+                                  style={{
+                                    width: 70, height: 70, objectFit: "cover",
+                                    borderRadius: 8, border: `1px solid ${C.panelEdge}`,
+                                    flexShrink: 0,
+                                  }} />
+                              ) : (
+                                <div style={{
+                                  width: 70, height: 70, borderRadius: 8,
+                                  flexShrink: 0, background: C.panel,
+                                  border: `1px solid ${C.panelEdge}`,
+                                }} />
+                              )}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {ce.isFavorite && (
+                                  <div style={{
+                                    fontSize: 10, letterSpacing: 1.5, fontWeight: 700,
+                                    color: C.light, textTransform: "uppercase",
+                                    marginBottom: 4,
+                                  }}>
+                                    ★ Your favorite
+                                  </div>
+                                )}
+                                {ce.description_text && (
+                                  <p style={{
+                                    fontSize: 13, color: C.text, fontStyle: "italic",
+                                    lineHeight: 1.5, margin: "0 0 8px",
+                                    borderLeft: `2px solid ${C.light}`, paddingLeft: 10,
+                                    wordBreak: "break-word",
+                                  }}>
+                                    &quot;{ce.description_text}&quot;
+                                  </p>
+                                )}
+                                {ce.comment && (
+                                  <>
+                                    <div style={{
+                                      fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                                      color: C.textFaint, textTransform: "uppercase",
+                                      marginBottom: 3,
+                                    }}>
+                                      What you said
+                                    </div>
+                                    <p style={{
+                                      fontSize: 14, color: C.text, lineHeight: 1.5,
+                                      margin: 0, wordBreak: "break-word",
+                                    }}>
+                                      {ce.comment}
+                                    </p>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 );
               }
 
