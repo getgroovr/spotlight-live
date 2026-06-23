@@ -21,7 +21,7 @@ import {
   archivedEntries,
   addEntry,
 } from "./students.js";
-import { enrollStudent, saveStudentRound } from "@/app/play/actions";
+import { enrollStudent, saveStudentRound, addEntry as addEntryAction } from "@/app/play/actions";
 
 const F = "'Outfit',sans-serif";
 const SOCIAL = false;
@@ -598,23 +598,38 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
 // bounces back to the grid; "Back to your profile →" appears once they've
 // saved at least once.
 // ─────────────────────────────────────────────────────────────────────────
+// B40 (session 51): edit/save toggle. The comment starts read-only with
+// an "Edit" button. Clicking Edit makes the textarea editable and shows
+// a "Save" button. Saving returns to read-only with a "✓ saved" stamp.
+// One mode at a time — no more "Save again →" implying endless iteration.
+// ─────────────────────────────────────────────────────────────────────────
 function StudentFavoriteEdit({
   favoriteStudent, myComments, favoriteId, onBack, onCommentChange,
+  currentRound, totalRounds,
 }) {
   const [comment, setComment] = useState(myComments[favoriteId] || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [savedOnce, setSavedOnce] = useState(false);
-  const [justSaved, setJustSaved] = useState(false);
+  const [editing, setEditing] = useState(true);  // start in edit mode on first visit
+  const [savedAt, setSavedAt] = useState(null);
 
-  const handleSubmit = async () => {
+  // B43: next-round upload state
+  const nextRound = (typeof currentRound === "number" && typeof totalRounds === "number" && currentRound < totalRounds)
+    ? currentRound + 1
+    : null;
+  const [uploadDescription, setUploadDescription] = useState("");
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadDone, setUploadDone] = useState(false);
+  const uploadFormRef = useRef(null);
+
+  const handleSave = async () => {
     if (loading) return;
     setError("");
     setLoading(true);
     try {
       const trimmed = comment.trim();
-      // Push the edit up so if they go back to the grid, it shows the
-      // revised text under their tile.
       onCommentChange(favoriteId, trimmed);
       const updatedComments = { ...myComments, [favoriteId]: trimmed };
       const fd = new FormData();
@@ -622,12 +637,10 @@ function StudentFavoriteEdit({
       fd.append("favorites", JSON.stringify({ [favoriteId]: true }));
       const result = await saveStudentRound(fd);
       if (result.ok) {
-        // Only clear local progress on the first successful save — a
-        // resave after that should keep the round playable until they
-        // navigate away themselves.
         if (!savedOnce) clearProgress();
         setSavedOnce(true);
-        setJustSaved(true);
+        setEditing(false);
+        setSavedAt(new Date());
       } else {
         setError(result.error);
       }
@@ -648,8 +661,9 @@ function StudentFavoriteEdit({
       </h2>
       <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
         maxWidth: 360, margin: "0 auto 18px" }}>
-        Feel free to edit or revise your comment on your favorite pic —
-        it may be seen by your classmates.
+        {editing
+          ? "Write a comment about your favorite pic — it may be seen by your classmates."
+          : "Your comment has been saved."}
       </p>
 
       <div style={{
@@ -671,47 +685,74 @@ function StudentFavoriteEdit({
         )}
       </div>
 
-      <textarea
-        value={comment}
-        onChange={(e) => { setComment(e.target.value); setJustSaved(false); }}
-        placeholder="What did you like about this one?"
-        rows={3}
-        style={{
-          width: "100%", boxSizing: "border-box",
-          fontFamily: F, fontSize: 14, color: C.text,
-          background: "#fff", border: `1px solid ${C.panelEdge}`,
-          borderRadius: 10, padding: "10px 12px",
-          lineHeight: 1.5, resize: "vertical", outline: "none",
-          marginBottom: 14, textAlign: "left",
-        }}
-      />
-
-      {error && (
-        <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
-          background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
-          {error}
-        </div>
+      {editing ? (
+        /* ── EDIT MODE: textarea + Save button ── */
+        <>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="What did you like about this one?"
+            rows={3}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              fontFamily: F, fontSize: 14, color: C.text,
+              background: "#fff", border: `1px solid ${C.panelEdge}`,
+              borderRadius: 10, padding: "10px 12px",
+              lineHeight: 1.5, resize: "vertical", outline: "none",
+              marginBottom: 14, textAlign: "left",
+            }}
+          />
+          {error && (
+            <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
+              background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
+              {error}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+            <button
+              onClick={handleSave}
+              disabled={loading}
+              style={{ flex: 1, padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
+                background: loading ? C.panelEdge : C.light,
+                color: loading ? C.textFaint : C.stageDeep,
+                border: "none", borderRadius: 12,
+                cursor: loading ? "not-allowed" : "pointer",
+                letterSpacing: 0.5 }}
+            >
+              {loading ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </>
+      ) : (
+        /* ── READ-ONLY MODE: comment text + Edit button + saved stamp ── */
+        <>
+          <div style={{
+            textAlign: "left", fontFamily: F, fontSize: 14, color: C.text,
+            background: "#fff", border: `1px solid ${C.panelEdge}`,
+            borderRadius: 10, padding: "10px 12px",
+            lineHeight: 1.5, marginBottom: 10, minHeight: 40,
+            wordBreak: "break-word",
+          }}>
+            {comment || <span style={{ color: C.textFaint, fontStyle: "italic" }}>(no comment)</span>}
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
+            <button
+              onClick={() => setEditing(true)}
+              style={{ padding: "10px 24px", fontFamily: F, fontSize: 14, fontWeight: 700,
+                background: "transparent", color: C.light,
+                border: `1.5px solid ${C.light}`, borderRadius: 12,
+                cursor: "pointer", letterSpacing: 0.5 }}
+            >
+              Edit
+            </button>
+            {savedAt && (
+              <span style={{ fontFamily: F, fontSize: 12, color: "#2E7D32" }}>
+                ✓ saved just now
+              </span>
+            )}
+          </div>
+        </>
       )}
-
-      {justSaved && !error && (
-        <div style={{ fontFamily: F, fontSize: 13, color: "#2E7D32", marginBottom: 12,
-          background: "#E8F5E9", border: "1px solid #C8E6C9", borderRadius: 8, padding: "9px 12px" }}>
-          ✓ Saved. You can keep editing and save again.
-        </div>
-      )}
-
-      <button
-        onClick={handleSubmit}
-        disabled={loading}
-        style={{ width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
-          background: loading ? C.panelEdge : C.light,
-          color: loading ? C.textFaint : C.stageDeep,
-          border: "none", borderRadius: 12,
-          cursor: loading ? "not-allowed" : "pointer",
-          letterSpacing: 0.5, marginBottom: 12 }}
-      >
-        {loading ? "Saving…" : (savedOnce ? "Save again →" : "Save my comments →")}
-      </button>
 
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center",
         gap: 18, flexWrap: "wrap" }}>
@@ -720,7 +761,7 @@ function StudentFavoriteEdit({
             border: "none", cursor: "pointer", textDecoration: "underline" }}>
           ← Pick a different favorite
         </button>
-        {savedOnce && (
+        {savedOnce && !nextRound && (
           <a href="/student/dashboard"
             style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
               textDecoration: "underline" }}>
@@ -728,6 +769,132 @@ function StudentFavoriteEdit({
           </a>
         )}
       </div>
+
+      {/* ── B43: Upload photo for the next round ── */}
+      {savedOnce && nextRound && !uploadDone && (
+        <div style={{
+          marginTop: 24, paddingTop: 20,
+          borderTop: `1px solid ${C.panelEdge}`,
+          textAlign: "left",
+        }}>
+          <h3 style={{ fontFamily: F, fontSize: 16, fontWeight: 700, color: C.text,
+            margin: "0 0 6px", textAlign: "center" }}>
+            Now add your photo for Round {nextRound}
+          </h3>
+          <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
+            textAlign: "center", margin: "0 0 16px" }}>
+            Upload the photo your classmates will see next round.
+          </p>
+
+          <form ref={uploadFormRef} onSubmit={(e) => e.preventDefault()}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.textDim,
+                letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>
+                Your photo
+              </label>
+              <input
+                type="file"
+                name="entry_photo"
+                accept="image/*"
+                required
+                style={{ fontFamily: F, fontSize: 13, width: "100%", boxSizing: "border-box" }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.textDim,
+                letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>
+                Describe it
+              </label>
+              <textarea
+                value={uploadDescription}
+                onChange={(e) => setUploadDescription(e.target.value)}
+                placeholder="Tell your classmates about this photo…"
+                rows={2}
+                style={{
+                  width: "100%", boxSizing: "border-box", padding: "8px 10px",
+                  fontFamily: F, fontSize: 13, lineHeight: 1.5,
+                  border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+                  resize: "vertical", outline: "none",
+                }}
+              />
+            </div>
+
+            {uploadError && (
+              <div style={{ fontFamily: F, fontSize: 13, color: "#C0392B", marginBottom: 12,
+                background: "#FDECEA", border: "1px solid #F5C6CB", borderRadius: 8, padding: "9px 12px" }}>
+                {uploadError}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={async () => {
+                if (!uploadFormRef.current || uploadLoading) return;
+                setUploadError("");
+                setUploadLoading(true);
+                try {
+                  const fd = new FormData(uploadFormRef.current);
+                  fd.set("entry_description", uploadDescription.trim());
+                  fd.set("round_number", String(nextRound));
+                  const result = await addEntryAction(null, fd);
+                  if (result.ok) {
+                    setUploadDone(true);
+                  } else {
+                    setUploadError(result.error || "Upload failed.");
+                  }
+                } catch (e) {
+                  setUploadError("Something went wrong. Please try again.");
+                } finally {
+                  setUploadLoading(false);
+                }
+              }}
+              disabled={uploadLoading}
+              style={{
+                width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
+                background: uploadLoading ? C.panelEdge : C.light,
+                color: uploadLoading ? C.textFaint : C.stageDeep,
+                border: "none", borderRadius: 12,
+                cursor: uploadLoading ? "not-allowed" : "pointer",
+                letterSpacing: 0.5,
+              }}
+            >
+              {uploadLoading ? "Uploading…" : `Upload for Round ${nextRound}`}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ── B43: Upload success ── */}
+      {savedOnce && uploadDone && (
+        <div style={{
+          marginTop: 24, paddingTop: 20,
+          borderTop: `1px solid ${C.panelEdge}`,
+          textAlign: "center",
+        }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>✓</div>
+          <p style={{ fontFamily: F, fontSize: 14, color: "#2E7D32", fontWeight: 600,
+            margin: "0 0 14px" }}>
+            Photo uploaded for Round {nextRound}! Your teacher will review it.
+          </p>
+          <a href="/student/dashboard"
+            style={{ fontFamily: F, fontSize: 13, fontWeight: 600,
+              color: C.light, textDecoration: "none" }}>
+            Back to your dashboard →
+          </a>
+        </div>
+      )}
+
+      {/* Back to dashboard (last round — no upload needed) */}
+      {savedOnce && !nextRound && (
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <a href="/student/dashboard"
+            style={{ fontFamily: F, fontSize: 13, fontWeight: 600,
+              color: C.light, textDecoration: "none" }}>
+            Back to your dashboard →
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -740,6 +907,7 @@ function StudentFavoriteEdit({
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
   myComments, students, totalStudents, onPlayAgain, onCommentChange, mode = "visitor",
+  currentRound, totalRounds,
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
@@ -819,13 +987,15 @@ function DoneScreen({
           favoriteId={favoriteId}
           onCommentChange={onCommentChange}
           onBack={() => setDonePhase("review")}
+          currentRound={currentRound}
+          totalRounds={totalRounds}
         />
       )}
     </div>
   );
 }
 
-export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
+export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds }) {
   const [view, setView] = useState("splash");
   const [phase, setPhase] = useState("idle");
   const [order, setOrder] = useState(initialStudents);
@@ -1233,6 +1403,8 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor" }) {
           onPlayAgain={resetAll}
           onCommentChange={saveComment}
           mode={mode}
+          currentRound={currentRound}
+          totalRounds={totalRounds}
         />
       )}
     </div>

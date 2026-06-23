@@ -68,7 +68,7 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
       }}
     >
       <div style={{ width: "100%", maxWidth: 560 }}>
-        <App initialStudents={initialStudents} mode={mode} warmupComplete={warmupComplete} />
+        <App initialStudents={initialStudents} mode={mode} warmupComplete={warmupComplete} currentRound={currentRound} totalRounds={totalRounds} />
       </div>
     </div>
   );
