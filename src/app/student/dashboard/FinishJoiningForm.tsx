@@ -118,7 +118,8 @@ export default function FinishJoiningForm({
           <PhotoField
             name="photo"
             label="A photo of yourself"
-            helper="optional, shown on your profile"
+            helper="required — this is your avatar in the game"
+            required
             previewSize={120}
           />
         </div>
