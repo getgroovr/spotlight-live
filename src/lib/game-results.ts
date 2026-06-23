@@ -1,22 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/lib/game-results.ts — data layer for the end-of-game celebration page.
 //
-// Queries all game_sessions for a class, tallies favorites per round,
-// and returns the "winner" (most-favorited entry) for each round plus
-// the current student's own pick.
+// Session 52C redesign: instead of showing a single winner per round,
+// return the top 3 most-favorited entries (gold / silver / bronze) along
+// with every comment classmates wrote about those entries. The page
+// shows photos + comments so the results feel communal, not just a
+// scoreboard.
 //
-// Session 44 — B19 fix: the game-over page needs actual content, not
-// just a dead-end message.
-//
-// Data shape:
-//   Each round produces a RoundResult with:
-//     - winner: the entry that got the most favorite votes
-//     - winnerName: display name of the student who submitted it
-//     - voteCount: how many students picked it as their favorite
-//     - yourPick: the entry the current student favorited (if different
-//       from winner, shown as a secondary callout)
-//     - yourPickName: display name of who submitted your pick
-//     - youPickedWinner: true if your pick === the winner
+// Data shape per round:
+//   topEntries[] — up to 3 entries, sorted by vote count descending.
+//     Each has: rank (1/2/3), photo, description, student name, vote
+//     count, and an array of { studentName, text } comments from all
+//     the game_sessions that referenced that entry.
 //
 // Bucket handling:
 //   Student entries → media bucket (private, signed URLs)
@@ -30,23 +25,25 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 const MEDIA_BUCKET = "media";
 const SIGNED_URL_TTL = 60 * 60; // 1 hour
 
+export type EntryComment = {
+  studentName: string;
+  text: string;
+};
+
+export type TopEntry = {
+  rank: number;              // 1 = gold, 2 = silver, 3 = bronze
+  entryId: string;
+  photoUrl: string | null;
+  description: string;
+  studentName: string;
+  voteCount: number;
+  comments: EntryComment[];  // every comment written about this entry
+};
+
 export type RoundResult = {
   roundNumber: number;
-  winner: {
-    entryId: string;
-    photoUrl: string | null;
-    description: string;
-    studentName: string;
-    voteCount: number;
-  };
-  yourPick: {
-    entryId: string;
-    photoUrl: string | null;
-    description: string;
-    studentName: string;
-  } | null;
-  youPickedWinner: boolean;
-  totalVoters: number;  // how many students played this round
+  topEntries: TopEntry[];
+  totalVoters: number;       // how many students played this round
 };
 
 export type GameResultsData =
@@ -83,25 +80,15 @@ export async function getGameResults(): Promise<GameResultsData> {
 
   const studentName = student.screen_name || student.name || "there";
 
-  // Get class name + total_rounds
+  // Get class name
   const { data: classRow } = await admin
     .from("classes")
     .select("name, total_rounds")
     .eq("id", classId)
     .maybeSingle();
   const className = classRow?.name || "your class";
-  const totalRounds = classRow?.total_rounds || 3;
 
-  // ── Get ALL game sessions for this class (all students, all rounds) ──
-  // game_sessions.student_id = students.id (NOT auth.users.id)
-  //
-  // Round-0 convention:
-  //   round 0 = warm-up (enrollStudent writes this)
-  //   round 1+ = student game rounds (saveStudentRound writes currentRound)
-  //
-  // The favorites in game_sessions contain { entryId: true } — one per session.
-  // To find the most-favorited entry per round, we count across all sessions.
-
+  // ── Get ALL game sessions for this class ─────────────────────────────
   const { data: allSessions } = await admin
     .from("game_sessions")
     .select("id, student_id, round, favorites, comments")
@@ -112,88 +99,73 @@ export async function getGameResults(): Promise<GameResultsData> {
     return { ok: false, error: "no-sessions" };
   }
 
-  // Group sessions by round and tally favorites
-  // Map: round → Map: entryId → count
+  // ── Tally favorites per round AND collect comments per entry ─────────
+  // roundTallies: round → entryId → favorite vote count
+  // entryComments: entryId → array of { studentId (students.id), text }
   const roundTallies = new Map<number, Map<string, number>>();
   const roundVoterCounts = new Map<number, number>();
-  // Track the current student's pick per round
-  const myPickPerRound = new Map<number, string>();
+  const entryComments = new Map<string, { studentId: string; text: string }[]>();
 
   for (const session of allSessions) {
     const round = session.round as number;
     const favorites = (session.favorites || {}) as Record<string, boolean>;
+    const comments = (session.comments || {}) as Record<string, string>;
     const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
 
-    if (!favEntryId) continue;
+    // Tally favorite votes
+    if (favEntryId) {
+      if (!roundTallies.has(round)) roundTallies.set(round, new Map());
+      const tally = roundTallies.get(round)!;
+      tally.set(favEntryId, (tally.get(favEntryId) || 0) + 1);
+      roundVoterCounts.set(round, (roundVoterCounts.get(round) || 0) + 1);
+    }
 
-    // Tally
-    if (!roundTallies.has(round)) roundTallies.set(round, new Map());
-    const tally = roundTallies.get(round)!;
-    tally.set(favEntryId, (tally.get(favEntryId) || 0) + 1);
-
-    // Voter count
-    roundVoterCounts.set(round, (roundVoterCounts.get(round) || 0) + 1);
-
-    // Is this the current student's session?
-    if (session.student_id === student.id) {
-      myPickPerRound.set(round, favEntryId);
+    // Collect ALL comments (not just for the favorite)
+    for (const [entryId, text] of Object.entries(comments)) {
+      if (!text || typeof text !== "string" || !text.trim()) continue;
+      if (!entryComments.has(entryId)) entryComments.set(entryId, []);
+      entryComments.get(entryId)!.push({
+        studentId: session.student_id,
+        text: text.trim(),
+      });
     }
   }
 
-  // Skip round 0 (warm-up) — only show game rounds (1, 2, 3, ...)
-  // The warm-up used starter photos (teacher's deck), while game rounds use
-  // student photos. We include all rounds that have votes and let the page
-  // label them. Round 0 = warm-up, rounds 1+ = student rounds.
-
-  // For each round, find the winner (most-voted entry)
+  // ── Find top 3 entries per round ─────────────────────────────────────
   const entryIdsNeeded = new Set<string>();
-  const winnerPerRound = new Map<number, { entryId: string; voteCount: number }>();
+  const topPerRound = new Map<number, { entryId: string; voteCount: number }[]>();
 
   for (const [round, tally] of roundTallies) {
-    let maxVotes = 0;
-    let winnerId = "";
-    for (const [entryId, count] of tally) {
-      if (count > maxVotes) {
-        maxVotes = count;
-        winnerId = entryId;
-      }
-      entryIdsNeeded.add(entryId);
-    }
-    winnerPerRound.set(round, { entryId: winnerId, voteCount: maxVotes });
+    const sorted = Array.from(tally.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+    topPerRound.set(round, sorted.map(([entryId, voteCount]) => ({ entryId, voteCount })));
+    for (const [entryId] of sorted) entryIdsNeeded.add(entryId);
   }
 
-  // Also add the student's own picks
-  for (const entryId of myPickPerRound.values()) {
-    entryIdsNeeded.add(entryId);
-  }
+  // Also need entry IDs referenced in comments for the top entries
+  // (already covered by entryIdsNeeded above)
 
-  // ── Fetch entry details for all referenced entries ───────────────────
-  const entryIds = Array.from(entryIdsNeeded);
-  if (entryIds.length === 0) {
+  if (entryIdsNeeded.size === 0) {
     return { ok: false, error: "no-favorites" };
   }
 
+  // ── Fetch entry details ──────────────────────────────────────────────
   const { data: entries } = await admin
     .from("entries")
     .select("id, student_id, media_url, description_text, is_starter, status")
-    .in("id", entryIds);
+    .in("id", Array.from(entryIdsNeeded));
 
   // Sign or resolve URLs
   async function resolveUrl(mediaUrl: string | null, isStarter: boolean): Promise<string | null> {
     if (!mediaUrl) return null;
-
-    // Full URL passthrough (seed data, external images)
     if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
       return mediaUrl;
     }
-
     if (isStarter) {
-      // Starter entries live in the public teacher-deck bucket
       const { data } = admin.storage.from("teacher-deck").getPublicUrl(mediaUrl);
       return data?.publicUrl ?? null;
     }
-
-    // Student entries live in the private media bucket
     try {
       const { data, error } = await admin.storage
         .from(MEDIA_BUCKET)
@@ -205,11 +177,10 @@ export async function getGameResults(): Promise<GameResultsData> {
     }
   }
 
-  // Build entry lookup with signed URLs
   const entryMap = new Map<string, {
     photoUrl: string | null;
     description: string;
-    studentAuthId: string; // entries.student_id = auth.users.id = profiles.id
+    studentAuthId: string;
   }>();
 
   for (const e of entries || []) {
@@ -221,16 +192,16 @@ export async function getGameResults(): Promise<GameResultsData> {
     });
   }
 
-  // ── Resolve display names for entry submitters ───────────────────────
-  // entries.student_id = auth.users.id = profiles.id
-  // We need to go auth.users → email → students → screen_name
+  // ── Resolve display names ────────────────────────────────────────────
+  // Need names for: entry submitters (auth IDs) and comment authors
+  // (students.id). Two separate ID spaces.
+
+  // 1. Entry submitters: entries.student_id = auth user id
   const authIdsNeeded = new Set<string>();
   for (const e of entryMap.values()) authIdsNeeded.add(e.studentAuthId);
 
   const nameByAuthId = new Map<string, string>();
-
   for (const authId of authIdsNeeded) {
-    // Get email from auth, then name from students
     try {
       const { data: { user: authUser } } = await admin.auth.admin.getUserById(authId);
       if (authUser?.email) {
@@ -242,7 +213,6 @@ export async function getGameResults(): Promise<GameResultsData> {
         nameByAuthId.set(authId, stu?.screen_name || stu?.name || authUser.email);
       }
     } catch {
-      // Check profiles as fallback
       const { data: prof } = await admin
         .from("profiles")
         .select("display_name, username")
@@ -252,46 +222,61 @@ export async function getGameResults(): Promise<GameResultsData> {
     }
   }
 
+  // 2. Comment authors: game_sessions.student_id = students.id
+  const commentStudentIds = new Set<string>();
+  for (const comments of entryComments.values()) {
+    for (const c of comments) commentStudentIds.add(c.studentId);
+  }
+
+  const nameByStudentId = new Map<string, string>();
+  if (commentStudentIds.size > 0) {
+    const { data: commentStudents } = await admin
+      .from("students")
+      .select("id, screen_name, name")
+      .in("id", Array.from(commentStudentIds));
+    for (const s of commentStudents || []) {
+      nameByStudentId.set(s.id, s.screen_name || s.name || "A classmate");
+    }
+  }
+
   // ── Assemble round results ───────────────────────────────────────────
   const rounds: RoundResult[] = [];
-
-  // Sort rounds numerically
-  const sortedRounds = Array.from(winnerPerRound.keys()).sort((a, b) => a - b);
+  const sortedRounds = Array.from(topPerRound.keys()).sort((a, b) => a - b);
 
   for (const roundNum of sortedRounds) {
-    const winner = winnerPerRound.get(roundNum)!;
-    const winnerEntry = entryMap.get(winner.entryId);
-    if (!winnerEntry) continue;
+    const topList = topPerRound.get(roundNum)!;
+    const topEntries: TopEntry[] = [];
 
-    const myPickId = myPickPerRound.get(roundNum) || null;
-    const youPickedWinner = myPickId === winner.entryId;
+    for (let i = 0; i < topList.length; i++) {
+      const { entryId, voteCount } = topList[i];
+      const entry = entryMap.get(entryId);
+      if (!entry) continue;
 
-    let yourPick: RoundResult["yourPick"] = null;
-    if (myPickId && !youPickedWinner) {
-      const pickEntry = entryMap.get(myPickId);
-      if (pickEntry) {
-        yourPick = {
-          entryId: myPickId,
-          photoUrl: pickEntry.photoUrl,
-          description: pickEntry.description,
-          studentName: nameByAuthId.get(pickEntry.studentAuthId) || "A classmate",
-        };
-      }
+      // Gather comments for this entry
+      const rawComments = entryComments.get(entryId) || [];
+      const resolvedComments: EntryComment[] = rawComments.map((c) => ({
+        studentName: nameByStudentId.get(c.studentId) || "A classmate",
+        text: c.text,
+      }));
+
+      topEntries.push({
+        rank: i + 1,
+        entryId,
+        photoUrl: entry.photoUrl,
+        description: entry.description,
+        studentName: nameByAuthId.get(entry.studentAuthId) || "A classmate",
+        voteCount,
+        comments: resolvedComments,
+      });
     }
 
-    rounds.push({
-      roundNumber: roundNum,
-      winner: {
-        entryId: winner.entryId,
-        photoUrl: winnerEntry.photoUrl,
-        description: winnerEntry.description,
-        studentName: nameByAuthId.get(winnerEntry.studentAuthId) || "A classmate",
-        voteCount: winner.voteCount,
-      },
-      yourPick,
-      youPickedWinner,
-      totalVoters: roundVoterCounts.get(roundNum) || 0,
-    });
+    if (topEntries.length > 0) {
+      rounds.push({
+        roundNumber: roundNum,
+        topEntries,
+        totalVoters: roundVoterCounts.get(roundNum) || 0,
+      });
+    }
   }
 
   return { ok: true, rounds, studentName, className };

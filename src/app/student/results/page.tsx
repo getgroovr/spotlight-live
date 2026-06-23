@@ -1,26 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/results/page.tsx — end-of-game celebration page.
 //
-// B19 fix (#44): Previously the game ended with a dead-end "game has
-// ended" message. Now there's a proper celebration showing who got the
-// most favorite votes in each round, whether the student's pick matched
-// the class winner, and a warm wrap-up.
-//
-// Linked from the student dashboard (results button, visible when
-// isGameOver=true) and from the game-over holding page on /student/play.
-//
-// Data comes from getGameResults() which tallies favorites across all
-// game_sessions for the class.
+// Session 52C redesign: shows the top 3 most-favorited photos per round
+// (gold / silver / bronze) with the comments classmates wrote about them.
+// Feels like a classroom yearbook page, not a scoreboard.
 //
 // Round labeling (round-0 convention):
-//   game_sessions round=0 is the warm-up round (teacher's starter photos).
-//   game_sessions round=1+ are the student game rounds — round N = "Round N".
-// The warm-up winner is shown separately at the bottom as "Warm-up Round"
-// while game rounds are labeled "Round 1", "Round 2", etc.
+//   game_sessions round 0 = warm-up (teacher starter photos)
+//   game_sessions round 1+ = student game rounds
+// Warm-up shown collapsed at the bottom.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getGameResults, type RoundResult } from "@/lib/game-results";
+import { getGameResults, type RoundResult, type TopEntry } from "@/lib/game-results";
 
 export const dynamic = "force-dynamic";
 
@@ -39,39 +31,189 @@ const C = {
   textFaint: "#9A815E",
   gold: "#D4A843",
   goldBg: "#FFF8E7",
-  liveGreen: "#7A9F5C",
-  liveGreenBg: "#E2EFD9",
+  silver: "#8C8C8C",
+  silverBg: "#F4F4F2",
+  bronze: "#B87333",
+  bronzeBg: "#FDF3E8",
 };
 const F = "'Outfit',sans-serif";
 
-// ── Round label helper ──────────────────────────────────────────────────
-// Round-0 convention:
-//   game_sessions round 0 = warm-up (teacher starter photos)
-//   game_sessions round 1 = Round 1 (first game round)
-//   game_sessions round 2 = Round 2, etc.
-function roundLabel(sessionRound: number): string {
-  if (sessionRound === 0) return "Warm-up Round";
-  return `Round ${sessionRound}`;
+const MEDAL = ["🥇", "🥈", "🥉"];
+const MEDAL_COLORS = [
+  { border: C.gold, bg: C.goldBg, accent: C.gold },
+  { border: C.silver, bg: C.silverBg, accent: C.silver },
+  { border: C.bronze, bg: C.bronzeBg, accent: C.bronze },
+];
+
+function roundLabel(n: number): string {
+  return n === 0 ? "Warm-up Round" : `Round ${n}`;
 }
 
-// ── Winner card ─────────────────────────────────────────────────────────
-function WinnerCard({ result }: { result: RoundResult }) {
-  const isWarmup = result.roundNumber === 0;
+// ── Single entry card (gold = large, silver/bronze = compact) ─────────
+function EntryCard({ entry }: { entry: TopEntry }) {
+  const isGold = entry.rank === 1;
+  const colors = MEDAL_COLORS[(entry.rank - 1)] || MEDAL_COLORS[2];
+  const photoSize = isGold ? 180 : 100;
 
+  return (
+    <div style={{
+      background: colors.bg,
+      border: `2px solid ${colors.border}`,
+      borderRadius: 16,
+      padding: isGold ? 18 : 14,
+      marginBottom: 14,
+    }}>
+      {/* Photo + info row */}
+      <div style={{
+        display: "flex",
+        gap: isGold ? 16 : 12,
+        alignItems: "flex-start",
+        flexWrap: "wrap",
+      }}>
+        {/* Photo */}
+        {entry.photoUrl ? (
+          <img
+            src={entry.photoUrl}
+            alt=""
+            style={{
+              width: photoSize,
+              height: photoSize,
+              objectFit: "cover",
+              borderRadius: isGold ? 14 : 10,
+              border: `3px solid ${colors.border}`,
+              flexShrink: 0,
+            }}
+          />
+        ) : (
+          <div style={{
+            width: photoSize,
+            height: photoSize,
+            borderRadius: isGold ? 14 : 10,
+            border: `2px dashed ${C.panelEdge}`,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 12,
+            color: C.textFaint,
+          }}>
+            photo unavailable
+          </div>
+        )}
+
+        {/* Info column */}
+        <div style={{ flex: 1, minWidth: isGold ? 180 : 140 }}>
+          {/* Medal + name */}
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 6,
+          }}>
+            <span style={{ fontSize: isGold ? 28 : 22, lineHeight: 1 }}>
+              {MEDAL[entry.rank - 1] || ""}
+            </span>
+            <span style={{
+              fontSize: isGold ? 18 : 15,
+              fontWeight: 700,
+              color: C.text,
+            }}>
+              {entry.studentName}
+            </span>
+          </div>
+
+          {/* Description */}
+          {entry.description && (
+            <p style={{
+              fontSize: isGold ? 14 : 13,
+              color: C.text,
+              fontStyle: "italic",
+              lineHeight: 1.5,
+              margin: "0 0 8px",
+              borderLeft: `2px solid ${colors.accent}`,
+              paddingLeft: 10,
+              wordBreak: "break-word",
+            }}>
+              &quot;{entry.description}&quot;
+            </p>
+          )}
+
+          {/* Vote count */}
+          <div style={{
+            fontSize: 13,
+            color: colors.accent,
+            fontWeight: 600,
+          }}>
+            {entry.voteCount} favorite {entry.voteCount === 1 ? "vote" : "votes"}
+          </div>
+        </div>
+      </div>
+
+      {/* Comments */}
+      {entry.comments.length > 0 && (
+        <div style={{
+          marginTop: 14,
+          paddingTop: 12,
+          borderTop: `1px solid ${colors.border}44`,
+        }}>
+          <div style={{
+            fontSize: 11,
+            letterSpacing: 1.5,
+            fontWeight: 600,
+            color: C.textDim,
+            textTransform: "uppercase",
+            marginBottom: 8,
+          }}>
+            What classmates said
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {entry.comments.map((c, i) => (
+              <div key={i} style={{
+                background: "rgba(255,255,255,0.6)",
+                borderRadius: 8,
+                padding: "8px 12px",
+              }}>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: C.textDim,
+                  marginRight: 6,
+                }}>
+                  {c.studentName}:
+                </span>
+                <span style={{
+                  fontSize: 13,
+                  color: C.text,
+                  lineHeight: 1.5,
+                  wordBreak: "break-word",
+                }}>
+                  {c.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Round section ─────────────────────────────────────────────────────
+function RoundSection({ result }: { result: RoundResult }) {
   return (
     <section style={{
       background: C.panel,
       border: `1px solid ${C.panelEdge}`,
       borderRadius: 20,
       padding: "24px 22px",
-      marginBottom: 20,
+      marginBottom: 24,
     }}>
       {/* Round header */}
       <div style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        marginBottom: 16,
+        marginBottom: 18,
         flexWrap: "wrap",
         gap: 8,
       }}>
@@ -92,211 +234,19 @@ function WinnerCard({ result }: { result: RoundResult }) {
           padding: "3px 12px",
           borderRadius: 999,
         }}>
-          {result.totalVoters} {result.totalVoters === 1 ? "vote" : "votes"} cast
+          {result.totalVoters} {result.totalVoters === 1 ? "player" : "players"}
         </span>
       </div>
 
-      {/* Winner photo + info */}
-      <div style={{
-        background: C.goldBg,
-        border: `2px solid ${C.gold}`,
-        borderRadius: 16,
-        padding: 16,
-        marginBottom: result.yourPick ? 14 : 0,
-      }}>
-        <div style={{
-          display: "flex",
-          gap: 16,
-          alignItems: "flex-start",
-          flexWrap: "wrap",
-        }}>
-          {/* Photo */}
-          {result.winner.photoUrl ? (
-            <img
-              src={result.winner.photoUrl}
-              alt=""
-              style={{
-                width: 160,
-                height: 160,
-                objectFit: "cover",
-                borderRadius: 14,
-                border: `3px solid ${C.gold}`,
-                flexShrink: 0,
-              }}
-            />
-          ) : (
-            <div style={{
-              width: 160,
-              height: 160,
-              borderRadius: 14,
-              border: `2px dashed ${C.panelEdge}`,
-              flexShrink: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 12,
-              color: C.textFaint,
-            }}>
-              photo unavailable
-            </div>
-          )}
-
-          {/* Info column */}
-          <div style={{ flex: 1, minWidth: 180 }}>
-            <div style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              background: C.gold,
-              color: "#fff",
-              padding: "4px 12px",
-              borderRadius: 999,
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: 1.5,
-              textTransform: "uppercase",
-              marginBottom: 10,
-            }}>
-              ★ Most favorited
-            </div>
-
-            <div style={{
-              fontSize: 18,
-              fontWeight: 700,
-              color: C.text,
-              marginBottom: 6,
-            }}>
-              {result.winner.studentName}
-            </div>
-
-            {result.winner.description && (
-              <p style={{
-                fontSize: 14,
-                color: C.text,
-                fontStyle: "italic",
-                lineHeight: 1.6,
-                margin: "0 0 10px",
-                borderLeft: `2px solid ${C.gold}`,
-                paddingLeft: 12,
-                wordBreak: "break-word",
-              }}>
-                &quot;{result.winner.description}&quot;
-              </p>
-            )}
-
-            <div style={{
-              fontSize: 14,
-              color: C.gold,
-              fontWeight: 600,
-            }}>
-              {result.winner.voteCount} favorite {result.winner.voteCount === 1 ? "vote" : "votes"}
-            </div>
-
-            {result.youPickedWinner && (
-              <div style={{
-                marginTop: 10,
-                fontSize: 13,
-                color: C.liveGreen,
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}>
-                <span style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 22,
-                  height: 22,
-                  borderRadius: "50%",
-                  background: C.liveGreenBg,
-                  border: `1px solid ${C.liveGreen}`,
-                  fontSize: 12,
-                }}>
-                  ✓
-                </span>
-                You picked this one!
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Your pick (if different from winner) */}
-      {result.yourPick && (
-        <div style={{
-          background: C.panelSoft,
-          border: `1px solid ${C.panelEdge}`,
-          borderRadius: 12,
-          padding: 12,
-        }}>
-          <div style={{
-            fontSize: 11,
-            letterSpacing: 1.5,
-            fontWeight: 600,
-            color: C.textDim,
-            textTransform: "uppercase",
-            marginBottom: 8,
-          }}>
-            Your pick
-          </div>
-          <div style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "flex-start",
-          }}>
-            {result.yourPick.photoUrl ? (
-              <img
-                src={result.yourPick.photoUrl}
-                alt=""
-                style={{
-                  width: 70,
-                  height: 70,
-                  objectFit: "cover",
-                  borderRadius: 10,
-                  border: `2px solid ${C.light}`,
-                  flexShrink: 0,
-                }}
-              />
-            ) : (
-              <div style={{
-                width: 70,
-                height: 70,
-                borderRadius: 10,
-                border: `1px dashed ${C.panelEdge}`,
-                flexShrink: 0,
-              }} />
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: C.text,
-                marginBottom: 4,
-              }}>
-                {result.yourPick.studentName}
-              </div>
-              {result.yourPick.description && (
-                <p style={{
-                  fontSize: 13,
-                  color: C.textDim,
-                  fontStyle: "italic",
-                  lineHeight: 1.5,
-                  margin: 0,
-                  wordBreak: "break-word",
-                }}>
-                  &quot;{result.yourPick.description}&quot;
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Top entries */}
+      {result.topEntries.map((entry) => (
+        <EntryCard key={entry.entryId} entry={entry} />
+      ))}
     </section>
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────
+// ── Page ──────────────────────────────────────────────────────────────
 export default async function ResultsPage() {
   const data = await getGameResults();
 
@@ -338,9 +288,6 @@ export default async function ResultsPage() {
   const warmupRound = rounds.find((r) => r.roundNumber === 0) || null;
   const gameRounds = rounds.filter((r) => r.roundNumber > 0);
 
-  // Stats
-  const timesYouPickedWinner = rounds.filter((r) => r.youPickedWinner).length;
-
   return (
     <div style={{
       background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
@@ -371,10 +318,10 @@ export default async function ResultsPage() {
           </p>
         </div>
 
-        {/* ── Game round winners ── */}
+        {/* ── Game round results ── */}
         {gameRounds.length > 0 ? (
           gameRounds.map((result) => (
-            <WinnerCard key={result.roundNumber} result={result} />
+            <RoundSection key={result.roundNumber} result={result} />
           ))
         ) : (
           <div style={{
@@ -392,49 +339,7 @@ export default async function ResultsPage() {
           </div>
         )}
 
-        {/* ── Your stats ── */}
-        {rounds.length > 0 && (
-          <div style={{
-            background: C.panelSoft,
-            border: `1px solid ${C.panelEdge}`,
-            borderRadius: 16,
-            padding: "18px 22px",
-            textAlign: "center",
-            marginBottom: 20,
-          }}>
-            <div style={{
-              fontSize: 13,
-              letterSpacing: 2,
-              textTransform: "uppercase",
-              color: C.light,
-              marginBottom: 10,
-            }}>
-              How you did
-            </div>
-            <div style={{
-              fontSize: 28,
-              fontWeight: 800,
-              color: C.text,
-              marginBottom: 4,
-            }}>
-              {timesYouPickedWinner} of {rounds.length}
-            </div>
-            <div style={{
-              fontSize: 14,
-              color: C.textDim,
-            }}>
-              {timesYouPickedWinner === rounds.length
-                ? "You picked the winner every time!"
-                : timesYouPickedWinner === 0
-                ? "You went your own way — nothing wrong with that."
-                : timesYouPickedWinner === 1
-                ? "time your pick matched the class favorite"
-                : "times your pick matched the class favorite"}
-            </div>
-          </div>
-        )}
-
-        {/* ── Warm-up round (collapsed, at the bottom) ── */}
+        {/* ── Warm-up round (collapsed) ── */}
         {warmupRound && (
           <details style={{
             background: C.panelSoft,
@@ -453,7 +358,7 @@ export default async function ResultsPage() {
               alignItems: "center",
               justifyContent: "space-between",
             }}>
-              <span>Warm-up Round Winner</span>
+              <span>Warm-up Round Results</span>
               <span style={{
                 fontSize: 12,
                 color: C.light,
@@ -463,41 +368,33 @@ export default async function ResultsPage() {
               </span>
             </summary>
             <div style={{ marginTop: 14 }}>
-              <WinnerCard result={warmupRound} />
+              <RoundSection result={warmupRound} />
             </div>
           </details>
         )}
 
-        {/* ── Footer nav ── */}
-        <div style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 12,
-          marginTop: 8,
-        }}>
-          <Link
-            href="/student/dashboard"
-            style={{
-              display: "block",
-              width: "100%",
-              boxSizing: "border-box",
-              textAlign: "center",
-              textDecoration: "none",
-              padding: "13px",
-              fontFamily: F,
-              fontSize: 15,
-              fontWeight: 700,
-              background: C.light,
-              color: "#fff",
-              border: "none",
-              borderRadius: 12,
-              letterSpacing: 0.5,
-            }}
-          >
-            Back to your dashboard →
-          </Link>
-        </div>
+        {/* ── Footer ── */}
+        <Link
+          href="/student/dashboard"
+          style={{
+            display: "block",
+            width: "100%",
+            boxSizing: "border-box",
+            textAlign: "center",
+            textDecoration: "none",
+            padding: "13px",
+            fontFamily: F,
+            fontSize: 15,
+            fontWeight: 700,
+            background: C.light,
+            color: "#fff",
+            border: "none",
+            borderRadius: 12,
+            letterSpacing: 0.5,
+          }}
+        >
+          Back to your dashboard →
+        </Link>
       </div>
     </div>
   );

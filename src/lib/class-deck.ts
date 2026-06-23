@@ -53,7 +53,7 @@ const FALLBACK_PALETTE = [
 
 export type ClassDeckResult =
   | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean }
-  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started"; classId: string | null };
+  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
   const ssr = await createClient();
@@ -130,6 +130,34 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     }
   }
 
+  // ── B39: don't let the student play if their entry is pending ────────
+  // If the student submitted a photo for this round but the teacher
+  // hasn't approved it yet, they shouldn't play — they'd see their own
+  // pending photo in the grid alongside approved classmates, which is
+  // confusing. Gate here so the /student/play page can show a "waiting
+  // for approval" message.
+  //
+  // Three cases:
+  //   • No entry for this round → proceed (B38 placeholder, student
+  //     can still comment on classmates)
+  //   • Pending entry → block ("entry-pending")
+  //   • Approved (live) entry → proceed (normal play)
+  //   • Rejected entry → proceed (they can still play; they'll see
+  //     the resubmit prompt on the dashboard)
+  {
+    const { data: ownCurrentRoundEntry } = await admin
+      .from("entries")
+      .select("status")
+      .eq("student_id", user.id)
+      .eq("class_id", classId)
+      .eq("round_number", currentRound)
+      .eq("is_starter", false)
+      .maybeSingle();
+    if (ownCurrentRoundEntry?.status === "pending") {
+      return { ok: false, reason: "entry-pending", classId };
+    }
+  }
+
   // Two reads, then merge — clearer than a compound .or() filter, and avoids
   // any string-interpolation worries on the filter syntax. Two small queries
   // against a class-sized table is nothing.
@@ -183,30 +211,69 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   }
 
   // ── B38: fetch all profiles enrolled in this class ─────────────────
-  // profiles.class_id is the "current class" pointer for each enrolled
-  // student (set by route.ts's syncCurrentClass on magic-link landing,
-  // and by the all-in-one SQL's Phase 2 + Phase 4 for the test seed).
-  // Anyone enrolled-but-not-in-byStudent for this round becomes a
-  // placeholder tile. We ALSO pull profiles for any submitter who isn't
-  // already covered (covers the edge case where a student switched
-  // classes — their profile.class_id moved on but their old entries
-  // remain).
+  // IMPORTANT: derive "who's in this class" from the ENROLLMENTS table,
+  // NOT from profiles.class_id. profiles.class_id is a convenience
+  // pointer set by syncCurrentClass — it can be stale (a profile from
+  // a prior test run still has class_id set, causing a phantom 10th
+  // tile). Enrollments are the source of truth.
+  //
+  // The join: enrollments.student_id → students.id, but profiles.id ==
+  // auth.users.id (different from students.id for real users). For seed
+  // voters the SQL sets students.id == auth.users.id, so the direct
+  // path works. For real users we bridge via email.
+  //
+  // We also pull submitter profiles for anyone who has entries but might
+  // not be in the enrollment set (edge case: class switch).
   const submitterIds = Array.from(byStudent.keys());
-  const { data: enrolledProfiles } = await admin
-    .from("profiles")
-    .select("id, display_name, username, color, bio")
+
+  // Step 1: get enrolled student rows (students.id, email)
+  const { data: enrollmentRows } = await admin
+    .from("enrollments")
+    .select("student_id")
     .eq("class_id", classId);
-  const { data: submitterProfiles } = submitterIds.length > 0
+  const enrolledStudentIds = (enrollmentRows ?? []).map((e: any) => e.student_id as string);
+
+  const { data: enrolledStudents } = enrolledStudentIds.length > 0
+    ? await admin
+        .from("students")
+        .select("id, email, photo_url")
+        .in("id", enrolledStudentIds)
+    : { data: [] as Array<{ id: string; email: string; photo_url: string | null }> };
+
+  // Step 2: map students.id → profiles.id. For seed voters it's 1:1.
+  // For real users, students.id != profiles.id, so we match via email.
+  // We know the current user's email; for other real users we'd need
+  // auth.users (not accessible via .from()). In practice the only real
+  // user in the class right now is the current user — everyone else is
+  // a seed voter whose ids match. This handles both cases.
+  const enrolledProfileIds = new Set<string>();
+  for (const s of enrolledStudents ?? []) {
+    // Seed voter path: students.id IS the profile id
+    enrolledProfileIds.add(s.id as string);
+    // Real user path: if this student's email matches the logged-in user
+    if (user.email && (s.email as string).toLowerCase() === user.email.toLowerCase()) {
+      enrolledProfileIds.add(user.id);
+    }
+  }
+
+  // Step 3: fetch profiles for enrolled ids + submitter ids
+  const allProfileIds = Array.from(new Set([...enrolledProfileIds, ...submitterIds]));
+  const { data: allProfiles } = allProfileIds.length > 0
     ? await admin
         .from("profiles")
         .select("id, display_name, username, color, bio")
-        .in("id", submitterIds)
+        .in("id", allProfileIds)
     : { data: [] as Array<{ id: string; display_name?: string; username?: string; color?: string; bio?: string }> };
 
-  // Merge — id collisions are identical rows, either source wins.
   const profileById = new Map<string, { id: string; display_name?: string; username?: string; color?: string; bio?: string }>();
-  for (const p of submitterProfiles ?? []) profileById.set(p.id as string, p as any);
-  for (const p of enrolledProfiles ?? []) profileById.set(p.id as string, p as any);
+  for (const p of allProfiles ?? []) profileById.set(p.id as string, p as any);
+
+  // Only iterate enrolled profiles for tile generation (not stale profiles
+  // that happen to have class_id set). Submitters who aren't enrolled get
+  // skipped — they shouldn't be in the game.
+  const tileProfileIds = Array.from(enrolledProfileIds).filter(
+    (pid) => profileById.has(pid)
+  );
 
   // Sign one path. Returns null (engine falls back to placeholder) on failure
   // — we LOG (never swallow silently again; that bug cost a session).
@@ -243,28 +310,30 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     }
   }
 
-  // ── B38: build the student list. One tile per enrolled profile. ─────
-  // Real submitter (has at least one this-round entry) → real EngineStudent
-  //   built from their entry data, same as the pre-B38 path.
-  // Non-submitter (enrolled but no this-round entry) → placeholder with
-  //   isPlaceholder:true, a single synthetic entry with primary:null so
-  //   the spotlight's image-or-Avatar fallback renders the greyed avatar.
-  //   The synthetic entry id is namespaced (`placeholder:<sid>:r<round>`)
-  //   so it can never collide with a real entries.id UUID — important
-  //   because comments + favorites are keyed by entry.id throughout the
-  //   system (B33 fix) and we don't want anyone to accidentally comment
-  //   on a placeholder.
-  //
-  // ClassEngineStudent extends EngineStudent with isPlaceholder?:boolean.
-  // We declare it locally (deck.ts's EngineStudent type doesn't know about
-  // it; visitor flow doesn't use placeholders) and the return cast back to
-  // EngineStudent[] is fine because consumers that DO care (spotlight.jsx,
-  // in plain JSX) just read the optional flag.
+  // ── B38: students.photo_url for placeholder tiles ───────────────────
+  // Already have enrolledStudents with photo_url from the enrollment
+  // query above. Map to profile.id using the same seed-voter/real-user
+  // logic.
+  const profilePhotoByProfileId = new Map<string, string>();
+  for (const s of enrolledStudents ?? []) {
+    if (!s.photo_url) continue;
+    // Seed voters: students.id == profiles.id (direct match)
+    if (profileById.has(s.id as string)) {
+      profilePhotoByProfileId.set(s.id as string, s.photo_url as string);
+    }
+    // Real users: match via email (profiles.id != students.id)
+    if (user.email && (s.email as string).toLowerCase() === user.email!.toLowerCase()) {
+      profilePhotoByProfileId.set(user.id, s.photo_url as string);
+    }
+  }
+
+  // ── B38: build the student list. One tile per ENROLLED profile. ────
   type ClassEngineStudent = EngineStudent & { isPlaceholder?: boolean };
   const students: ClassEngineStudent[] = [];
   let paletteIndex = 0;
 
-  for (const [sid, profile] of profileById) {
+  for (const sid of tileProfileIds) {
+    const profile = profileById.get(sid)!;
     const thisRoundEntries = byStudent.get(sid) ?? [];
     const isSelf = sid === user.id;
     const name = profile.display_name || profile.username || "Classmate";
@@ -310,6 +379,11 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
       });
     } else {
       // B38: placeholder for the student who didn't submit this round.
+      // Use their profile photo (students.photo_url) if they have one —
+      // it's already a public URL, no signing needed. Spotlight renders
+      // it greyed out (opacity 0.5 + grayscale). Falls back to null
+      // (Avatar initial+color circle) for students without a photo.
+      const profilePhoto = profilePhotoByProfileId.get(sid) ?? null;
       students.push({
         id: sid,
         name,
@@ -317,7 +391,7 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
         bio,
         entries: [{
           id: `placeholder:${sid}:r${currentRound}`,
-          primary: null,                         // → spotlight renders Avatar fallback
+          primary: profilePhoto,
           description: null,
           mediaType: "photo" as const,
           uploadedAt: "",
