@@ -243,6 +243,25 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     };
   }
 
+  // ── CLASS SIZE ENFORCEMENT — max 9 students per class ─────────────────
+  // Count active enrollments in this class EXCLUDING this student (so
+  // re-enrolling the same student doesn't count against the cap).
+  const { count: classSize, error: countErr } = await admin
+    .from("enrollments")
+    .select("id", { count: "exact", head: true })
+    .eq("class_id", classId)
+    .eq("status", "active")
+    .neq("student_id", studentId);
+  if (countErr) {
+    return { ok: false, error: `Could not check class size: ${countErr.message}` };
+  }
+  if ((classSize ?? 0) >= 9) {
+    return {
+      ok: false,
+      error: "This class is full (9 students max). Ask your teacher to create another class.",
+    };
+  }
+
   // ── Upsert enrollment (status defaults to 'active') ───────────────────
   const { error: enrollErr } = await admin
     .from("enrollments")
@@ -295,15 +314,16 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 // Reads the logged-in user from the session cookie, then saves:
 //   • students.name        (real name — private, for the teacher)
 //   • students.screen_name (public — classmates see this in later rounds)
-//   • students.photo_url   (OPTIONAL self-photo — soft fail if upload fails)
+//   • students.photo_url   (REQUIRED self-photo — hard fail if missing/upload fails)
 //   • game_sessions.favorite_comment on their most recent round (the "why")
 //   • entries row           (REQUIRED first game entry — hard fail, round 1)
 //
 // TWO DISTINCT PHOTOS — do not conflate:
-//   • Self-photo (form field "photo"): a picture OF the student. OPTIONAL.
+//   • Self-photo (form field "photo"): a picture OF the student. REQUIRED.
 //     Uploaded to the PUBLIC 'profile-photos' bucket; we store the public URL
-//     in students.photo_url (directly usable in <img src>). If none provided,
-//     we leave any existing photo_url untouched.
+//     in students.photo_url (directly usable in <img src>). B38: this photo
+//     is used as the greyed-out placeholder tile when the student misses a
+//     round deadline, so it must exist.
 //   • First game entry (fields "entry_photo" + "entry_description"): the
 //     student's OWN contribution that classmates see and comment on. REQUIRED.
 //     Uploaded to the PRIVATE 'media' bucket. Per src/lib/deck.ts convention,
@@ -374,9 +394,21 @@ export async function saveProfile(
     };
   }
 
-  // ── Self-photo (optional — SOFT fail) ─────────────────────────────────
+  // ── Self-photo (REQUIRED — hard fail) ───────────────────────────────
+  // Session 51 / B38: profile photo is now required so that when a student
+  // misses a round deadline, their greyed-out profile photo can fill the
+  // placeholder tile in the gameplay grid. Without a photo, the placeholder
+  // would just be a generic colored-initial avatar, which doesn't read as
+  // "this is a real classmate who missed this round."
+  if (!(photo instanceof File) || photo.size === 0) {
+    return {
+      ok: false,
+      error: "Please upload a photo of yourself — it's used as your avatar in the game.",
+    };
+  }
+
   let photoUrl: string | null = null;
-  if (photo instanceof File && photo.size > 0) {
+  {
     const ext =
       photo.name.includes(".") ? photo.name.split(".").pop() : "jpg";
     const path = `${student.id}/${Date.now()}.${ext}`;
@@ -388,12 +420,15 @@ export async function saveProfile(
       });
     if (upErr) {
       console.error("Profile photo upload failed:", upErr.message);
-    } else {
-      const { data: pub } = admin.storage
-        .from("profile-photos")
-        .getPublicUrl(path);
-      photoUrl = pub.publicUrl;
+      return {
+        ok: false,
+        error: "Your profile photo failed to upload. Please try again.",
+      };
     }
+    const { data: pub } = admin.storage
+      .from("profile-photos")
+      .getPublicUrl(path);
+    photoUrl = pub.publicUrl;
   }
 
   const update: { name: string; screen_name: string; photo_url?: string } = {
@@ -892,6 +927,26 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
       ok: false,
       error: "The game hasn't started yet. Your teacher will let you know when it begins.",
     };
+  }
+
+  // ── B39: don't let the student save if their entry is pending ──────
+  // Belt-and-suspenders with the loadClassDeck gate. Even if the UI
+  // somehow lets them through, the server rejects the save.
+  {
+    const { data: ownEntry } = await admin
+      .from("entries")
+      .select("status")
+      .eq("student_id", user.id)
+      .eq("class_id", classId)
+      .eq("round_number", currentRound)
+      .eq("is_starter", false)
+      .maybeSingle();
+    if (ownEntry?.status === "pending") {
+      return {
+        ok: false,
+        error: "Your photo for this round is still awaiting teacher approval. You can play once it's approved.",
+      };
+    }
   }
 
   // ── Check for existing session in this round ─────────────────────────
