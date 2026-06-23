@@ -5,6 +5,10 @@
 // B30 (#48): currentRound + totalRounds from loadClassDeck are passed to
 // GameShell for the boxing-match round splash. When a student round is
 // active, GameShell shows a "Round N" splash before loading the deck.
+//
+// B39 (#51): loadClassDeck now returns "entry-pending" when the student's
+// entry hasn't been approved yet. This page shows a friendly "waiting for
+// approval" message instead of a generic error.
 // ─────────────────────────────────────────────────────────────────────────
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
@@ -43,7 +47,8 @@ function ClassPlayHoldingPage({
     | "no-class"
     | "no-entries"
     | "game-over"
-    | "game-not-started";
+    | "game-not-started"
+    | "entry-pending";
 }) {
   if (reason === "game-over") {
     return (
@@ -85,6 +90,52 @@ function ClassPlayHoldingPage({
             }}
           >
             See your results →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (reason === "entry-pending") {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: "#D9BE8E",
+          color: "#3a2a1a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "24px",
+          fontFamily:
+            "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+        }}
+      >
+        <div style={{ maxWidth: 460, textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
+          <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 12px" }}>
+            Waiting for approval
+          </h1>
+          <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 24px" }}>
+            Your photo is waiting for your teacher to review it.
+            Once it&apos;s approved, you&apos;ll be able to play this round.
+            Check back soon!
+          </p>
+          <Link
+            href="/student/dashboard"
+            style={{
+              display: "inline-block",
+              background: "#D98A2B",
+              color: "#fff",
+              padding: "12px 28px",
+              borderRadius: 12,
+              fontSize: 15,
+              fontWeight: 700,
+              textDecoration: "none",
+              letterSpacing: 0.5,
+            }}
+          >
+            Back to your dashboard →
           </Link>
         </div>
       </div>
