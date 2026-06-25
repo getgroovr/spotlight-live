@@ -593,15 +593,18 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
 // StudentFavoriteEdit — B32: focused on the student's chosen favorite. One
 // big card showing the favorite photo, an editable comment field prefilled
 // with what they wrote during the spotlight round, and "Save my comments".
-// After saving, the screen stays interactive — they can revise and save
-// again, each save overwriting the prior. "← Pick a different favorite"
-// bounces back to the grid; "Back to your profile →" appears once they've
-// saved at least once.
-// ─────────────────────────────────────────────────────────────────────────
-// B40 (session 51): edit/save toggle. The comment starts read-only with
-// an "Edit" button. Clicking Edit makes the textarea editable and shows
-// a "Save" button. Saving returns to read-only with a "✓ saved" stamp.
-// One mode at a time — no more "Save again →" implying endless iteration.
+//
+// B48 (session 58): Once the next-round photo is uploaded (or the last
+// round is saved), the celebration screen takes over the full viewport.
+// No more editing escape hatches — the favorite section, comment field,
+// and "pick a different" link all disappear. Just confetti, balloons,
+// and a "back to dashboard" (or "see results") CTA.
+//
+// B49 (session 58): Favorite comment locks on first save. Before saving,
+// the textarea is editable and "Pick a different favorite" is visible.
+// After saving, the comment displays read-only with no Edit button, and
+// the "pick a different" link is gone. The flow is: pick → comment →
+// save (locked) → upload next-round photo → celebration (locked).
 // ─────────────────────────────────────────────────────────────────────────
 function StudentFavoriteEdit({
   favoriteStudent, myComments, favoriteId, onBack, onCommentChange,
@@ -611,8 +614,6 @@ function StudentFavoriteEdit({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [savedOnce, setSavedOnce] = useState(false);
-  const [editing, setEditing] = useState(true);  // start in edit mode on first visit
-  const [savedAt, setSavedAt] = useState(null);
 
   // B43: next-round upload state
   const nextRound = (typeof currentRound === "number" && typeof totalRounds === "number" && currentRound < totalRounds)
@@ -639,8 +640,6 @@ function StudentFavoriteEdit({
       if (result.ok) {
         if (!savedOnce) clearProgress();
         setSavedOnce(true);
-        setEditing(false);
-        setSavedAt(new Date());
       } else {
         setError(result.error);
       }
@@ -654,6 +653,106 @@ function StudentFavoriteEdit({
   const live = liveEntry(favoriteStudent);
   const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
 
+  // ── B48: Once the next-round photo is uploaded (or the last round is
+  // saved), the congratulations screen owns the full viewport. No
+  // favorite editing, no "pick a different" escape hatch — just
+  // celebration. The flow is final.
+  const roundComplete = savedOnce && (uploadDone || !nextRound);
+
+  if (roundComplete) {
+    const isLastRound = !nextRound;
+    return (
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: "1rem 0", textAlign: "center" }}>
+        <style>{`
+          @keyframes celebrate-pop { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+          @keyframes confetti-fall { 0% { transform: translateY(-20px) rotate(0deg); opacity: 1; } 100% { transform: translateY(60px) rotate(360deg); opacity: 0; } }
+          @keyframes balloon-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+        `}</style>
+
+        {/* Confetti burst */}
+        <div style={{ position: "relative", height: 60, margin: "0 auto 8px", overflow: "hidden", maxWidth: 300 }}>
+          {["🎊", "✨", "🎉", "⭐", "🎊", "✨", "🎉", "⭐", "🎊", "✨"].map((e, i) => (
+            <span key={i} style={{
+              position: "absolute",
+              left: `${8 + i * 9}%`,
+              top: 0,
+              fontSize: 18 + (i % 3) * 4,
+              animation: `confetti-fall ${1.2 + (i % 4) * 0.3}s ease-out ${i * 0.08}s forwards`,
+              pointerEvents: "none",
+            }}>{e}</span>
+          ))}
+        </div>
+
+        {/* Balloons */}
+        <div style={{ fontSize: 44, marginBottom: 10, display: "flex", justifyContent: "center", gap: 8 }}>
+          {["🎈", "🎊", "🎈"].map((b, i) => (
+            <span key={i} style={{
+              animation: `balloon-float ${1.8 + i * 0.3}s ease-in-out ${i * 0.2}s infinite`,
+              display: "inline-block",
+            }}>{b}</span>
+          ))}
+        </div>
+
+        <div style={{ animation: "celebrate-pop 0.5s ease-out forwards" }}>
+          <h2 style={{ fontFamily: F, fontSize: 28, fontWeight: 900, color: C.text, margin: "0 0 6px" }}>
+            {isLastRound ? "You\u2019re all done!" : `Round ${currentRound} complete!`}
+          </h2>
+
+          {!isLastRound && (
+            <p style={{ fontFamily: F, fontSize: 15, color: "#2E7D32", fontWeight: 600,
+              margin: "0 0 4px" }}>
+              Photo uploaded for Round {nextRound} — your teacher will review it.
+            </p>
+          )}
+
+          <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6,
+            margin: "8px auto 24px", maxWidth: 320 }}>
+            {isLastRound
+              ? "All rounds are finished. Time to see which photos your classmates liked most!"
+              : "Sit tight — the next round starts once your teacher opens it up."}
+          </p>
+        </div>
+
+        {isLastRound ? (
+          <>
+            <a href="/student/results"
+              style={{
+                display: "inline-block",
+                fontFamily: F, fontSize: 15, fontWeight: 700,
+                color: C.stageDeep, background: C.light,
+                padding: "13px 32px", borderRadius: 12,
+                textDecoration: "none", letterSpacing: 0.5,
+                boxShadow: `0 8px 24px ${C.light}55`,
+                marginBottom: 12,
+              }}>
+              See which photos your classmates liked most →
+            </a>
+            <div>
+              <a href="/student/dashboard"
+                style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
+                  textDecoration: "underline" }}>
+                Back to your dashboard
+              </a>
+            </div>
+          </>
+        ) : (
+          <a href="/student/dashboard"
+            style={{
+              display: "inline-block",
+              fontFamily: F, fontSize: 15, fontWeight: 700,
+              color: C.stageDeep, background: C.light,
+              padding: "13px 32px", borderRadius: 12,
+              textDecoration: "none", letterSpacing: 0.5,
+              boxShadow: `0 8px 24px ${C.light}55`,
+            }}>
+            Back to your dashboard →
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  // ── Pre-save flow: favorite card + comment + upload ──
   return (
     <div style={{ maxWidth: 420, margin: "0 auto", padding: "0.5rem 0", textAlign: "center" }}>
       <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 800, color: C.text, margin: "0 0 8px" }}>
@@ -661,16 +760,16 @@ function StudentFavoriteEdit({
       </h2>
       <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
         maxWidth: 360, margin: "0 auto 18px" }}>
-        {editing
-          ? "Write a comment about your favorite pic — it may be seen by your classmates."
+        {!savedOnce
+          ? "Your classmates may see your favorite pic comment."
           : "Your comment has been saved."}
       </p>
 
       <div style={{
-        maxWidth: 260, margin: "0 auto 16px",
+        maxWidth: 180, margin: "0 auto 16px",
         background: C.panel, border: `2px solid ${C.light}`,
-        borderRadius: 14, padding: 8,
-        boxShadow: `0 0 24px ${C.light}55`,
+        borderRadius: 14, padding: 6,
+        boxShadow: `0 0 16px ${C.light}44`,
       }}>
         {hasPhoto ? (
           <img src={live.primary} alt=""
@@ -685,8 +784,10 @@ function StudentFavoriteEdit({
         )}
       </div>
 
-      {editing ? (
-        /* ── EDIT MODE: textarea + Save button ── */
+      {/* ── B49: Favorite comment is editable ONLY until first save.
+           After savedOnce, the comment is locked — read-only, no Edit button. ── */}
+      {!savedOnce ? (
+        /* ── First-time EDIT MODE: textarea + Save button ── */
         <>
           <textarea
             value={comment}
@@ -724,7 +825,7 @@ function StudentFavoriteEdit({
           </div>
         </>
       ) : (
-        /* ── READ-ONLY MODE: comment text + Edit button + saved stamp ── */
+        /* ── B49: LOCKED MODE — read-only comment, no Edit button ── */
         <>
           <div style={{
             textAlign: "left", fontFamily: F, fontSize: 14, color: C.text,
@@ -735,40 +836,26 @@ function StudentFavoriteEdit({
           }}>
             {comment || <span style={{ color: C.textFaint, fontStyle: "italic" }}>(no comment)</span>}
           </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
-            <button
-              onClick={() => setEditing(true)}
-              style={{ padding: "10px 24px", fontFamily: F, fontSize: 14, fontWeight: 700,
-                background: "transparent", color: C.light,
-                border: `1.5px solid ${C.light}`, borderRadius: 12,
-                cursor: "pointer", letterSpacing: 0.5 }}
-            >
-              Edit
-            </button>
-            {savedAt && (
-              <span style={{ fontFamily: F, fontSize: 12, color: "#2E7D32" }}>
-                ✓ saved just now
-              </span>
-            )}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, justifyContent: "center" }}>
+            <span style={{ fontFamily: F, fontSize: 12, color: "#2E7D32" }}>
+              ✓ Comment saved
+            </span>
           </div>
         </>
       )}
 
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center",
-        gap: 18, flexWrap: "wrap" }}>
-        <button onClick={onBack}
-          style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
-            border: "none", cursor: "pointer", textDecoration: "underline" }}>
-          ← Pick a different favorite
-        </button>
-        {savedOnce && !nextRound && (
-          <a href="/student/dashboard"
-            style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
-              textDecoration: "underline" }}>
-            Back to your profile →
-          </a>
-        )}
-      </div>
+      {/* ── B48: "Pick a different favorite" only visible BEFORE save.
+           Once saved, favorite is locked — no going back. ── */}
+      {!savedOnce && (
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center",
+          gap: 18, flexWrap: "wrap", marginBottom: 8 }}>
+          <button onClick={onBack}
+            style={{ fontFamily: F, fontSize: 12, color: C.textFaint, background: "none",
+              border: "none", cursor: "pointer", textDecoration: "underline" }}>
+            ← Pick a different favorite
+          </button>
+        </div>
+      )}
 
       {/* ── B43: Upload photo for the next round ── */}
       {savedOnce && nextRound && !uploadDone && (
@@ -778,6 +865,10 @@ function StudentFavoriteEdit({
           textAlign: "left",
         }}>
           <h3 style={{ fontFamily: F, fontSize: 16, fontWeight: 700, color: C.text,
+            margin: "0 0 4px", textAlign: "center" }}>
+            Almost done with Round {currentRound} — last step!
+          </h3>
+          <h3 style={{ fontFamily: F, fontSize: 15, fontWeight: 600, color: C.textDim,
             margin: "0 0 6px", textAlign: "center" }}>
             Now add your photo for Round {nextRound}
           </h3>
@@ -862,37 +953,6 @@ function StudentFavoriteEdit({
               {uploadLoading ? "Uploading…" : `Upload for Round ${nextRound}`}
             </button>
           </form>
-        </div>
-      )}
-
-      {/* ── B43: Upload success ── */}
-      {savedOnce && uploadDone && (
-        <div style={{
-          marginTop: 24, paddingTop: 20,
-          borderTop: `1px solid ${C.panelEdge}`,
-          textAlign: "center",
-        }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>✓</div>
-          <p style={{ fontFamily: F, fontSize: 14, color: "#2E7D32", fontWeight: 600,
-            margin: "0 0 14px" }}>
-            Photo uploaded for Round {nextRound}! Your teacher will review it.
-          </p>
-          <a href="/student/dashboard"
-            style={{ fontFamily: F, fontSize: 13, fontWeight: 600,
-              color: C.light, textDecoration: "none" }}>
-            Back to your dashboard →
-          </a>
-        </div>
-      )}
-
-      {/* Back to dashboard (last round — no upload needed) */}
-      {savedOnce && !nextRound && (
-        <div style={{ textAlign: "center", marginTop: 16 }}>
-          <a href="/student/dashboard"
-            style={{ fontFamily: F, fontSize: 13, fontWeight: 600,
-              color: C.light, textDecoration: "none" }}>
-            Back to your dashboard →
-          </a>
         </div>
       )}
     </div>

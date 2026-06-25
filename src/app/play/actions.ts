@@ -153,6 +153,61 @@ async function findFirstAvailableRound(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// requestMagicLink — B53: re-authentication from the student dashboard.
+//
+// When a student's session has expired, the dashboard shows an email form
+// instead of redirecting to /play. This action sends a new magic link to
+// an email that MUST already be enrolled (no new enrollment created).
+//
+// After clicking the link, the student lands back on /student/dashboard
+// (via /auth/confirm → redirect) with a fresh session.
+// ─────────────────────────────────────────────────────────────────────────
+export async function requestMagicLink(formData: FormData): Promise<EnrollResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !anonKey || !serviceKey) {
+    return { ok: false, error: "Server is not configured." };
+  }
+
+  const email = String(formData.get("email") || "").trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, error: "Please enter a valid email address." };
+  }
+
+  // Verify this email is actually enrolled somewhere
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+  const { data: student } = await admin
+    .from("students")
+    .select("id")
+    .eq("email", email)
+    .maybeSingle();
+
+  if (!student) {
+    return {
+      ok: false,
+      error: "We don't have that email on file. Play the warm-up round first to join a class.",
+    };
+  }
+
+  // Send a new magic link — redirect to dashboard after auth
+  const anon = createServiceClient(supabaseUrl, anonKey);
+  const { error: otpErr } = await anon.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: false,
+      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/confirm?next=/student/dashboard`,
+    },
+  });
+  if (otpErr) {
+    console.error("Magic link send failed:", otpErr.message);
+    return { ok: false, error: "We couldn't send the email. Please try again in a minute." };
+  }
+
+  return { ok: true, message: "Check your email for a new sign-in link." };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // enrollStudent — UNCHANGED from #26.  No round_number involvement: it
 // writes to enrollments + game_sessions, neither of which has a round_number
 // column on the entries side.  (game_sessions.round exists but is unrelated
@@ -293,7 +348,7 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     email,
     options: {
       shouldCreateUser: true,
-      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/confirm`,
+      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/confirm?next=/student/dashboard`,
     },
   });
   if (otpErr) {

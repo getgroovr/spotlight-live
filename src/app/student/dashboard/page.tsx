@@ -71,8 +71,12 @@
 //   - Rejected favorite comments show ResubmitFavoriteCommentForm.
 //   - B24b: "Go to the game" button shows warning when any entry
 //     in the current round is rejected.
+//
+// B51 (Session 57): POST-GAME STATE
+//   - Primary CTA switches from "Go to the game" → "🏆 See your results"
+//     when isGameOver is true. Students can relive their glory.
+//   - Old results link removed from further down the page (no duplicate).
 // ─────────────────────────────────────────────────────────────────────────
-import { redirect } from "next/navigation";
 import { getStudentArchive, type OwnEntry, type ClassArchive, type RoundSessionData } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
 import FinishJoiningForm from "./FinishJoiningForm";
@@ -80,6 +84,7 @@ import AddEntryForm from "./AddEntryForm";
 import RemoveEntryButton from "./RemoveEntryButton";
 import ResubmitEntryForm from "./ResubmitEntryForm";
 import ResubmitFavoriteCommentForm from "./ResubmitFavoriteCommentForm";
+import RequestMagicLinkForm from "./RequestMagicLinkForm";
 import AutoRefresh from "./AutoRefresh";
 import { StudentDashboardCsvButton } from "./csv-button";
 
@@ -642,7 +647,28 @@ export default async function StudentProfile() {
   const data = await getStudentArchive();
 
   if ("error" in data && data.error === "no-session") {
-    redirect("/play");
+    // B53: instead of redirect("/play"), show a sign-in form right here.
+    // The dashboard is the single hub — handles every state including
+    // "not signed in." Students who need to enroll get a link to /play.
+    return (
+      <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
+        fontFamily: F, color: C.text }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+        <div style={{ maxWidth: 420, margin: "0 auto" }}>
+          <div style={{ textAlign: "center", marginBottom: 28 }}>
+            <div style={{ fontSize: 48, marginBottom: 8 }}>🔦</div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px" }}>
+              Welcome to Spotlight
+            </h1>
+            <p style={{ fontSize: 14, color: C.textDim, lineHeight: 1.6, margin: 0 }}>
+              Enter the email you used to join your class and we&apos;ll send you
+              a sign-in link. No password needed.
+            </p>
+          </div>
+          <RequestMagicLinkForm />
+        </div>
+      </div>
+    );
   }
 
   if ("error" in data) {
@@ -653,9 +679,19 @@ export default async function StudentProfile() {
         <h1 style={{ fontSize: 24, marginBottom: 12 }}>Something&apos;s off</h1>
         <p style={{ color: C.textDim }}>
           {data.error === "not-enrolled"
-            ? "We couldn't find your enrollment. Try playing again at /play."
+            ? "You're signed in, but we couldn't find your enrollment. You may need to play the warm-up round first to join a class."
             : data.error}
         </p>
+        {data.error === "not-enrolled" && (
+          <a href="/play" style={{
+            display: "inline-block", marginTop: 16,
+            background: C.light, color: "#fff",
+            padding: "12px 24px", borderRadius: 10,
+            fontSize: 14, fontWeight: 700, textDecoration: "none",
+          }}>
+            Play the warm-up round →
+          </a>
+        )}
       </div>
     );
   }
@@ -991,8 +1027,20 @@ export default async function StudentProfile() {
           </div>
         )}
 
-        {/* ── GO TO THE GAME (B24b: warn when current round entry rejected) ── */}
-        {!isGameOver && (
+        {/* ── B51: PRIMARY CTA — switches based on game state ── */}
+        {isGameOver ? (
+          <a
+            href="/student/results"
+            style={{ display: "block", textAlign: "center", textDecoration: "none",
+              width: "100%", boxSizing: "border-box", padding: "14px",
+              fontFamily: F, fontSize: 16, fontWeight: 700,
+              background: C.light,
+              color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+              marginBottom: 28 }}
+          >
+            🏆 See your results →
+          </a>
+        ) : (
           <>
             {currentRoundRejected && (
               <div style={{
@@ -1364,19 +1412,8 @@ export default async function StudentProfile() {
               </div>
             )}
 
-            {/* ── #35 L3: Results button (game over) ── */}
-            {isGameOver && (
-              <a
-                href="/student/results"
-                style={{ display: "block", textAlign: "center", textDecoration: "none",
-                  width: "100%", boxSizing: "border-box", padding: "13px",
-                  fontFamily: F, fontSize: 15, fontWeight: 700, background: C.light,
-                  color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
-                  marginTop: 18 }}
-              >
-                See who got the most favorite votes in each round →
-              </a>
-            )}
+            {/* ── B51: Results link moved to primary CTA position above.
+                 CSV download stays here for game-over state. ── */}
             {isGameOver && (
               <div style={{ textAlign: "center", marginTop: 12 }}>
                 <StudentDashboardCsvButton

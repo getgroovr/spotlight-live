@@ -71,12 +71,11 @@ function ClassPlayHoldingPage({
             The game is complete!
           </h1>
           <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 24px" }}>
-            All rounds are finished. Head to your dashboard to see your
-            comments, your teacher&apos;s notes, and find out who got the
-            most favorite votes.
+            All rounds are finished. See which photos your classmates
+            liked most!
           </p>
           <Link
-            href="/student/dashboard"
+            href="/student/results"
             style={{
               display: "inline-block",
               background: "#D98A2B",
@@ -87,10 +86,23 @@ function ClassPlayHoldingPage({
               fontWeight: 700,
               textDecoration: "none",
               letterSpacing: 0.5,
+              marginBottom: 14,
             }}
           >
-            See your results →
+            See which photos your classmates liked most →
           </Link>
+          <div>
+            <Link
+              href="/student/dashboard"
+              style={{
+                fontSize: 13,
+                color: "#6E5536",
+                textDecoration: "underline",
+              }}
+            >
+              Back to your dashboard
+            </Link>
+          </div>
         </div>
       </div>
     );
