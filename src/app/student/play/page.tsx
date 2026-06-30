@@ -9,6 +9,10 @@
 // B39 (#51): loadClassDeck now returns "entry-pending" when the student's
 // entry hasn't been approved yet. This page shows a friendly "waiting for
 // approval" message instead of a generic error.
+//
+// Session 63:
+//   U6: game-over text uses awards/ceremony language.
+//   U7: "Go to the awards ceremony" not "See which photos…"
 // ─────────────────────────────────────────────────────────────────────────
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
@@ -71,8 +75,7 @@ function ClassPlayHoldingPage({
             The game is complete!
           </h1>
           <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 24px" }}>
-            All rounds are finished. See which photos your classmates
-            liked most!
+            All rounds are finished — time for the awards ceremony!
           </p>
           <Link
             href="/student/results"
@@ -89,7 +92,7 @@ function ClassPlayHoldingPage({
               marginBottom: 14,
             }}
           >
-            See which photos your classmates liked most →
+            🏆 Go to the awards ceremony →
           </Link>
           <div>
             <Link

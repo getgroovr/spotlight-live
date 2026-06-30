@@ -73,9 +73,15 @@
 //     in the current round is rejected.
 //
 // B51 (Session 57): POST-GAME STATE
-//   - Primary CTA switches from "Go to the game" → "🏆 See your results"
+//   - Primary CTA switches from "Go to the game" → "🏆 See the class results"
 //     when isGameOver is true. Students can relive their glory.
 //   - Old results link removed from further down the page (no duplicate).
+//
+// Session 63:
+//   B66: "your next chance is Round N+1" no longer shows Round 4 when
+//        totalRounds is 3 (or null). Three-way branch: awards message if
+//        on the final round, next-round message if more exist, generic
+//        fallback if totalRounds is unknown.
 // ─────────────────────────────────────────────────────────────────────────
 import { getStudentArchive, type OwnEntry, type ClassArchive, type RoundSessionData } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
@@ -759,6 +765,10 @@ export default async function StudentProfile() {
   for (let r = 1; r <= numSlots; r++) {
     if (currentRound > 0 && r < currentRound) {
       completedRounds.push(r);
+    } else if (currentRound > 0 && r === currentRound && sessionByRound.has(r)) {
+      // B61: student already played this round — treat as completed so the
+      // dashboard condenses it instead of showing the full "LIVE NOW" card.
+      completedRounds.push(r);
     } else {
       topRounds.push(r);
     }
@@ -1028,6 +1038,10 @@ export default async function StudentProfile() {
         )}
 
         {/* ── B51: PRIMARY CTA — switches based on game state ── */}
+        {/* ── B60: Round-complete gate — once the student has saved their
+             comments for the current round (a game_session exists), they
+             shouldn't re-enter the game. Prevents confusion from replaying
+             and accidentally changing favorites/comments. ── */}
         {isGameOver ? (
           <a
             href="/student/results"
@@ -1038,8 +1052,23 @@ export default async function StudentProfile() {
               color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
               marginBottom: 28 }}
           >
-            🏆 See your results →
+            🏆 See the class results →
           </a>
+        ) : currentRound > 0 && sessionByRound.has(currentRound) ? (
+          <div
+            style={{ display: "block", textAlign: "center",
+              width: "100%", boxSizing: "border-box", padding: "14px",
+              fontFamily: F, fontSize: 15, fontWeight: 700,
+              background: C.liveGreenBg,
+              color: C.liveGreenText,
+              border: `1px solid ${C.liveGreen}`,
+              borderRadius: 12, letterSpacing: 0.5,
+              marginBottom: 28 }}
+          >
+            {totalRounds !== null && currentRound >= totalRounds
+              ? "🎉 You\u2019ve finished every round — sit tight for the awards ceremony!"
+              : `✓ Round ${currentRound} complete — sit tight until the next round!`}
+          </div>
         ) : (
           <>
             {currentRoundRejected && (
@@ -1219,7 +1248,12 @@ export default async function StudentProfile() {
                     <p style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6,
                       margin: 0 }}>
                       You didn&apos;t add a photo for this round. The slot is
-                      locked now — your next chance is Student Round {r + 1}.
+                      locked now —{" "}
+                      {totalRounds !== null && r >= totalRounds
+                        ? "check the class results once your teacher reveals the awards!"
+                        : totalRounds !== null
+                          ? `your next chance is Student Round ${r + 1}.`
+                          : "check back with your teacher for what\u2019s next."}
                     </p>
                   </section>
                 );
