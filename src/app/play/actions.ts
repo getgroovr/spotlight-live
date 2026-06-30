@@ -90,6 +90,13 @@
 //     in place so teacher_comments history is preserved.
 //   - resubmitFavoriteComment: student edits rejected favorite comment
 //     text. Status resets to 'pending' on game_sessions.
+//
+// B56 (session 60): saveStudentRound was not setting favorite_comment
+//   or favorite_comment_status on game_sessions for student rounds.
+//   The teacher review queue filters on favorite_comment_status='pending',
+//   so student-round favorite comments were invisible. Fixed: the favorite
+//   entry's comment is now extracted and written to favorite_comment with
+//   status='pending', mirroring the warm-up path in saveProfile.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -1004,6 +1011,15 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
     }
   }
 
+  // ── B56: Extract the favorite's comment for moderation ────────────────
+  // The teacher needs to review the student's comment on their chosen
+  // favorite before it becomes visible to classmates. Mirror the warm-up
+  // path in saveProfile: populate favorite_comment + set status to
+  // 'pending'. The favorite entry id is the key in the favorites map;
+  // the comment text is that entry's value in the comments map.
+  const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
+  const favoriteComment = favEntryId ? (comments[favEntryId] || "").trim() : "";
+
   // ── Check for existing session in this round ─────────────────────────
   const { data: existingSession } = await admin
     .from("game_sessions")
@@ -1021,6 +1037,12 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
         comments,
         favorites,
         completed_at: new Date().toISOString(),
+        // B56: favorite comment moderation for student rounds
+        favorite_comment: favoriteComment || null,
+        favorite_comment_status: favoriteComment ? "pending" : null,
+        favorite_comment_reviewed_by: null,
+        favorite_comment_reviewed_at: null,
+        favorite_comment_rejection_reason: null,
       })
       .eq("id", existingSession.id);
     if (updateErr) {
@@ -1038,6 +1060,9 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
         comments,
         favorites,
         completed_at: new Date().toISOString(),
+        // B56: favorite comment moderation for student rounds
+        favorite_comment: favoriteComment || null,
+        favorite_comment_status: favoriteComment ? "pending" : null,
       });
     if (insertErr) {
       console.error("game_session insert failed:", insertErr.message);
