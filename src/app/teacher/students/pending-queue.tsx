@@ -12,8 +12,9 @@
 //
 // SECTION 2 — Pending favorite comments (NEW #38):
 //   Each card shows the student's name, the comment they left on the
-//   favorited pic, their "why it's my favorite" text, and a small
-//   thumbnail of the favorited pic. Approve is a single confirm click;
+//   favorited pic, and a small thumbnail of the favorited pic.
+//   B64: "Why it's my favorite" field removed — just the comment.
+//   Approve is a single confirm click;
 //   reject requires a reason.
 //   - Approve: one-click confirm → approveFavoriteComment
 //   - Reject: required textarea for a reason → rejectFavoriteComment
@@ -518,7 +519,7 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
                 letterSpacing: 0.5,
               }}
             >
-              Comment on pic
+              Comment
             </span>
             <p
               style={{
@@ -531,35 +532,6 @@ function FavoriteCommentCard({ item }: { item: PendingFavoriteCommentData }) {
               }}
             >
               &ldquo;{item.commentOnPic}&rdquo;
-            </p>
-          </div>
-        )}
-
-        {/* Why it's my favorite */}
-        {item.whyFavorite && (
-          <div style={{ marginBottom: 10 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: C.textFaint,
-                textTransform: "uppercase",
-                letterSpacing: 0.5,
-              }}
-            >
-              Why it&rsquo;s my favorite
-            </span>
-            <p
-              style={{
-                fontSize: 13,
-                color: C.textDim,
-                fontStyle: "italic",
-                lineHeight: 1.5,
-                margin: "2px 0 0",
-                wordBreak: "break-word",
-              }}
-            >
-              &ldquo;{item.whyFavorite}&rdquo;
             </p>
           </div>
         )}
