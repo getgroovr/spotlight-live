@@ -1,23 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/results/ResultsCeremony.tsx
 //
-// Session 63 — U9: Awards ceremony with dramatic sequential reveal.
+// Session 70 — Progressive celebration + tie fix + dashboard links.
+//
+// Changes from session 63:
+//   • Progressive celebration: 3rd place modest, 2nd moderate, 1st over-
+//     the-top with floating balloons, streaming ribbons, bigger confetti.
+//   • Finale tie fix: shows ALL gold winners per round (was .find → now
+//     .filter), so tied 1st-place entries both appear.
+//   • "Back to dashboard" text link on intro page and after each round
+//     podium (below the Next round button).
 //
 // Flow per round:
-//   1. Round announcement + countdown 3-2-1 (combined splash)
+//   1. Round announcement + countdown 3-2-1
 //   2. For each place (bronze → silver → gold), skip any missing:
-//      a. Brief medal splash (large emoji, ~1.2s)
-//      b. Winner card with photo + comments (replaces previous entirely)
-//         Bronze: ~8s, Silver: ~11s, Gold: ~7s — longer for higher ranks
-//         so viewers can read the comments.
-//   3. After gold: confetti burst, then ALL winners shown together
-//      in a vertical stack with full comments + "Next round →"
+//      a. Brief medal splash (~1.2s)
+//      b. Winner card with photo + comments
+//   3. After gold: confetti burst, then ALL winners shown in podium
+//      with "Next round →" button + dashboard link
 //
-// After all rounds: finale celebration + "Back to dashboard →"
-//
-// Missing placements are silently skipped (no "not enough votes" text).
-// Confetti escalates: small burst for bronze, bigger for silver, biggest
-// for gold. Finale gets the full shower.
+// After all rounds: finale celebration + "Back to your dashboard →"
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -74,13 +76,12 @@ const MEDAL_COLORS = [
 ];
 const RANK_LABEL = ["1st Place", "2nd Place", "3rd Place"];
 const CONFETTI_COLORS = ["#D4A843", "#D98A2B", "#E2554A", "#B87333", "#6E9F5B", "#5B8AC9", "#C06090", "#E8C547"];
+const BALLOON_COLORS = ["#E2554A", "#D4A843", "#5B8AC9", "#6E9F5B", "#C06090", "#E8C547", "#D98A2B", "#9B59B6"];
+const RIBBON_COLORS = ["#D4A843", "#E2554A", "#5B8AC9", "#C06090", "#6E9F5B", "#E8C547"];
 
-// ── Timing constants (easy to tweak) ────────────────────────────────────
+// ── Timing constants ────────────────────────────────────────────────────
 const COUNTDOWN_STEP_MS   = 800;
 const MEDAL_SPLASH_MS     = 1200;
-// Card display time per rank — longer for higher placements so
-// viewers have time to read more comments.
-//   Bronze (3rd): 8.4s   Silver (2nd): 11.2s   Gold (1st): 7s
 const CARD_MS_BY_RANK: Record<number, number> = { 3: 8400, 2: 11200, 1: 7000 };
 
 // ── Confetti ────────────────────────────────────────────────────────────
@@ -113,11 +114,129 @@ function Confetti({ count = 50, active }: { count?: number; active: boolean }) {
   );
 }
 
+// ── Balloons — float up from bottom for gold reveals ────────────────────
+function Balloons({ count = 12, active }: { count?: number; active: boolean }) {
+  if (!active) return null;
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => {
+        const left = 5 + Math.random() * 90;
+        const delay = Math.random() * 1.8;
+        const duration = 4 + Math.random() * 3;
+        const size = 28 + Math.random() * 18;
+        const color = BALLOON_COLORS[i % BALLOON_COLORS.length];
+        const sway = 15 + Math.random() * 25;
+        return (
+          <div
+            key={`balloon-${i}`}
+            style={{
+              position: "fixed",
+              bottom: -60,
+              left: `${left}%`,
+              zIndex: 99,
+              pointerEvents: "none" as const,
+              animation: `balloon-rise ${duration}s ease-out ${delay}s forwards`,
+            }}
+          >
+            {/* Balloon body */}
+            <svg width={size} height={size * 1.3} viewBox="0 0 40 52" fill="none">
+              <ellipse cx="20" cy="18" rx="16" ry="18" fill={color} opacity="0.85" />
+              <ellipse cx="20" cy="18" rx="16" ry="18" fill="url(#balloonShine)" />
+              <polygon points="16,35 20,42 24,35" fill={color} opacity="0.7" />
+              <line x1="20" y1="42" x2="20" y2="52" stroke={color} strokeWidth="0.8" opacity="0.5" />
+              <defs>
+                <radialGradient id="balloonShine" cx="0.35" cy="0.3" r="0.6">
+                  <stop offset="0%" stopColor="white" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="white" stopOpacity="0" />
+                </radialGradient>
+              </defs>
+            </svg>
+            <style>{`
+              @keyframes balloon-rise {
+                0% { transform: translateY(0) translateX(0); opacity: 0.9; }
+                25% { transform: translateY(-30vh) translateX(${sway}px); opacity: 0.9; }
+                50% { transform: translateY(-60vh) translateX(-${sway * 0.5}px); opacity: 0.85; }
+                75% { transform: translateY(-90vh) translateX(${sway * 0.3}px); opacity: 0.6; }
+                100% { transform: translateY(-120vh) translateX(-${sway * 0.2}px); opacity: 0; }
+              }
+            `}</style>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ── Ribbons — curling streamers for gold reveals ────────────────────────
+function Ribbons({ count = 8, active }: { count?: number; active: boolean }) {
+  if (!active) return null;
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => {
+        const left = Math.random() * 100;
+        const delay = Math.random() * 1.5;
+        const duration = 4 + Math.random() * 3;
+        const color = RIBBON_COLORS[i % RIBBON_COLORS.length];
+        const width = 6 + Math.random() * 8;
+        const curl = Math.random() > 0.5 ? 1 : -1;
+        return (
+          <div
+            key={`ribbon-${i}`}
+            style={{
+              position: "fixed",
+              top: -40,
+              left: `${left}%`,
+              width: width,
+              height: 60 + Math.random() * 40,
+              background: `linear-gradient(180deg, ${color} 0%, ${color}88 50%, ${color}44 100%)`,
+              borderRadius: "2px 2px 4px 4px",
+              zIndex: 98,
+              pointerEvents: "none" as const,
+              animation: `ribbon-fall ${duration}s ease-in ${delay}s forwards`,
+              transformOrigin: "top center",
+            }}
+          >
+            <style>{`
+              @keyframes ribbon-fall {
+                0% { transform: translateY(-10vh) rotate(${curl * 10}deg) scaleY(0.5); opacity: 0.9; }
+                30% { transform: translateY(25vh) rotate(${curl * -30}deg) scaleY(1); opacity: 0.9; }
+                60% { transform: translateY(55vh) rotate(${curl * 45}deg) scaleY(1.1); opacity: 0.7; }
+                100% { transform: translateY(110vh) rotate(${curl * 90}deg) scaleY(0.8); opacity: 0; }
+              }
+            `}</style>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ── Dashboard link (text, not button) ───────────────────────────────────
+function DashboardLink() {
+  return (
+    <Link
+      href="/student/dashboard"
+      style={{
+        display: "block",
+        textAlign: "center",
+        marginTop: 16,
+        fontSize: 13,
+        color: C.textFaint,
+        textDecoration: "none",
+        fontFamily: F,
+        fontWeight: 600,
+      }}
+    >
+      ← Back to dashboard
+    </Link>
+  );
+}
+
 // ── Winner card (single) ────────────────────────────────────────────────
 function WinnerCard({ entry, size = "full" }: { entry: TopEntry; size?: "full" | "podium" }) {
   const isGold = entry.rank === 1;
+  const isSilver = entry.rank === 2;
   const colors = MEDAL_COLORS[(entry.rank - 1)] || MEDAL_COLORS[2];
-  const isPodium = size === "podium";
   const photoSize = isGold ? 180 : 150;
 
   return (
@@ -128,11 +247,14 @@ function WinnerCard({ entry, size = "full" }: { entry: TopEntry; size?: "full" |
       padding: isGold ? 18 : 14,
       boxShadow: isGold
         ? `0 8px 32px ${colors.glow}, 0 0 0 1px ${colors.border}22`
-        : `0 2px 12px ${colors.glow}`,
+        : isSilver
+          ? `0 4px 16px ${colors.glow}`
+          : `0 2px 12px ${colors.glow}`,
       position: "relative" as const,
       overflow: "hidden",
       animation: "fade-in-scale 0.5s ease forwards",
     }}>
+      {/* Gold shimmer sweep */}
       {isGold && (
         <div style={{
           position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
@@ -145,7 +267,8 @@ function WinnerCard({ entry, size = "full" }: { entry: TopEntry; size?: "full" |
       {/* Medal + rank header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <span style={{
-          fontSize: isGold ? 34 : 26, lineHeight: 1,
+          fontSize: isGold ? 34 : isSilver ? 28 : 24,
+          lineHeight: 1,
           filter: isGold ? "drop-shadow(0 3px 10px rgba(212,168,67,0.5))" : "none",
           animation: isGold ? "trophy-bounce 2s ease-in-out infinite" : "none",
         }}>
@@ -233,10 +356,7 @@ function WinnerCard({ entry, size = "full" }: { entry: TopEntry; size?: "full" |
 
 // ── Podium layout (all winners together) ────────────────────────────────
 function Podium({ entries }: { entries: TopEntry[] }) {
-  // Show winners in rank order: gold first, then silver, then bronze.
-  // Each gets a full-width card with photo + description + comments.
   const sorted = [...entries].sort((a, b) => a.rank - b.rank);
-
   const pedestalColors: Record<number, { bg: string; height: number }> = {
     1: { bg: C.gold, height: 10 },
     2: { bg: "#B8B8B8", height: 8 },
@@ -281,7 +401,11 @@ export default function ResultsCeremony({ rounds, className }: Props) {
   const [countdownValue, setCountdownValue] = useState(3);
   const [revealIndex, setRevealIndex] = useState(-1);
   const [confettiCount, setConfettiCount] = useState(0);
+  const [showBalloons, setShowBalloons] = useState(false);
+  const [showRibbons, setShowRibbons] = useState(false);
   const [finaleConfetti, setFinaleConfetti] = useState(false);
+  const [finaleBalloons, setFinaleBalloons] = useState(false);
+  const [finaleRibbons, setFinaleRibbons] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const currentRound = rounds[roundIndex] ?? null;
@@ -322,9 +446,20 @@ export default function ResultsCeremony({ rounds, className }: Props) {
     if (phase !== "medal-splash") return;
     timerRef.current = setTimeout(() => {
       if (currentWinner) {
-        if (currentWinner.rank === 1) setConfettiCount(70);
-        else if (currentWinner.rank === 2) setConfettiCount(35);
-        else setConfettiCount(18);
+        // Progressive celebration: more for higher ranks
+        if (currentWinner.rank === 1) {
+          setConfettiCount(90);
+          setShowBalloons(true);
+          setShowRibbons(true);
+        } else if (currentWinner.rank === 2) {
+          setConfettiCount(40);
+          setShowBalloons(false);
+          setShowRibbons(true);
+        } else {
+          setConfettiCount(15);
+          setShowBalloons(false);
+          setShowRibbons(false);
+        }
       }
       setPhase("card-reveal");
     }, MEDAL_SPLASH_MS);
@@ -339,6 +474,8 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
     timerRef.current = setTimeout(() => {
       setConfettiCount(0);
+      setShowBalloons(false);
+      setShowRibbons(false);
       if (isLast) {
         setPhase("podium");
       } else {
@@ -360,6 +497,8 @@ export default function ResultsCeremony({ rounds, className }: Props) {
   const nextRound = useCallback(() => {
     if (isLastRound) {
       setFinaleConfetti(true);
+      setFinaleBalloons(true);
+      setFinaleRibbons(true);
       setPhase("finale");
       return;
     }
@@ -367,6 +506,8 @@ export default function ResultsCeremony({ rounds, className }: Props) {
     setRevealIndex(-1);
     setCountdownValue(3);
     setConfettiCount(0);
+    setShowBalloons(false);
+    setShowRibbons(false);
     setPhase("countdown");
   }, [isLastRound]);
 
@@ -417,10 +558,28 @@ export default function ResultsCeremony({ rounds, className }: Props) {
           60% { transform: scale(1.3) rotate(5deg); opacity: 1; }
           100% { transform: scale(1) rotate(0deg); opacity: 1; }
         }
+        @keyframes gold-pulse {
+          0%, 100% { box-shadow: 0 0 20px rgba(212,168,67,0.3), 0 8px 32px rgba(212,168,67,0.2); }
+          50% { box-shadow: 0 0 40px rgba(212,168,67,0.6), 0 12px 48px rgba(212,168,67,0.4); }
+        }
+        @keyframes star-burst {
+          0% { transform: scale(0) rotate(0deg); opacity: 1; }
+          50% { transform: scale(1.2) rotate(180deg); opacity: 0.8; }
+          100% { transform: scale(0) rotate(360deg); opacity: 0; }
+        }
+        @keyframes finale-crown {
+          0% { transform: translateY(-30px) scale(0.5); opacity: 0; }
+          60% { transform: translateY(5px) scale(1.1); opacity: 1; }
+          100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
       `}</style>
 
       <Confetti active={confettiCount > 0} count={confettiCount} />
-      <Confetti active={finaleConfetti} count={100} />
+      <Confetti active={finaleConfetti} count={120} />
+      <Balloons active={showBalloons} count={14} />
+      <Balloons active={finaleBalloons} count={20} />
+      <Ribbons active={showRibbons} count={10} />
+      <Ribbons active={finaleRibbons} count={14} />
 
       <div style={{ maxWidth: 540, margin: "0 auto", padding: "2rem 1rem 4rem", position: "relative", zIndex: 1 }}>
 
@@ -461,6 +620,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
             >
               Begin the ceremony →
             </button>
+            <DashboardLink />
           </div>
         )}
 
@@ -496,7 +656,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               <div style={{
                 fontSize: 56, fontWeight: 800, color: "#5B9A4B",
                 animation: "countdown-pop 0.5s ease forwards",
-                textShadow: "0 4px 20px rgba(91,154,75,0.3)",
+                textShadow: "0 0 20px rgba(91,154,75,0.3)",
               }}>✨</div>
             )}
             <div style={{
@@ -510,7 +670,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
         {/* ═══ MEDAL SPLASH ═══ */}
         {phase === "medal-splash" && currentWinner && (
-          <div key={`splash-${currentWinner.rank}`} style={{ textAlign: "center", paddingTop: "20vh" }}>
+          <div key={`splash-${currentWinner.rank}-${revealIndex}`} style={{ textAlign: "center", paddingTop: "20vh" }}>
             <div style={{
               fontSize: 12, letterSpacing: 2.5, textTransform: "uppercase" as const,
               color: C.textFaint, fontWeight: 600, marginBottom: 20,
@@ -518,19 +678,31 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               Round {currentRound?.roundNumber}
             </div>
             <div style={{
-              fontSize: 100, lineHeight: 1,
+              fontSize: currentWinner.rank === 1 ? 120 : currentWinner.rank === 2 ? 100 : 80,
+              lineHeight: 1,
               animation: "medal-entrance 0.6s ease forwards",
               filter: `drop-shadow(0 6px 20px ${MEDAL_COLORS[(currentWinner.rank - 1)]?.glow || "rgba(0,0,0,0.1)"})`,
             }}>
               {MEDAL[currentWinner.rank - 1]}
             </div>
             <div style={{
-              fontSize: 24, fontWeight: 800, marginTop: 16,
+              fontSize: currentWinner.rank === 1 ? 28 : 24,
+              fontWeight: 800, marginTop: 16,
               color: MEDAL_COLORS[(currentWinner.rank - 1)]?.accent || C.text,
               animation: "fade-in 0.4s ease 0.3s both",
             }}>
               {RANK_LABEL[currentWinner.rank - 1]}
             </div>
+            {/* Gold gets extra sparkle text */}
+            {currentWinner.rank === 1 && (
+              <div style={{
+                fontSize: 14, color: C.gold, marginTop: 8, fontWeight: 600,
+                animation: "fade-in 0.4s ease 0.5s both",
+                letterSpacing: 2,
+              }}>
+                ✨ The crowd favorite ✨
+              </div>
+            )}
           </div>
         )}
 
@@ -544,7 +716,14 @@ export default function ResultsCeremony({ rounds, className }: Props) {
             }}>
               Round {currentRound?.roundNumber} — {RANK_LABEL[currentWinner.rank - 1]}
             </div>
-            <WinnerCard entry={currentWinner} size="full" />
+            {/* Gold card gets a pulsing glow wrapper */}
+            {currentWinner.rank === 1 ? (
+              <div style={{ animation: "gold-pulse 2.5s ease-in-out infinite", borderRadius: 22 }}>
+                <WinnerCard entry={currentWinner} size="full" />
+              </div>
+            ) : (
+              <WinnerCard entry={currentWinner} size="full" />
+            )}
           </div>
         )}
 
@@ -587,13 +766,22 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               >
                 {isLastRound ? "See the final celebration →" : "Next round →"}
               </button>
+              <DashboardLink />
             </div>
           </div>
         )}
 
         {/* ═══ FINALE ═══ */}
         {phase === "finale" && (
-          <div style={{ textAlign: "center", paddingTop: "8vh", animation: "fade-in 0.8s ease forwards" }}>
+          <div style={{ textAlign: "center", paddingTop: "6vh", animation: "fade-in 0.8s ease forwards" }}>
+            {/* Crown + party popper */}
+            <div style={{ marginBottom: 16 }}>
+              <span style={{
+                fontSize: 48, display: "inline-block",
+                animation: "finale-crown 0.8s ease forwards",
+                filter: "drop-shadow(0 4px 12px rgba(212,168,67,0.4))",
+              }}>👑</span>
+            </div>
             <div style={{
               fontSize: 64, marginBottom: 16,
               animation: "trophy-bounce 2s ease-in-out infinite",
@@ -606,12 +794,39 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               Congratulations to all the winners in <strong>{className}</strong>.
               <br />Every photo told a story — and your class picked their favorites.
             </p>
+
+            {/* ── Per-round gold winners (FIXED: shows ALL tied 1st place) ── */}
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 20, marginBottom: 32 }}>
               {rounds.map((round) => {
-                const gold = round.topEntries.find((e) => e.rank === 1);
+                const goldEntries = round.topEntries.filter((e) => e.rank === 1);
                 const colors = MEDAL_COLORS[0];
-                return (
-                  <div key={round.roundNumber} style={{
+
+                if (round.noWinners || goldEntries.length === 0) {
+                  return (
+                    <div key={round.roundNumber} style={{
+                      background: C.panelSoft,
+                      border: `1px dashed ${C.panelEdge}`,
+                      borderRadius: 18, padding: "18px 20px",
+                      textAlign: "center",
+                    }}>
+                      <div style={{
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        gap: 10, marginBottom: 8,
+                      }}>
+                        <span style={{ fontSize: 24 }}>🤷</span>
+                        <div style={{ fontSize: 15, fontWeight: 800, color: C.textDim }}>
+                          Round {round.roundNumber}
+                        </div>
+                      </div>
+                      <p style={{ fontSize: 13, color: C.textFaint, margin: 0 }}>
+                        No clear favorite
+                      </p>
+                    </div>
+                  );
+                }
+
+                return goldEntries.map((gold, goldIdx) => (
+                  <div key={`${round.roundNumber}-${gold.entryId}`} style={{
                     background: colors.bg,
                     border: `2px solid ${colors.border}`,
                     borderRadius: 18, padding: "18px 20px",
@@ -634,19 +849,20 @@ export default function ResultsCeremony({ rounds, className }: Props) {
                       <div>
                         <div style={{ fontSize: 15, fontWeight: 800, color: colors.accent }}>
                           Round {round.roundNumber}
+                          {goldEntries.length > 1 && (
+                            <span style={{ fontSize: 12, fontWeight: 600, color: C.textDim, marginLeft: 6 }}>
+                              (tie — {goldIdx + 1} of {goldEntries.length})
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: 12, color: C.textDim, fontWeight: 600 }}>
-                          {round.noWinners
-                            ? "No clear favorite"
-                            : gold
-                              ? `${gold.voteCount} favorite votes`
-                              : "Complete"}
+                          {gold.voteCount} favorite {gold.voteCount === 1 ? "vote" : "votes"}
                         </div>
                       </div>
                     </div>
 
                     {/* Big photo */}
-                    {gold?.photoUrl ? (
+                    {gold.photoUrl ? (
                       <div style={{ display: "flex", justifyContent: "center" }}>
                         <img src={gold.photoUrl} alt="" style={{
                           width: "100%", maxWidth: 280, aspectRatio: "1/1",
@@ -655,15 +871,10 @@ export default function ResultsCeremony({ rounds, className }: Props) {
                           boxShadow: `0 4px 16px ${colors.glow}`,
                         }} />
                       </div>
-                    ) : round.noWinners ? (
-                      <div style={{
-                        textAlign: "center", padding: "20px 0",
-                        fontSize: 36,
-                      }}>🤷</div>
                     ) : null}
 
                     {/* Description if present */}
-                    {gold?.description && (
+                    {gold.description && (
                       <p style={{
                         fontSize: 14, color: C.text, fontStyle: "italic",
                         lineHeight: 1.6, margin: "14px 0 0",
@@ -674,9 +885,10 @@ export default function ResultsCeremony({ rounds, className }: Props) {
                       </p>
                     )}
                   </div>
-                );
+                ));
               })}
             </div>
+
             <Link href="/student/dashboard" style={{
               display: "block", width: "100%", boxSizing: "border-box" as const,
               textAlign: "center", textDecoration: "none", padding: "14px",

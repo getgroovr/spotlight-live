@@ -1,11 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/teacher/deck/deck-client.tsx — Session 67 rebuild
+// src/app/teacher/deck/deck-client.tsx — Session 70 rebuild
 //
-// Changes from previous version:
-//   - Active/inactive toggle per photo card
-//   - canUpload prop (hides upload form if teacher has no class)
-//   - Removed DEMO_CLASS_ID references
-//   - Photo cards show active/inactive state visually
+// Multi-mode photo selection. Teachers select photos independently for
+// each warm-up mode (Solo/Trio/Full). A photo can be selected for
+// multiple modes simultaneously.
+//
+// Each photo card shows three mode toggle chips. A status banner at top
+// shows counts per mode and highlights which mode is currently active.
+//
+// All multi-column layouts use inline styles (Tailwind grid-cols broken).
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -14,7 +17,7 @@ import {
   uploadStarter,
   deleteStarter,
   updateStarterDescription,
-  toggleStarterActive,
+  toggleModeSelection,
   saveDisplayName,
   type UploadResult,
 } from "./actions";
@@ -24,18 +27,33 @@ type Starter = {
   media_url: string;
   description_text: string;
   is_active: boolean;
+  selected_solo: boolean;
+  selected_trio: boolean;
+  selected_full: boolean;
   signed_url: string | null;
   uploaded_at: string;
+};
+
+type Mode = "solo" | "trio" | "full";
+
+const MODE_LIMITS: Record<Mode, number> = { solo: 9, trio: 3, full: 1 };
+const MODE_LABELS: Record<Mode, string> = { solo: "Solo", trio: "Trio", full: "Full" };
+const MODE_DESCRIPTIONS: Record<Mode, string> = {
+  solo: "1 teacher · 9 photos",
+  trio: "3 teachers · 3 photos each",
+  full: "9 teachers · 1 photo each",
 };
 
 export function DeckClient({
   starters,
   initialDisplayName,
   canUpload,
+  activeMode,
 }: {
   starters: Starter[];
   initialDisplayName: string;
   canUpload: boolean;
+  activeMode: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<UploadResult | null>(null);
@@ -53,6 +71,13 @@ export function DeckClient({
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  // Count selections per mode
+  const counts: Record<Mode, number> = {
+    solo: optimisticStarters.filter((s) => s.selected_solo).length,
+    trio: optimisticStarters.filter((s) => s.selected_trio).length,
+    full: optimisticStarters.filter((s) => s.selected_full).length,
+  };
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -93,6 +118,9 @@ export function DeckClient({
 
   return (
     <>
+      {/* ── Mode selection status ────────────────────────────────────── */}
+      <ModeStatusPanel counts={counts} activeMode={activeMode} />
+
       {/* ── Display name field ───────────────────────────────────────── */}
       <DisplayNameField
         initialName={initialDisplayName}
@@ -128,7 +156,7 @@ export function DeckClient({
                   className="mx-auto block max-h-72 w-auto rounded"
                 />
                 <p className="mt-2 text-center text-xs text-white/50">
-                  Preview — write a description below before adding to the deck.
+                  Preview — write a description below before adding.
                 </p>
               </div>
             )}
@@ -171,29 +199,120 @@ export function DeckClient({
         </section>
       )}
 
-      {/* ── Current pool ─────────────────────────────────────────────── */}
+      {/* ── Photo pool ───────────────────────────────────────────────── */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">
-          Your photos
-        </h2>
+        <h2 className="text-lg font-semibold mb-1">Your photos</h2>
+        <p className="text-xs text-white/50 mb-4">
+          Use the Solo / Trio / Full chips on each photo to select which modes it appears in.
+        </p>
         {optimisticStarters.length === 0 ? (
           <p className="text-sm text-white/60">No photos yet.</p>
         ) : (
-          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+              gap: "16px",
+            }}
+          >
             {optimisticStarters.map((s) => (
               <StarterCard
                 key={s.id}
                 starter={s}
                 pending={pending}
+                counts={counts}
                 onDelete={() => onDelete(s.id)}
                 onSaveResult={setResult}
                 startTransition={startTransition}
               />
             ))}
-          </ul>
+          </div>
         )}
       </section>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ModeStatusPanel — shows counts for all three modes
+// ─────────────────────────────────────────────────────────────────────────
+function ModeStatusPanel({
+  counts,
+  activeMode,
+}: {
+  counts: Record<Mode, number>;
+  activeMode: string;
+}) {
+  const modes: Mode[] = ["solo", "trio", "full"];
+
+  return (
+    <div className="mb-6 rounded-xl border border-white/10 bg-white/5 p-4">
+      <div
+        style={{
+          display: "flex",
+          gap: "12px",
+          flexWrap: "wrap",
+        }}
+      >
+        {modes.map((mode) => {
+          const count = counts[mode];
+          const limit = MODE_LIMITS[mode];
+          const ready = count >= limit;
+          const isActive = activeMode === mode;
+
+          return (
+            <div
+              key={mode}
+              style={{
+                flex: "1 1 0",
+                minWidth: "140px",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: isActive
+                  ? "2px solid rgba(168, 85, 247, 0.5)"
+                  : "1px solid rgba(255,255,255,0.08)",
+                background: isActive
+                  ? "rgba(168, 85, 247, 0.1)"
+                  : "rgba(255,255,255,0.03)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                <span style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  textTransform: "uppercase" as const,
+                  letterSpacing: "1px",
+                  color: ready ? "#34d399" : isActive ? "#c084fc" : "rgba(255,255,255,0.5)",
+                }}>
+                  {MODE_LABELS[mode]}
+                </span>
+                {isActive && (
+                  <span style={{
+                    fontSize: "9px",
+                    fontWeight: 700,
+                    background: "rgba(168,85,247,0.3)",
+                    color: "#c084fc",
+                    padding: "1px 6px",
+                    borderRadius: "999px",
+                    textTransform: "uppercase" as const,
+                    letterSpacing: "0.5px",
+                  }}>
+                    Active
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)" }}>
+                <strong>{count}</strong> / {limit} selected
+                {ready ? " ✓" : ""}
+              </div>
+              <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.35)", marginTop: "2px" }}>
+                {MODE_DESCRIPTIONS[mode]}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -261,26 +380,77 @@ function DisplayNameField({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// ModeChip — toggle chip for a single mode on a single photo
+// ─────────────────────────────────────────────────────────────────────────
+function ModeChip({
+  mode,
+  selected,
+  atLimit,
+  pending,
+  onToggle,
+}: {
+  mode: Mode;
+  selected: boolean;
+  atLimit: boolean;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  const canSelect = selected || !atLimit;
+  const colors: Record<Mode, { on: string; onBg: string }> = {
+    solo: { on: "#fbbf24", onBg: "rgba(251,191,36,0.2)" },
+    trio: { on: "#34d399", onBg: "rgba(52,211,153,0.2)" },
+    full: { on: "#60a5fa", onBg: "rgba(96,165,250,0.2)" },
+  };
+  const c = colors[mode];
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={pending || !canSelect}
+      style={{
+        fontSize: "11px",
+        fontWeight: 700,
+        padding: "3px 10px",
+        borderRadius: "999px",
+        border: selected ? `1.5px solid ${c.on}` : "1px solid rgba(255,255,255,0.12)",
+        background: selected ? c.onBg : "transparent",
+        color: selected ? c.on : !canSelect ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.45)",
+        cursor: canSelect && !pending ? "pointer" : "default",
+        transition: "all 0.15s ease",
+        opacity: pending ? 0.5 : 1,
+        letterSpacing: "0.5px",
+        textTransform: "uppercase" as const,
+      }}
+    >
+      {MODE_LABELS[mode]}
+      {selected ? " ✓" : ""}
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // StarterCard — one entry in the photo pool grid
-//
-// Session 67: added active/inactive toggle button below the photo.
-// Active photos appear in the warm-up deck; inactive ones are hidden.
 // ─────────────────────────────────────────────────────────────────────────
 function StarterCard({
   starter,
   pending,
+  counts,
   onDelete,
   onSaveResult,
   startTransition,
 }: {
   starter: Starter;
   pending: boolean;
+  counts: Record<Mode, number>;
   onDelete: () => void;
   onSaveResult: (r: UploadResult) => void;
   startTransition: (cb: () => void) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(starter.description_text);
+
+  const isSelectedAnywhere = starter.selected_solo || starter.selected_trio || starter.selected_full;
 
   const startEdit = () => {
     setDraft(starter.description_text);
@@ -313,49 +483,100 @@ function StarterCard({
     });
   };
 
-  const onToggleActive = () => {
+  const onModeToggle = (mode: Mode) => {
+    const currentlySelected =
+      mode === "solo" ? starter.selected_solo
+      : mode === "trio" ? starter.selected_trio
+      : starter.selected_full;
+    const newValue = !currentlySelected;
+
+    // Client-side limit check
+    if (newValue && counts[mode] >= MODE_LIMITS[mode]) return;
+
     startTransition(async () => {
-      const r = await toggleStarterActive(starter.id, !starter.is_active);
+      const r = await toggleModeSelection(starter.id, mode, newValue);
       onSaveResult(r);
     });
   };
 
   return (
-    <li className={`rounded-xl border overflow-hidden transition ${
-      starter.is_active
-        ? "border-white/10 bg-white/5"
-        : "border-white/5 bg-white/[0.02] opacity-60"
-    }`}>
+    <div
+      style={{
+        borderRadius: "12px",
+        overflow: "hidden",
+        border: isSelectedAnywhere
+          ? "2px solid rgba(168, 85, 247, 0.4)"
+          : "1px solid rgba(255,255,255,0.08)",
+        background: isSelectedAnywhere
+          ? "rgba(168, 85, 247, 0.06)"
+          : "rgba(255,255,255,0.02)",
+        opacity: isSelectedAnywhere ? 1 : 0.75,
+        transition: "all 0.2s ease",
+      }}
+    >
       {/* Photo */}
       {starter.signed_url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={starter.signed_url}
           alt=""
-          className="block aspect-[4/3] w-full object-cover"
+          style={{
+            display: "block",
+            aspectRatio: "4/3",
+            width: "100%",
+            objectFit: "cover",
+          }}
         />
       ) : (
-        <div className="aspect-[4/3] w-full bg-white/10 flex items-center justify-center text-xs text-white/40">
+        <div
+          style={{
+            aspectRatio: "4/3",
+            width: "100%",
+            background: "rgba(255,255,255,0.1)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "12px",
+            color: "rgba(255,255,255,0.4)",
+          }}
+        >
           (image unavailable)
         </div>
       )}
 
-      {/* Active/inactive toggle strip */}
-      <button
-        type="button"
-        onClick={onToggleActive}
-        disabled={pending}
-        className={`w-full text-xs font-medium py-1.5 transition disabled:opacity-50 ${
-          starter.is_active
-            ? "bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
-            : "bg-white/5 text-white/40 hover:bg-white/10"
-        }`}
+      {/* Mode selection chips */}
+      <div
+        style={{
+          display: "flex",
+          gap: "6px",
+          padding: "8px 10px",
+          background: isSelectedAnywhere
+            ? "rgba(168, 85, 247, 0.08)"
+            : "rgba(255,255,255,0.03)",
+          borderTop: "1px solid rgba(255,255,255,0.06)",
+          justifyContent: "center",
+        }}
       >
-        {starter.is_active ? "Active ✓" : "Inactive — tap to activate"}
-      </button>
+        {(["solo", "trio", "full"] as Mode[]).map((mode) => {
+          const isSelected =
+            mode === "solo" ? starter.selected_solo
+            : mode === "trio" ? starter.selected_trio
+            : starter.selected_full;
+          return (
+            <ModeChip
+              key={mode}
+              mode={mode}
+              selected={isSelected}
+              atLimit={counts[mode] >= MODE_LIMITS[mode]}
+              pending={pending}
+              onToggle={() => onModeToggle(mode)}
+            />
+          );
+        })}
+      </div>
 
       {/* Description + controls */}
-      <div className="p-3 space-y-2">
+      <div style={{ padding: "10px 12px" }}>
         {editing ? (
           <>
             <textarea
@@ -366,12 +587,20 @@ function StarterCard({
               maxLength={1000}
               className="w-full rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-white outline-none focus:border-fuchsia-400"
             />
-            <div className="flex items-center justify-end gap-2 text-xs">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: "8px",
+                marginTop: "6px",
+              }}
+            >
               <button
                 type="button"
                 onClick={cancelEdit}
                 disabled={pending}
-                className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:bg-white/10 disabled:opacity-50"
+                className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70 hover:bg-white/10 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -379,7 +608,7 @@ function StarterCard({
                 type="button"
                 onClick={saveEdit}
                 disabled={pending}
-                className="rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 px-3 py-1 font-semibold text-white disabled:opacity-50"
+                className="rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
               >
                 {pending ? "Saving..." : "Save"}
               </button>
@@ -387,15 +616,26 @@ function StarterCard({
           </>
         ) : (
           <>
-            <p className="text-sm leading-snug">{starter.description_text}</p>
-            <div className="flex items-center justify-between text-xs text-white/50">
+            <p style={{ fontSize: "13px", lineHeight: "1.4", marginBottom: "6px" }}>
+              {starter.description_text}
+            </p>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                fontSize: "12px",
+                color: "rgba(255,255,255,0.4)",
+              }}
+            >
               <span>{starter.uploaded_at?.slice(0, 10)}</span>
-              <div className="flex gap-2">
+              <div style={{ display: "flex", gap: "8px" }}>
                 <button
                   type="button"
                   onClick={startEdit}
                   disabled={pending}
                   className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:bg-white/10 disabled:opacity-50"
+                  style={{ fontSize: "12px" }}
                 >
                   Edit
                 </button>
@@ -404,6 +644,7 @@ function StarterCard({
                   onClick={onDelete}
                   disabled={pending}
                   className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:bg-white/10 disabled:opacity-50"
+                  style={{ fontSize: "12px" }}
                 >
                   Remove
                 </button>
@@ -412,6 +653,6 @@ function StarterCard({
           </>
         )}
       </div>
-    </li>
+    </div>
   );
 }
