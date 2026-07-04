@@ -1,8 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/admin/page.tsx — Admin dashboard (Session 67 rebuild)
+// src/app/admin/page.tsx — Admin dashboard (Session 71)
 //
-// Server Component. Teacher-centric management panel.
+// Server Component. Wider centered layout (~660px).
 // Auth: checks is_admin boolean on profiles (not role='admin').
+//
+// Session 71: Added is_archived to TeacherRow and profiles query.
+// Generates signed URLs for starter photos so they render in <img> tags.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
@@ -48,6 +51,7 @@ export type TeacherRow = {
   username: string | null;
   max_classes: number;
   is_admin: boolean;
+  is_archived: boolean;
   rotation: {
     status: "recruiting" | "waiting" | "paused";
     sort_order: number;
@@ -65,7 +69,9 @@ export default async function AdminPage() {
   if (!supabase) {
     return (
       <Frame>
-        <h1 className="text-2xl font-bold mb-2">Supabase isn't configured.</h1>
+        <p className="text-white/70 text-center py-12">
+          Supabase isn&apos;t configured.
+        </p>
       </Frame>
     );
   }
@@ -84,18 +90,17 @@ export default async function AdminPage() {
   if (!profile || !profile.is_admin) {
     return (
       <Frame>
-        <h1 className="text-2xl font-bold mb-2">Admin access only.</h1>
-        <p className="text-white/70">
+        <p className="text-white/70 text-center py-12">
           Your account does not have admin privileges.
         </p>
       </Frame>
     );
   }
 
-  // ── Fetch all teachers ────────────────────────────────────────────
+  // ── Fetch all teachers (including archived) ───────────────────────
   const { data: teachers } = await supabase
     .from("profiles")
-    .select("id, display_name, username, max_classes, is_admin")
+    .select("id, display_name, username, max_classes, is_admin, is_archived")
     .eq("role", "teacher")
     .order("display_name", { ascending: true });
 
@@ -139,6 +144,28 @@ export default async function AdminPage() {
     .eq("is_starter", true)
     .eq("status", "live");
 
+  // ── Generate signed URLs for starter photos ───────────────────────
+  // media_url may be a full external URL (placehold.co) or a storage
+  // path in the media bucket. Storage paths need signed URLs.
+  const signedStarters = await Promise.all(
+    (starters || []).map(async (s) => {
+      let displayUrl = s.media_url;
+
+      // If it's not already an absolute URL, treat it as a storage path
+      // Photos are uploaded to the "teacher-deck" bucket (see actions.ts STARTER_BUCKET)
+      if (s.media_url && !s.media_url.startsWith("http")) {
+        const { data: signed } = await supabase.storage
+          .from("teacher-deck")
+          .createSignedUrl(s.media_url, 3600); // 1 hour
+        if (signed?.signedUrl) {
+          displayUrl = signed.signedUrl;
+        }
+      }
+
+      return { ...s, media_url: displayUrl };
+    }),
+  );
+
   // ── Fetch admin settings ──────────────────────────────────────────
   const { data: settings } = await supabase
     .from("admin_settings")
@@ -164,7 +191,6 @@ export default async function AdminPage() {
     studentProfileMap.set(sp.id, { display_name: sp.display_name, username: sp.username });
   });
 
-  // Group enrollments by class_id
   const enrollmentsByClass = new Map<string, string[]>();
   (enrollments || []).forEach((e) => {
     const list = enrollmentsByClass.get(e.class_id) || [];
@@ -172,7 +198,6 @@ export default async function AdminPage() {
     enrollmentsByClass.set(e.class_id, list);
   });
 
-  // Group games by class_id (take first/latest per class)
   const gameByClass = new Map<string, GameRow>();
   (games || []).forEach((g) => {
     gameByClass.set(g.class_id, {
@@ -183,9 +208,8 @@ export default async function AdminPage() {
     });
   });
 
-  // Group starters by teacher (student_id = teacher id for starters)
   const startersByTeacher = new Map<string, StarterRow[]>();
-  (starters || []).forEach((s) => {
+  signedStarters.forEach((s) => {
     const list = startersByTeacher.get(s.student_id) || [];
     list.push({
       id: s.id,
@@ -198,7 +222,6 @@ export default async function AdminPage() {
 
   // ── Assemble teacher rows with nested data ────────────────────────
   const teacherRows: TeacherRow[] = (teachers || []).map((t) => {
-    // Build class list for this teacher
     const teacherClasses: ClassRow[] = (classes || [])
       .filter((c) => c.teacher_id === t.id)
       .map((c) => {
@@ -227,39 +250,15 @@ export default async function AdminPage() {
       username: t.username,
       max_classes: t.max_classes,
       is_admin: t.is_admin ?? false,
+      is_archived: t.is_archived ?? false,
       rotation: rotationMap.get(t.id) || null,
       classes: teacherClasses,
       starters: startersByTeacher.get(t.id) || [],
     };
   });
 
-  // ── Summary stats ─────────────────────────────────────────────────
-  const totalTeachers = teacherRows.length;
-  const totalStudents = (enrollments || []).length;
-  const totalClasses = (classes || []).length;
-  const recruiting = teacherRows.find((t) => t.rotation?.status === "recruiting");
-
   return (
     <Frame>
-      <h1 className="text-3xl font-extrabold mb-1 bg-gradient-to-r from-fuchsia-400 to-violet-400 bg-clip-text text-transparent">
-        Admin
-      </h1>
-      <p className="text-white/50 text-sm mb-6">
-        Teacher management, warm-up deck, and rotation controls.
-      </p>
-
-      {/* ── Stats strip ──────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <Stat label="Teachers" value={totalTeachers} />
-        <Stat label="Students" value={totalStudents} />
-        <Stat label="Classes" value={totalClasses} />
-        <Stat
-          label="Recruiting"
-          value={recruiting ? (recruiting.display_name || recruiting.username || "—") : "None"}
-          highlight={!!recruiting}
-        />
-      </div>
-
       <AdminClient
         teachers={teacherRows}
         warmupConfig={warmupConfig}
@@ -270,33 +269,8 @@ export default async function AdminPage() {
 
 function Frame({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-gradient-to-br from-black via-purple-950 to-blue-950 p-6 text-white">
-      <div className="mx-auto max-w-5xl">{children}</div>
+    <main className="min-h-screen bg-gradient-to-br from-black via-purple-950 to-blue-950 p-4 sm:p-6 text-white">
+      <div style={{ maxWidth: 660, margin: "0 auto", width: "100%" }}>{children}</div>
     </main>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  highlight,
-}: {
-  label: string;
-  value: string | number;
-  highlight?: boolean;
-}) {
-  return (
-    <div
-      className={`rounded-xl border p-3 text-center ${
-        highlight
-          ? "border-emerald-400/30 bg-emerald-400/5"
-          : "border-white/10 bg-white/5"
-      }`}
-    >
-      <div className={`text-xl font-bold ${highlight ? "text-emerald-300" : "text-white"}`}>
-        {value}
-      </div>
-      <div className="text-xs text-white/50 mt-0.5">{label}</div>
-    </div>
   );
 }

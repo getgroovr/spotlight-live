@@ -3,6 +3,8 @@
 //
 // Session 67 rebuild. Every action checks is_admin boolean (not role).
 // RLS enforces at DB layer too via is_admin() function.
+//
+// Session 71: Added archiveTeacher and unarchiveTeacher.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -198,6 +200,66 @@ export async function updateWarmupMode(
     .update({ warmup_teacher_count: count, updated_at: new Date().toISOString() })
     .eq("id", 1);
   if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Session 71: Teacher archiving
+//
+// archiveTeacher:
+//   1. Sets profiles.is_archived = true
+//   2. Removes the teacher from teacher_rotation (if present)
+//   3. Revalidates /admin
+//
+// unarchiveTeacher:
+//   1. Sets profiles.is_archived = false
+//   2. Does NOT re-add to rotation — admin does that manually
+//   3. Revalidates /admin
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function archiveTeacher(
+  teacherId: string,
+): Promise<ActionResult> {
+  const { error, supabase } = await requireAdmin();
+  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+
+  // 1. Mark as archived
+  const { error: archiveError } = await supabase
+    .from("profiles")
+    .update({ is_archived: true })
+    .eq("id", teacherId);
+
+  if (archiveError) {
+    return { ok: false, error: archiveError.message };
+  }
+
+  // 2. Remove from rotation queue (if present) — archived teachers
+  //    shouldn't be recruiting or waiting.
+  await supabase
+    .from("teacher_rotation")
+    .delete()
+    .eq("teacher_id", teacherId);
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+export async function unarchiveTeacher(
+  teacherId: string,
+): Promise<ActionResult> {
+  const { error, supabase } = await requireAdmin();
+  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+
+  const { error: updErr } = await supabase
+    .from("profiles")
+    .update({ is_archived: false })
+    .eq("id", teacherId);
+
+  if (updErr) {
+    return { ok: false, error: updErr.message };
+  }
 
   revalidatePath("/admin");
   return { ok: true };
