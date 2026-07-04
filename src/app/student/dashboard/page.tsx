@@ -678,6 +678,38 @@ export default async function StudentProfile() {
   }
 
   if ("error" in data) {
+    // Session 72: teacher/admin signed in on a student route.
+    if (data.error === "teacher-account") {
+      return (
+        <div style={{ background: C.bg, minHeight: "100vh", padding: "4rem 1rem",
+          fontFamily: F, color: C.text, textAlign: "center" }}>
+          <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+          <h1 style={{ fontSize: 24, marginBottom: 12 }}>You&apos;re signed in as a teacher</h1>
+          <p style={{ color: C.textDim, maxWidth: 420, margin: "0 auto 20px" }}>
+            This page is for students. You&apos;re currently signed in with your
+            teacher account. To get to your teacher dashboard, use the link below.
+            If you meant to sign in as a student, sign out first and use your
+            student email.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+            <a href="/teacher/deck" style={{
+              display: "inline-block",
+              background: C.light, color: "#fff",
+              padding: "12px 24px", borderRadius: 10,
+              fontSize: 14, fontWeight: 700, textDecoration: "none",
+            }}>
+              Go to teacher dashboard →
+            </a>
+            <a href="/login" style={{
+              fontSize: 13, color: C.textDim, textDecoration: "underline",
+            }}>
+              Sign out and switch accounts
+            </a>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div style={{ background: C.bg, minHeight: "100vh", padding: "4rem 1rem",
         fontFamily: F, color: C.text, textAlign: "center" }}>
@@ -781,8 +813,14 @@ export default async function StudentProfile() {
   // B23 (#47): detect rejected items for action-needed alert + B24b.
   const rejectedEntries = ownEntries.filter((e) => e.status === "rejected");
   const hasRejectedEntries = rejectedEntries.length > 0;
-  const hasRejectedFavoriteComment =
+  // B73 (session 73): also detect rejected round-level favorite comments.
+  const rejectedRoundFavorites = roundSessions.filter(
+    (s) => s.favoriteCommentStatus === "rejected",
+  );
+  const hasRejectedWarmupFavorite =
     currentClass?.favoriteCommentStatus === "rejected";
+  const hasRejectedFavoriteComment =
+    hasRejectedWarmupFavorite || rejectedRoundFavorites.length > 0;
   const hasActionNeeded = hasRejectedEntries || hasRejectedFavoriteComment;
   // B24b: is the CURRENT round's entry rejected?
   const currentRoundEntry = currentRound > 0 ? entryByRound.get(currentRound) : null;
@@ -957,8 +995,9 @@ export default async function StudentProfile() {
             )}
 
             {/* ── Rejected favorite comment ── */}
-            {hasRejectedFavoriteComment && currentClass && (
-              <div>
+            {/* ── Rejected warm-up favorite comment ── */}
+            {hasRejectedWarmupFavorite && currentClass && (
+              <div style={{ marginBottom: rejectedRoundFavorites.length > 0 ? 14 : 0 }}>
                 <div style={{
                   fontSize: 11, letterSpacing: 2, fontWeight: 700,
                   color: C.danger, textTransform: "uppercase",
@@ -1029,9 +1068,93 @@ export default async function StudentProfile() {
                   {currentClass.favoriteComment && (
                     <ResubmitFavoriteCommentForm
                       currentText={currentClass.favoriteComment}
+                      round={0}
                     />
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* ── B73 (session 73): Rejected round-level favorite comments ── */}
+            {rejectedRoundFavorites.length > 0 && (
+              <div>
+                <div style={{
+                  fontSize: 11, letterSpacing: 2, fontWeight: 700,
+                  color: C.danger, textTransform: "uppercase",
+                  marginBottom: 10,
+                }}>
+                  Round favorite comment{rejectedRoundFavorites.length > 1 ? "s" : ""} sent back ({rejectedRoundFavorites.length})
+                </div>
+
+                {rejectedRoundFavorites.map((rs) => (
+                  <div key={`rf-${rs.roundNumber}`} style={{
+                    background: "#fff",
+                    border: `1px solid ${C.panelEdge}`,
+                    borderRadius: 12,
+                    padding: 14,
+                    marginBottom: 10,
+                  }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, color: C.light,
+                      letterSpacing: 1, textTransform: "uppercase",
+                      marginBottom: 6,
+                    }}>
+                      Round {rs.roundNumber}
+                    </div>
+
+                    {/* The comment text */}
+                    {rs.favoriteComment && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{
+                          fontSize: 10, letterSpacing: 1, fontWeight: 600,
+                          color: C.textFaint, textTransform: "uppercase",
+                          marginBottom: 2,
+                        }}>
+                          What you wrote
+                        </div>
+                        <p style={{
+                          fontSize: 13, color: C.text, lineHeight: 1.4,
+                          margin: 0, fontStyle: "italic",
+                          wordBreak: "break-word",
+                        }}>
+                          &quot;{rs.favoriteComment}&quot;
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Teacher feedback */}
+                    {rs.favoriteCommentRejectionReason && (
+                      <div style={{
+                        background: C.dangerBg,
+                        border: `1px solid ${C.danger}44`,
+                        borderRadius: 8, padding: "6px 10px",
+                        marginBottom: 8,
+                      }}>
+                        <div style={{
+                          fontSize: 10, letterSpacing: 1, fontWeight: 600,
+                          color: C.danger, textTransform: "uppercase",
+                          marginBottom: 2,
+                        }}>
+                          Your teacher said
+                        </div>
+                        <p style={{
+                          fontSize: 12, color: C.text, lineHeight: 1.4,
+                          margin: 0, wordBreak: "break-word",
+                        }}>
+                          {rs.favoriteCommentRejectionReason}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Resubmit form */}
+                    {rs.favoriteComment && (
+                      <ResubmitFavoriteCommentForm
+                        currentText={rs.favoriteComment}
+                        round={rs.roundNumber}
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1217,6 +1340,55 @@ export default async function StudentProfile() {
                             </div>
                           ))}
                         </div>
+
+                        {/* ── B72 (session 73): favorite comment text + status badge ── */}
+                        {session.favoriteComment && (
+                          <div style={{
+                            marginTop: 10, padding: "10px 12px",
+                            background: C.bg, border: `1px solid ${C.panelEdge}`,
+                            borderRadius: 10,
+                          }}>
+                            <div style={{
+                              fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                              color: C.textFaint, textTransform: "uppercase",
+                              marginBottom: 3,
+                            }}>
+                              Why it was your favorite
+                            </div>
+                            <p style={{
+                              fontSize: 13, color: C.text, lineHeight: 1.5,
+                              margin: "0 0 8px", wordBreak: "break-word",
+                            }}>
+                              {session.favoriteComment}
+                            </p>
+                            {session.favoriteCommentStatus && (
+                              <span style={{
+                                fontSize: 10, letterSpacing: 1.5, fontWeight: 600,
+                                color: "#fff",
+                                background: session.favoriteCommentStatus === "approved"
+                                  ? C.liveGreen
+                                  : session.favoriteCommentStatus === "rejected"
+                                    ? C.danger
+                                    : C.panelEdge,
+                                padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+                              }}>
+                                {session.favoriteCommentStatus === "approved"
+                                  ? "APPROVED"
+                                  : session.favoriteCommentStatus === "rejected"
+                                    ? "NOT APPROVED"
+                                    : "AWAITING APPROVAL"}
+                              </span>
+                            )}
+                            {session.favoriteCommentStatus === "rejected" && (
+                              <p style={{
+                                fontSize: 12, color: C.danger, fontWeight: 600,
+                                lineHeight: 1.5, margin: "8px 0 0",
+                              }}>
+                                ↑ Edit and resubmit in the Action needed section above.
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1437,6 +1609,55 @@ export default async function StudentProfile() {
                                 </div>
                               ))}
                             </div>
+
+                            {/* ── B72 (session 73): favorite comment text + status badge ── */}
+                            {session.favoriteComment && (
+                              <div style={{
+                                marginTop: 10, padding: "10px 12px",
+                                background: C.bg, border: `1px solid ${C.panelEdge}`,
+                                borderRadius: 10,
+                              }}>
+                                <div style={{
+                                  fontSize: 11, letterSpacing: 1, fontWeight: 600,
+                                  color: C.textFaint, textTransform: "uppercase",
+                                  marginBottom: 3,
+                                }}>
+                                  Why it was your favorite
+                                </div>
+                                <p style={{
+                                  fontSize: 13, color: C.text, lineHeight: 1.5,
+                                  margin: "0 0 8px", wordBreak: "break-word",
+                                }}>
+                                  {session.favoriteComment}
+                                </p>
+                                {session.favoriteCommentStatus && (
+                                  <span style={{
+                                    fontSize: 10, letterSpacing: 1.5, fontWeight: 600,
+                                    color: "#fff",
+                                    background: session.favoriteCommentStatus === "approved"
+                                      ? C.liveGreen
+                                      : session.favoriteCommentStatus === "rejected"
+                                        ? C.danger
+                                        : C.panelEdge,
+                                    padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+                                  }}>
+                                    {session.favoriteCommentStatus === "approved"
+                                      ? "APPROVED"
+                                      : session.favoriteCommentStatus === "rejected"
+                                        ? "NOT APPROVED"
+                                        : "AWAITING APPROVAL"}
+                                  </span>
+                                )}
+                                {session.favoriteCommentStatus === "rejected" && (
+                                  <p style={{
+                                    fontSize: 12, color: C.danger, fontWeight: 600,
+                                    lineHeight: 1.5, margin: "8px 0 0",
+                                  }}>
+                                    ↑ Edit and resubmit in the Action needed section above.
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1458,6 +1679,21 @@ export default async function StudentProfile() {
                     status: e.status,
                     teacherNote: e.teacherNote || "",
                   }))}
+                  roundComments={roundSessions.map((rs) => ({
+                    roundNumber: rs.roundNumber,
+                    commentedEntries: rs.commentedEntries.map((ce) => ({
+                      description_text: ce.description_text,
+                      comment: ce.comment,
+                      isFavorite: ce.isFavorite,
+                    })),
+                    favoriteComment: rs.favoriteComment,
+                  }))}
+                  warmupEntries={(currentClass?.entries || []).map((we) => ({
+                    description_text: we.description_text,
+                    comment: we.comment,
+                    isFavorite: we.isFavorite,
+                  }))}
+                  warmupFavoriteComment={currentClass?.favoriteComment ?? null}
                 />
               </div>
             )}

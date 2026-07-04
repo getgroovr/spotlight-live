@@ -31,10 +31,14 @@ const C = {
 };
 const F = "'Outfit',sans-serif";
 
+// B73 (session 73): round prop added so the action knows which
+// game_session to update. Defaults to 0 (warm-up) for backward compat.
 export default function ResubmitFavoriteCommentForm({
   currentText,
+  round = 0,
 }: {
   currentText: string;
+  round?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState(currentText);
@@ -51,6 +55,7 @@ export default function ResubmitFavoriteCommentForm({
 
     const fd = new FormData();
     fd.set("favorite_comment", text.trim());
+    fd.set("round", String(round));
 
     setFeedback(null);
     startTransition(async () => {

@@ -161,14 +161,20 @@ export type CurrentClassTiming = {
 };
 
 // B2 (#41): one completed student round's worth of classmate comments.
+// B72 (session 73): favorite comment fields added so the student dashboard
+// can show the AWAITING APPROVAL / APPROVED / NOT APPROVED badge on
+// per-round favorite comments, not just the warm-up round.
 export type RoundSessionData = {
   roundNumber: number;        // student round number (1, 2, 3…) — matches DB round directly (round-0 convention)
   completedAt: string | null;
   commentedEntries: ArchiveEntry[];
+  favoriteComment: string | null;
+  favoriteCommentStatus: "pending" | "approved" | "rejected" | null;
+  favoriteCommentRejectionReason: string | null;
 };
 
 export type ArchiveResult =
-  | { error: "no-session" | "not-enrolled" | "Server not configured." }
+  | { error: "no-session" | "not-enrolled" | "teacher-account" | "Server not configured." }
   | { student: { id: string; name: string | null; screen_name: string | null; email: string | null };
       classes: ClassArchive[];
       // Legacy: single "your photo" card. Now means "highest-round filled
@@ -199,7 +205,25 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
     .select("id, name, screen_name, email")
     .eq("email", user.email.toLowerCase())
     .maybeSingle();
-  if (!student) return { error: "not-enrolled" };
+
+  if (!student) {
+    // Session 72: before returning "not-enrolled", check if this user is
+    // actually a teacher/admin who accidentally navigated to a student page.
+    // Single-browser testers hit this when they sign into getgroovr (teacher)
+    // in the same window they use for myked70 (student) — the auth cookie
+    // flips to the teacher's identity, the students lookup returns zero rows,
+    // and the dashboard shows "Something's off." A targeted message saves
+    // minutes of confused debugging.
+    const { data: profile } = await admin
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (profile?.role === "teacher") {
+      return { error: "teacher-account" };
+    }
+    return { error: "not-enrolled" };
+  }
 
   // The student's CURRENT class = profiles.class_id (what my_class_id() returns
   // and route.ts syncs on login). Everything else they've enrolled in is past
@@ -459,9 +483,11 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
       `[student-archive] roundSessions lookup: student.id=${student.id}, currentClassId=${currentClassId}`,
     );
 
+    // B72 (session 73): select favorite_comment + moderation fields so
+    // the dashboard can render the AWAITING APPROVAL badge per round.
     const { data: studentRoundSessions } = await admin
       .from("game_sessions")
-      .select("round, completed_at, comments, favorites")
+      .select("round, completed_at, comments, favorites, favorite_comment, favorite_comment_status, favorite_comment_rejection_reason")
       .eq("student_id", student.id)
       .eq("class_id", currentClassId)
       .gt("round", 0) // exclude warm-up (round=0)
@@ -580,6 +606,10 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
         roundNumber: studentRound,
         completedAt: (sess.completed_at as string | null) ?? null,
         commentedEntries,
+        // B72 (session 73): surface favorite comment moderation status per round.
+        favoriteComment: (sess.favorite_comment as string | null) ?? null,
+        favoriteCommentStatus: (sess.favorite_comment_status as "pending" | "approved" | "rejected" | null) ?? null,
+        favoriteCommentRejectionReason: (sess.favorite_comment_rejection_reason as string | null) ?? null,
       });
     }
 

@@ -1,10 +1,29 @@
 "use client";
 
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/student/dashboard/csv-button.tsx
+// DESTINATION: src/app/student/dashboard/csv-button.tsx   (REPLACES)
 //
 // Client-side CSV generation for the student's own round history.
 // Only rendered when isGameOver (parent gates the render).
+//
+// C2 (session 73): SPREADSHEET ENRICHMENT
+//   The student's downloadable spreadsheet now captures ALL their language
+//   from the game, not just their photo descriptions. Three sections:
+//
+//   Section 1 — YOUR PHOTO SUBMISSIONS
+//     Round | Your Photo Description | Status | Teacher Note
+//     (same as before)
+//
+//   Section 2 — YOUR GAME COMMENTS
+//     Round | Photo Description | Your Comment | Favorite?
+//     One row per entry the student commented on, across all rounds.
+//
+//   Section 3 — TEACHER'S WARM-UP ROUND
+//     Photo Description | Your Comment | Favorite? | Favorite Comment
+//     The warm-up entries with the student's comments + favorite note.
+//
+//   Column names from the handoff: Round | Photo Description | Your Comment
+//   | Is Your Favorite | Teacher Note.
 // ─────────────────────────────────────────────────────────────────────────
 
 type CsvRow = {
@@ -14,6 +33,27 @@ type CsvRow = {
   teacherNote: string;
 };
 
+// B2 / C2: shape of a classmate entry the student commented on.
+type CommentEntry = {
+  description_text: string | null;
+  comment: string;
+  isFavorite: boolean;
+};
+
+// C2: one round's worth of comment data.
+type RoundCommentData = {
+  roundNumber: number;
+  commentedEntries: CommentEntry[];
+  favoriteComment: string | null;
+};
+
+// C2: a warm-up entry.
+type WarmupEntry = {
+  description_text: string | null;
+  comment: string;
+  isFavorite: boolean;
+};
+
 function escapeCsv(value: string): string {
   if (value.includes(",") || value.includes('"') || value.includes("\n")) {
     return `"${value.replace(/"/g, '""')}"`;
@@ -21,31 +61,78 @@ function escapeCsv(value: string): string {
   return value;
 }
 
-function buildCsv(rows: CsvRow[]): string {
-  const header = ["Round", "Your Photo Description", "Status", "Teacher Note"];
-  const lines = [header.join(",")];
-  for (const r of rows) {
-    lines.push(
-      [
-        String(r.round),
-        escapeCsv(r.description),
-        r.status,
-        escapeCsv(r.teacherNote),
-      ].join(","),
-    );
-  }
-  return lines.join("\n");
-}
-
 export function StudentDashboardCsvButton({
   studentName,
   csvRows,
+  roundComments = [],
+  warmupEntries = [],
+  warmupFavoriteComment = null,
 }: {
   studentName: string;
   csvRows: CsvRow[];
+  roundComments?: RoundCommentData[];
+  warmupEntries?: WarmupEntry[];
+  warmupFavoriteComment?: string | null;
 }) {
   const download = () => {
-    const csv = buildCsv(csvRows);
+    const lines: string[] = [];
+
+    // ── Section 1: Photo submissions ──
+    lines.push("=== YOUR PHOTO SUBMISSIONS ===");
+    lines.push(["Round", "Your Photo Description", "Status", "Teacher Note"].join(","));
+    for (const r of csvRows) {
+      lines.push(
+        [
+          String(r.round),
+          escapeCsv(r.description),
+          r.status,
+          escapeCsv(r.teacherNote),
+        ].join(","),
+      );
+    }
+
+    // ── Section 2: Game comments ──
+    if (roundComments.length > 0) {
+      lines.push(""); // blank separator
+      lines.push("=== YOUR GAME COMMENTS ===");
+      lines.push(
+        ["Round", "Photo Description", "Your Comment", "Is Your Favorite", "Your Favorite Comment"].join(","),
+      );
+      for (const rc of roundComments) {
+        for (const ce of rc.commentedEntries) {
+          lines.push(
+            [
+              String(rc.roundNumber),
+              escapeCsv(ce.description_text || ""),
+              escapeCsv(ce.comment),
+              ce.isFavorite ? "yes" : "",
+              ce.isFavorite ? escapeCsv(rc.favoriteComment || "") : "",
+            ].join(","),
+          );
+        }
+      }
+    }
+
+    // ── Section 3: Warm-up round ──
+    if (warmupEntries.length > 0) {
+      lines.push(""); // blank separator
+      lines.push("=== TEACHER'S WARM-UP ROUND ===");
+      lines.push(
+        ["Photo Description", "Your Comment", "Is Your Favorite", "Your Favorite Comment"].join(","),
+      );
+      for (const we of warmupEntries) {
+        lines.push(
+          [
+            escapeCsv(we.description_text || ""),
+            escapeCsv(we.comment),
+            we.isFavorite ? "yes" : "",
+            we.isFavorite ? escapeCsv(warmupFavoriteComment || "") : "",
+          ].join(","),
+        );
+      }
+    }
+
+    const csv = lines.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

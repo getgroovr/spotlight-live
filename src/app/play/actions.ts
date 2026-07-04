@@ -215,14 +215,40 @@ export async function requestMagicLink(formData: FormData): Promise<EnrollResult
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// enrollStudent — UNCHANGED from #26.  No round_number involvement: it
-// writes to enrollments + game_sessions, neither of which has a round_number
-// column on the entries side.  (game_sessions.round exists but is unrelated
-// to entries.round_number — that's the session sequence number, not the
-// round-assignment slot.)
+// enrollStudent — Session 72 fix: preserve the ID invariant
+//   students.id == auth.users.id == profiles.id
 //
-// Round-0 convention: enrollStudent writes round=0 for the warm-up session
-// and enrollment. Student gameplay rounds (from saveStudentRound) start at 1.
+// The bug this fixes: this function used to create a students row with a
+// fresh random UUID before the auth user existed. Later, when the visitor
+// clicked the magic link, Supabase created auth.users with a DIFFERENT id.
+// entries.student_id (which references profiles/auth) then no longer joined
+// to enrollments.student_id (which references students). Dashboard returned
+// "not-enrolled" even though the enrollment row was there.
+//
+// Fix: create the auth.users row FIRST via admin.createUser (returns a new
+// row or "email_exists"). Then use that id for the students row. If a stale
+// students row exists from before this fix, reconcile it in-place — same
+// dance as the one-shot reconcile SQL from Session 72: rename the old row's
+// email to a sentinel, insert the new row keyed to auth id, migrate FK
+// references, delete the old row.
+//
+// Round-0 convention unchanged: enrollStudent writes round=0 for the
+// warm-up session and enrollment.
+//
+// SESSION 72 UPDATE — returning-visitor fallback (this session):
+//   The initial Session 72 fix left a bug in the fallback lookup. When
+//   admin.auth.admin.createUser refused because the email already existed,
+//   the code tried admin.schema("auth").from("users") to fetch the id.
+//   PostgREST doesn't expose the `auth` schema by default, so that call
+//   silently returned null even for existing users. The visitor saw
+//   "Could not identify your account: A user with this email address has
+//   already been registered" — the two halves came from the app's own
+//   fallback branch concatenating createErr.message onto its prefix.
+//
+//   Fixed by calling a SECURITY DEFINER RPC (get_auth_user_id_by_email)
+//   added in migration 20260703000000_auth_user_lookup_rpc.sql. Any
+//   returning student who hits /play now correctly resolves to their
+//   existing auth id and receives a magic link.
 // ─────────────────────────────────────────────────────────────────────────
 export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -265,27 +291,86 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
   const classId = favEntry.class_id;
 
-  // ── Existing student? (reuse row; name fills in later on the profile) ──
-  const { data: existing } = await admin
+  // ── Ensure auth.users row exists; get its id ──────────────────────────
+  // Attempt to create the auth user (email_confirm: false — the magic link
+  // will confirm them). If they already exist, admin.createUser returns an
+  // error and we fall through to the RPC lookup below.
+  let authUserId: string;
+
+  const { data: created, error: createErr } = await admin.auth.admin.createUser({
+    email,
+    email_confirm: false,
+  });
+
+  if (created?.user?.id) {
+    authUserId = created.user.id;
+  } else {
+    // Returning visitor — createUser refused because auth.users already has
+    // a row for this email. Look up the id via a SECURITY DEFINER RPC
+    // added in migration 20260703000000_auth_user_lookup_rpc.sql.
+    //
+    // Why RPC instead of admin.schema("auth").from("users"):
+    //   PostgREST doesn't expose the `auth` schema, so the .schema("auth")
+    //   approach silently returned null even for existing users. RPCs run
+    //   as service_role directly against Postgres and don't have that
+    //   restriction. This is the reliable path.
+    const { data: existingId, error: rpcErr } = await admin
+      .rpc("get_auth_user_id_by_email", { p_email: email });
+    if (rpcErr || !existingId) {
+      return {
+        ok: false,
+        error: `Could not identify your account: ${
+          createErr?.message || rpcErr?.message || "unknown error"
+        }`,
+      };
+    }
+    authUserId = existingId as string;
+  }
+
+  // ── Reconcile any stale students row (id != authUserId) ───────────────
+  // Legacy data: if enrollStudent was called before this fix, the students
+  // row may have a random id. Migrate it in place.
+  const { data: existingStudent } = await admin
     .from("students")
-    .select("id")
+    .select("id, name, screen_name")
     .eq("email", email)
     .maybeSingle();
 
-  let studentId: string;
-  if (existing) {
-    studentId = existing.id;
-  } else {
-    const { data: newStudent, error: stuErr } = await admin
+  if (existingStudent && existingStudent.id !== authUserId) {
+    const oldId = existingStudent.id as string;
+
+    // 1. Free the email on the old row so the new insert can use it
+    await admin
       .from("students")
-      .insert({ email })
-      .select("id")
-      .single();
-    if (stuErr || !newStudent) {
-      return { ok: false, error: `Could not create student record: ${stuErr?.message}` };
+      .update({ email: `stale-${oldId}@removed.local` })
+      .eq("id", oldId);
+
+    // 2. Insert new row keyed to auth id, preserving name/screen_name
+    await admin.from("students").insert({
+      id: authUserId,
+      email,
+      name: (existingStudent.name as string | null) ?? null,
+      screen_name: (existingStudent.screen_name as string | null) ?? null,
+    });
+
+    // 3. Re-point FK references
+    await admin.from("enrollments").update({ student_id: authUserId }).eq("student_id", oldId);
+    await admin.from("game_sessions").update({ student_id: authUserId }).eq("student_id", oldId);
+
+    // 4. Delete the stale row
+    await admin.from("students").delete().eq("id", oldId);
+  } else if (!existingStudent) {
+    // Fresh visitor — insert the students row with id = auth id
+    const { error: stuErr } = await admin
+      .from("students")
+      .insert({ id: authUserId, email });
+    if (stuErr) {
+      return { ok: false, error: `Could not create student record: ${stuErr.message}` };
     }
-    studentId = newStudent.id;
   }
+  // else: existingStudent.id === authUserId — nothing to do.
+
+  const studentId = authUserId;
 
   // ── GUARD: one ACTIVE class at a time (World B) ───────────────────────
   const { data: activeRows, error: activeErr } = await admin
@@ -306,8 +391,6 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
 
   // ── CLASS SIZE ENFORCEMENT — max 9 students per class ─────────────────
-  // Count active enrollments in this class EXCLUDING this student (so
-  // re-enrolling the same student doesn't count against the cap).
   const { count: classSize, error: countErr } = await admin
     .from("enrollments")
     .select("id", { count: "exact", head: true })
@@ -335,7 +418,7 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     return { ok: false, error: `Enrollment failed: ${enrollErr.message}` };
   }
 
-  // ── Save the warm-up (round 0) game session (the nine comments + the favorite) ──
+  // ── Save the warm-up (round 0) game session ───────────────────────────
   const { error: sessionErr } = await admin
     .from("game_sessions")
     .insert({
@@ -350,6 +433,9 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   }
 
   // ── Send magic link via signInWithOtp ─────────────────────────────────
+  // The auth.users row already exists (from createUser above); this just
+  // sends the confirmation email. shouldCreateUser stays true as a safety
+  // net in case createUser above returned an error we didn't fully handle.
   const anon = createServiceClient(supabaseUrl, anonKey);
   const { error: otpErr } = await anon.auth.signInWithOtp({
     email,
@@ -1213,16 +1299,18 @@ export async function resubmitEntry(
 // resubmitFavoriteComment — NEW B23 (#47).  Lets a student edit and
 // resubmit a rejected favorite comment.
 //
-// Finds the warm-up game_session (round=0) for the student's current
+// Finds the game_session for the given round in the student's current
 // class, verifies favorite_comment_status='rejected', updates the
 // favorite_comment text, and resets the status to 'pending'.
 //
 // Form fields:
 //   favorite_comment — the new text (string, required, min 15 chars)
+//   round            — the round number (string, defaults to "0" for
+//                      warm-up backward compat)
 //
-// No entry_id or session_id needed — there's exactly one warm-up
-// session per enrollment, and the student can only be in one active
-// class at a time.
+// B73 (session 73): previously hardcoded round=0. Now reads a round
+// field from formData so student-round favorite comments can also be
+// resubmitted. The ResubmitFavoriteCommentForm passes the round prop.
 // ─────────────────────────────────────────────────────────────────────────
 export async function resubmitFavoriteComment(
   _prevState: ActionResult | null,
@@ -1260,6 +1348,9 @@ export async function resubmitFavoriteComment(
     };
   }
 
+  // B73: read round from form (defaults to 0 for warm-up backward compat).
+  const round = parseInt(String(formData.get("round") || "0"), 10);
+
   const admin = createServiceClient(supabaseUrl, serviceKey);
 
   // ── Resolve student + class ─────────────────────────────────────────
@@ -1288,17 +1379,18 @@ export async function resubmitFavoriteComment(
     };
   }
 
-  // ── Find the warm-up session (round=0) ──────────────────────────────
+  // ── Find the session for the specified round ────────────────────────
+  // B73: was hardcoded to round=0. Now uses the form's round value.
   const { data: session } = await admin
     .from("game_sessions")
     .select("id, favorite_comment_status")
     .eq("student_id", student.id)
     .eq("class_id", classId)
-    .eq("round", 0)
+    .eq("round", round)
     .maybeSingle();
 
   if (!session) {
-    return { ok: false, error: "We couldn't find your warm-up session." };
+    return { ok: false, error: round === 0 ? "We couldn't find your warm-up session." : `We couldn't find your session for round ${round}.` };
   }
   if (session.favorite_comment_status !== "rejected") {
     return {
