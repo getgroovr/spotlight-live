@@ -53,7 +53,7 @@ const FALLBACK_PALETTE = [
 
 export type ClassDeckResult =
   | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean }
-  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending"; classId: string | null };
+  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending" | "teacher-account"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
   const ssr = await createClient();
@@ -70,11 +70,15 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // Current class = profiles.class_id (profiles.id == auth user.id).
   const { data: profile } = await admin
     .from("profiles")
-    .select("class_id")
+    .select("class_id, role")
     .eq("id", user.id)
     .maybeSingle();
   const classId = profile?.class_id ?? null;
-  if (!classId) return { ok: false, reason: "no-class", classId: null };
+  if (!classId) {
+    // Session 72: detect teacher/admin on student route (session swap).
+    const reason = (profile?.role === "teacher") ? "teacher-account" as const : "no-class" as const;
+    return { ok: false, reason, classId: null };
+  }
 
   // ── B18 FIX (#44): Check game timing BEFORE loading the deck. ──────
   // If the game is over, don't let the student play — they should see

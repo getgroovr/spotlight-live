@@ -623,6 +623,7 @@ function StudentFavoriteEdit({
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [uploadDone, setUploadDone] = useState(false);
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState(null);
   const uploadFormRef = useRef(null);
 
   const handleSave = async () => {
@@ -708,14 +709,30 @@ function StudentFavoriteEdit({
           <p style={{ fontFamily: F, fontSize: 14, color: C.textDim, lineHeight: 1.6,
             margin: "8px auto 24px", maxWidth: 320 }}>
             {isLastRound
-              ? "All rounds are finished. Time to see which photos your classmates liked most!"
+              ? "All rounds are finished — your teacher will reveal the winners soon!"
               : "Sit tight — the next round starts once your teacher opens it up."}
           </p>
         </div>
 
         {isLastRound ? (
           <>
-            <a href="/student/results"
+            <div style={{
+              background: C.panel, border: `1px solid ${C.panelEdge}`,
+              borderRadius: 14, padding: "16px 20px",
+              maxWidth: 340, margin: "0 auto 18px",
+              textAlign: "center",
+            }}>
+              <div style={{ fontSize: 28, marginBottom: 6 }}>🎪</div>
+              <p style={{ fontFamily: F, fontSize: 14, color: C.text, lineHeight: 1.6,
+                margin: "0 0 4px", fontWeight: 600 }}>
+                Setting up for the party!
+              </p>
+              <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
+                margin: 0 }}>
+                Your teacher is reviewing the final submissions. Check back soon to see who got the most favorites!
+              </p>
+            </div>
+            <a href="/student/dashboard"
               style={{
                 display: "inline-block",
                 fontFamily: F, fontSize: 15, fontWeight: 700,
@@ -723,17 +740,9 @@ function StudentFavoriteEdit({
                 padding: "13px 32px", borderRadius: 12,
                 textDecoration: "none", letterSpacing: 0.5,
                 boxShadow: `0 8px 24px ${C.light}55`,
-                marginBottom: 12,
               }}>
-              See which photos your classmates liked most →
+              Back to your dashboard →
             </a>
-            <div>
-              <a href="/student/dashboard"
-                style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
-                  textDecoration: "underline" }}>
-                Back to your dashboard
-              </a>
-            </div>
           </>
         ) : (
           <a href="/student/dashboard"
@@ -761,7 +770,7 @@ function StudentFavoriteEdit({
       <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
         maxWidth: 360, margin: "0 auto 18px" }}>
         {!savedOnce
-          ? "Your classmates may see your favorite pic comment."
+          ? "Here\u2019s your favorite. If you\u2019d like to change your pick or update your comment, now\u2019s the time. Students with the most favorite votes for each round will see their classmates\u2019 comments."
           : "Your comment has been saved."}
       </p>
 
@@ -880,16 +889,76 @@ function StudentFavoriteEdit({
           <form ref={uploadFormRef} onSubmit={(e) => e.preventDefault()}>
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: C.textDim,
-                letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>
+                letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Your photo
               </label>
-              <input
-                type="file"
-                name="entry_photo"
-                accept="image/*"
-                required
-                style={{ fontFamily: F, fontSize: 13, width: "100%", boxSizing: "border-box" }}
-              />
+              {/* U2: Prominent button-style upload trigger */}
+              {/* U3: File input hidden once preview is visible */}
+              <div style={{ display: uploadPreviewUrl ? "none" : "block" }}>
+                <label style={{
+                  display: "inline-flex", alignItems: "center", gap: 8,
+                  fontFamily: F, fontSize: 15, fontWeight: 700,
+                  background: C.light, color: C.stageDeep,
+                  padding: "13px 28px", borderRadius: 12,
+                  cursor: "pointer", letterSpacing: 0.5,
+                  boxShadow: `0 6px 20px ${C.light}44`,
+                  transition: "all 0.2s ease",
+                  width: "100%", justifyContent: "center", boxSizing: "border-box",
+                }}>
+                  📷 Choose a photo
+                  <input
+                    type="file"
+                    name="entry_photo"
+                    accept="image/*"
+                    required
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const url = URL.createObjectURL(file);
+                        setUploadPreviewUrl(url);
+                      } else {
+                        setUploadPreviewUrl(null);
+                      }
+                    }}
+                    style={{ display: "none" }}
+                  />
+                </label>
+              </div>
+              {uploadPreviewUrl && (
+                <div style={{ marginTop: 0, textAlign: "center" }}>
+                  <img src={uploadPreviewUrl} alt="Preview"
+                    style={{
+                      maxWidth: 180, maxHeight: 180, objectFit: "cover",
+                      borderRadius: 12, border: `2px solid ${C.light}`,
+                      boxShadow: `0 4px 16px ${C.light}44`,
+                    }}
+                  />
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{
+                      fontFamily: F, fontSize: 12, color: C.textDim,
+                      cursor: "pointer", textDecoration: "underline",
+                    }}>
+                      Choose a different photo
+                      <input
+                        type="file"
+                        name="entry_photo"
+                        accept="image/*"
+                        required
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const url = URL.createObjectURL(file);
+                            setUploadPreviewUrl(url);
+                          } else {
+                            setUploadPreviewUrl(null);
+                          }
+                        }}
+                        style={{ display: "none" }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ marginBottom: 14 }}>
@@ -931,6 +1000,15 @@ function StudentFavoriteEdit({
                   const result = await addEntryAction(null, fd);
                   if (result.ok) {
                     setUploadDone(true);
+                  } else if (
+                    typeof result.error === "string" &&
+                    (result.error.toLowerCase().includes("already") ||
+                     result.error.toLowerCase().includes("duplicate") ||
+                     result.error.toLowerCase().includes("exists"))
+                  ) {
+                    // B55: entry already exists (student replaying a completed
+                    // round). Treat as success — skip to celebration.
+                    setUploadDone(true);
                   } else {
                     setUploadError(result.error || "Upload failed.");
                   }
@@ -952,6 +1030,16 @@ function StudentFavoriteEdit({
             >
               {uploadLoading ? "Uploading…" : `Upload for Round ${nextRound}`}
             </button>
+
+            {/* B55: escape hatch for students replaying a completed round —
+                they've already uploaded, so let them skip without blocking. */}
+            <div style={{ textAlign: "center", marginTop: 10 }}>
+              <a href="/student/dashboard"
+                style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
+                  textDecoration: "underline" }}>
+                Skip — back to your dashboard
+              </a>
+            </div>
           </form>
         </div>
       )}
@@ -1371,7 +1459,13 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
         <>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <button onClick={() => setView("splash")}
+              <button onClick={() => {
+                  if (mode === "student") {
+                    window.location.href = "/student/dashboard";
+                  } else {
+                    setView("splash");
+                  }
+                }}
                 style={{ background: "none", border: "none", color: C.textDim, fontSize: 18, cursor: "pointer" }}>←</button>
               <h2 style={{ fontFamily: F, fontSize: 20, fontWeight: 800, color: C.text, margin: 0 }}>Spotlight</h2>
             </div>

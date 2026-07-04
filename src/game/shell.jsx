@@ -16,6 +16,11 @@ import App from "./spotlight.jsx";
 // B20 fix (session 55): the splash only shows ONCE per round. On resume
 // (page reload, tab switch) it skips straight to the game. Tracked via
 // sessionStorage so a fresh browser session always sees the splash once.
+//
+// B57 fix (session 60): splash state uses tri-state (null / true / false)
+// so the App never renders before the sessionStorage check completes.
+// null = still checking → show tan background only (matches SSR).
+// true = show splash. false = skip to game.
 /**
  * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student", warmupComplete?: boolean, currentRound?: number, totalRounds?: number | null }} props
  */
@@ -32,19 +37,22 @@ function markRoundSplashSeen(round) {
 }
 
 export default function GameShell({ initialStudents, mode, warmupComplete, currentRound, totalRounds } = {}) {
-  // B53/HYDRATION FIX: initialize to false so server and client HTML match.
-  // The sessionStorage check runs client-only in the useEffect below.
-  const [showSplash, setShowSplash] = useState(false);
+  // B57 FIX: tri-state — null means "still checking sessionStorage."
+  // Server renders null → tan background div. Client hydrates to same.
+  // useEffect then resolves to true (show splash) or false (skip).
+  const [showSplash, setShowSplash] = useState(null);
 
   // Check sessionStorage AFTER hydration to avoid server/client mismatch.
   useEffect(() => {
     if (
       mode === "student" &&
-      typeof currentRound === "number" &&
-      currentRound >= 1 &&
-      !hasSeenRoundSplash(currentRound)
+      currentRound != null &&
+      Number(currentRound) >= 1 &&
+      !hasSeenRoundSplash(Number(currentRound))
     ) {
       setShowSplash(true);
+    } else {
+      setShowSplash(false);
     }
   }, [mode, currentRound]);
 
@@ -69,20 +77,40 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
     };
   }, []);
 
-  // B30: auto-dismiss after 3.5 seconds. B20: mark as seen so it won't replay.
+  // B30: auto-dismiss after 6.5 seconds. B20: mark as seen so it won't replay.
+  // B61 FIX: markRoundSplashSeen is deferred to the DISMISS callback, not
+  // called when the splash first appears. In React StrictMode, effects run
+  // twice — calling markSeen immediately caused the second pass to find it
+  // already seen and skip the splash entirely (appeared for one frame then
+  // vanished). By marking seen only on dismiss (timer or tap), the double-
+  // fire is harmless: both passes start the timer, cleanup kills the first,
+  // second one runs to completion.
   useEffect(() => {
     if (!showSplash) return;
-    markRoundSplashSeen(currentRound);
-    const timer = setTimeout(() => setShowSplash(false), 6500);
+    const timer = setTimeout(() => {
+      markRoundSplashSeen(Number(currentRound));
+      setShowSplash(false);
+    }, 6500);
     return () => clearTimeout(timer);
   }, [showSplash, currentRound]);
+
+  // B57: while still checking sessionStorage, show only the background.
+  // This prevents the App from flashing before the splash appears.
+  if (showSplash === null) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#D9BE8E" }} />
+    );
+  }
 
   if (showSplash) {
     return (
       <RoundSplash
-        round={currentRound}
-        totalRounds={totalRounds}
-        onDismiss={() => setShowSplash(false)}
+        round={Number(currentRound)}
+        totalRounds={totalRounds != null ? Number(totalRounds) : null}
+        onDismiss={() => {
+          markRoundSplashSeen(Number(currentRound));
+          setShowSplash(false);
+        }}
       />
     );
   }
