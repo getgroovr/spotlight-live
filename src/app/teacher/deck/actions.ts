@@ -148,6 +148,7 @@ export async function uploadStarter(formData: FormData): Promise<UploadResult> {
     status: "live",
     is_starter: true,
     is_active: false,
+    round_number: 0,
     selected_solo: false,
     selected_trio: false,
     selected_full: false,
