@@ -1166,16 +1166,18 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
 // photo and/or description, resetting its status to 'pending' so it
 // reappears in the teacher's pending queue.
 //
-// Only works on entries with status='rejected'. The student uploads a
-// new photo (required) and writes a new description (required). The old
-// media file is deleted from storage (soft fail). The entry row is
-// UPDATED in place (same id, same round_number) — not deleted + re-
-// inserted — so the teacher_comments history for this entry_id is
-// preserved.
+// Only works on entries with status='rejected'. The student writes a
+// new description (required) and optionally uploads a new photo. If no
+// new photo is attached, the existing media_url is kept — this lets
+// students fix just their description without re-uploading. When a new
+// photo IS provided, the old media file is deleted from storage (soft
+// fail) and replaced. The entry row is UPDATED in place (same id, same
+// round_number) — not deleted + re-inserted — so the teacher_comments
+// history for this entry_id is preserved.
 //
 // Form fields:
 //   entry_id          — the rejected entry to resubmit
-//   entry_photo       — the replacement photo (File, required)
+//   entry_photo       — replacement photo (File, OPTIONAL — omit to keep existing)
 //   entry_description — the replacement description (string, required)
 //
 // Authorization: entry.student_id === user.id (same as addEntry).
@@ -1215,9 +1217,7 @@ export async function resubmitEntry(
   if (!entryId) {
     return { ok: false, error: "Missing entry id." };
   }
-  if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
-    return { ok: false, error: "Please choose a new photo." };
-  }
+  const hasNewPhoto = entryPhoto instanceof File && entryPhoto.size > 0;
   if (!entryDescription) {
     return { ok: false, error: "Please write a short description." };
   }
@@ -1241,46 +1241,54 @@ export async function resubmitEntry(
     return { ok: false, error: "This entry hasn't been rejected — no resubmission needed." };
   }
 
-  // ── Delete old media from storage (soft fail) ───────────────────────
-  if (entry.media_url) {
-    const { error: delErr } = await admin.storage
-      .from("media")
-      .remove([entry.media_url]);
-    if (delErr) {
-      console.error("[resubmitEntry] old media delete failed (continuing):", delErr.message);
+  // ── If new photo provided: delete old media, upload replacement ──────
+  let newMediaUrl: string | null = null;
+  if (hasNewPhoto) {
+    // Delete old media from storage (soft fail)
+    if (entry.media_url) {
+      const { error: delErr } = await admin.storage
+        .from("media")
+        .remove([entry.media_url]);
+      if (delErr) {
+        console.error("[resubmitEntry] old media delete failed (continuing):", delErr.message);
+      }
     }
+
+    const ext =
+      entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
+    const entryPath = `${entry.class_id}/${user.id}-${Date.now()}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from("media")
+      .upload(entryPath, entryPhoto, {
+        contentType: entryPhoto.type || "image/jpeg",
+        upsert: true,
+      });
+    if (upErr) {
+      return {
+        ok: false,
+        error: `Your photo didn't upload. Please try again. (${upErr.message})`,
+      };
+    }
+    newMediaUrl = entryPath;
   }
 
-  // ── Upload new photo ────────────────────────────────────────────────
-  const ext =
-    entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
-  const entryPath = `${entry.class_id}/${user.id}-${Date.now()}.${ext}`;
-  const { error: upErr } = await admin.storage
-    .from("media")
-    .upload(entryPath, entryPhoto, {
-      contentType: entryPhoto.type || "image/jpeg",
-      upsert: true,
-    });
-  if (upErr) {
-    return {
-      ok: false,
-      error: `Your photo didn't upload. Please try again. (${upErr.message})`,
-    };
+  // ── Update entry: description (always) + photo (if new) → pending ──
+  const updatePayload: Record<string, unknown> = {
+    description_text: entryDescription,
+    description_l1: entryDescription,
+    status: "pending",
+    rejection_reason: null,
+    reviewed_by: null,
+    reviewed_at: null,
+    uploaded_at: new Date().toISOString(),
+  };
+  if (newMediaUrl) {
+    updatePayload.media_url = newMediaUrl;
   }
 
-  // ── Update entry: new photo + description, reset to pending ─────────
   const { error: updErr } = await admin
     .from("entries")
-    .update({
-      media_url: entryPath,
-      description_text: entryDescription,
-      description_l1: entryDescription,
-      status: "pending",
-      rejection_reason: null,
-      reviewed_by: null,
-      reviewed_at: null,
-      uploaded_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq("id", entryId);
 
   if (updErr) {

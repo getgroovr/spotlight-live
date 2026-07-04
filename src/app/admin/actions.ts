@@ -5,6 +5,7 @@
 // RLS enforces at DB layer too via is_admin() function.
 //
 // Session 71: Added archiveTeacher and unarchiveTeacher.
+// Session 74: Added approveClassRequest and denyClassRequest (C4).
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -260,6 +261,100 @@ export async function unarchiveTeacher(
   if (updErr) {
     return { ok: false, error: updErr.message };
   }
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Session 74: Class request workflow (C4)
+//
+// approveClassRequest:
+//   1. Verifies request exists and is pending
+//   2. Counts teacher's existing classes to auto-name the new one
+//   3. Creates a new class (capacity 9) for the teacher
+//   4. Marks request approved with reviewer + timestamp + created_class_id
+//
+// denyClassRequest:
+//   1. Marks request denied with reviewer + timestamp
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function approveClassRequest(
+  requestId: string,
+): Promise<ActionResult> {
+  const { error, supabase, userId } = await requireAdmin();
+  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+
+  // Fetch the request
+  const { data: req } = await supabase
+    .from("class_requests")
+    .select("id, teacher_id, status")
+    .eq("id", requestId)
+    .single();
+
+  if (!req) return { ok: false, error: "Request not found." };
+  if (req.status !== "pending") {
+    return { ok: false, error: "Request is no longer pending." };
+  }
+
+  // Count existing classes to auto-generate a name
+  const { data: existingClasses } = await supabase
+    .from("classes")
+    .select("id")
+    .eq("teacher_id", req.teacher_id);
+
+  const classNumber = (existingClasses?.length || 0) + 1;
+  const className = `Class ${classNumber}`;
+
+  // Create the class
+  const { data: newClass, error: classErr } = await supabase
+    .from("classes")
+    .insert({
+      teacher_id: req.teacher_id,
+      name: className,
+      capacity: 9,
+    })
+    .select("id")
+    .single();
+
+  if (classErr || !newClass) {
+    return { ok: false, error: classErr?.message || "Failed to create class." };
+  }
+
+  // Mark request approved
+  const { error: updErr } = await supabase
+    .from("class_requests")
+    .update({
+      status: "approved",
+      reviewed_by: userId,
+      reviewed_at: new Date().toISOString(),
+      created_class_id: newClass.id,
+    })
+    .eq("id", requestId);
+
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+export async function denyClassRequest(
+  requestId: string,
+): Promise<ActionResult> {
+  const { error, supabase, userId } = await requireAdmin();
+  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+
+  const { error: updErr } = await supabase
+    .from("class_requests")
+    .update({
+      status: "denied",
+      reviewed_by: userId,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", requestId)
+    .eq("status", "pending");
+
+  if (updErr) return { ok: false, error: updErr.message };
 
   revalidatePath("/admin");
   return { ok: true };

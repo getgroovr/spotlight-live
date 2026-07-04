@@ -21,6 +21,9 @@
 //      favorite_comment_status = 'pending' are fetched, student name
 //      and favorited-pic thumbnail resolved, and passed to PendingQueue
 //      as the favoriteComments prop.
+//
+// C4: Added "Request new class" button. Checks class_requests table for
+//     pending requests and profiles.max_classes to decide visibility.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -37,6 +40,7 @@ import {
   type PendingEntryData,
   type PendingFavoriteCommentData,
 } from "./pending-queue";
+import { RequestClassButton } from "./request-class";
 
 const MEDIA_BUCKET = "media";
 
@@ -81,6 +85,8 @@ type PageData =
       students: StudentCard[];
       pendingEntries: PendingEntryData[];
       pendingFavoriteComments: PendingFavoriteCommentData[];
+      hasPendingRequest: boolean;
+      atClassLimit: boolean;
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -326,12 +332,32 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     });
   }
 
+  // ── Class request status ─────────────────────────────────────────────
+  const { data: pendingReqs } = await admin
+    .from("class_requests")
+    .select("id")
+    .eq("teacher_id", user.id)
+    .eq("status", "pending")
+    .limit(1);
+  const hasPendingRequest = (pendingReqs?.length || 0) > 0;
+
+  // Check if teacher is at their max_classes limit
+  const { data: teacherProfile } = await admin
+    .from("profiles")
+    .select("max_classes")
+    .eq("id", user.id)
+    .maybeSingle();
+  const maxClasses = teacherProfile?.max_classes ?? 1;
+  const atClassLimit = classes.length >= maxClasses;
+
   return {
     classes,
     selectedClass,
     students,
     pendingEntries,
     pendingFavoriteComments,
+    hasPendingRequest,
+    atClassLimit,
   };
 }
 
@@ -459,6 +485,8 @@ export default async function TeacherStudents({
     students,
     pendingEntries,
     pendingFavoriteComments,
+    hasPendingRequest,
+    atClassLimit,
   } = data;
   const statusLine = buildStatusLine(selectedClass);
 
@@ -478,10 +506,23 @@ export default async function TeacherStudents({
         <TopNav />
 
         {/* Title row */}
-        <div style={{ marginBottom: 6 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 6,
+            flexWrap: "wrap",
+            gap: 8,
+          }}
+        >
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
             Your classes
           </h1>
+          <RequestClassButton
+            hasPending={hasPendingRequest}
+            atLimit={atClassLimit}
+          />
         </div>
 
         {/* ── SECTION 1: Class settings header ── */}

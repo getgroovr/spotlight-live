@@ -5,6 +5,7 @@
 // Auth: checks is_admin boolean on profiles (not role='admin').
 //
 // Session 71: Added is_archived to TeacherRow and profiles query.
+// Session 74: Added ClassRequestRow type + class_requests query (C4).
 // Generates signed URLs for starter photos so they render in <img> tags.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
@@ -62,6 +63,13 @@ export type TeacherRow = {
 
 export type WarmupConfig = {
   warmup_teacher_count: 1 | 3 | 9;
+};
+
+export type ClassRequestRow = {
+  id: string;
+  teacher_id: string;
+  status: "pending" | "approved" | "denied";
+  requested_at: string;
 };
 
 export default async function AdminPage() {
@@ -177,6 +185,12 @@ export default async function AdminPage() {
     warmup_teacher_count: (settings?.warmup_teacher_count as 1 | 3 | 9) || 1,
   };
 
+  // ── Fetch class requests (C4) ─────────────────────────────────────
+  const { data: classRequests } = await supabase
+    .from("class_requests")
+    .select("id, teacher_id, status, requested_at")
+    .order("requested_at", { ascending: true });
+
   // ── Build lookup maps ─────────────────────────────────────────────
   const rotationMap = new Map<string, { status: "recruiting" | "waiting" | "paused"; sort_order: number }>();
   (rotationRows || []).forEach((r) => {
@@ -262,6 +276,7 @@ export default async function AdminPage() {
       <AdminClient
         teachers={teacherRows}
         warmupConfig={warmupConfig}
+        classRequests={(classRequests || []) as ClassRequestRow[]}
       />
     </Frame>
   );

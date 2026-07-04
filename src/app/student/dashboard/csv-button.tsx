@@ -19,11 +19,12 @@
 //     One row per entry the student commented on, across all rounds.
 //
 //   Section 3 — TEACHER'S WARM-UP ROUND
-//     Photo Description | Your Comment | Favorite? | Favorite Comment
-//     The warm-up entries with the student's comments + favorite note.
+//     Session 73 change: "Photo Description" column REPLACED with
+//     "Teacher Comment" — shows the teacher's note to the student
+//     for that warm-up entry (if any). This is more useful for the
+//     student's portfolio than the teacher's own photo descriptions.
 //
-//   Column names from the handoff: Round | Photo Description | Your Comment
-//   | Is Your Favorite | Teacher Note.
+//     Teacher Comment | Your Comment | Favorite? | Favorite Comment
 // ─────────────────────────────────────────────────────────────────────────
 
 type CsvRow = {
@@ -47,11 +48,13 @@ type RoundCommentData = {
   favoriteComment: string | null;
 };
 
-// C2: a warm-up entry.
+// Session 73: warm-up entry now carries teacherNote instead of
+// (or in addition to) description_text.
 type WarmupEntry = {
   description_text: string | null;
   comment: string;
   isFavorite: boolean;
+  teacherNote: string | null;
 };
 
 function escapeCsv(value: string): string {
@@ -67,12 +70,14 @@ export function StudentDashboardCsvButton({
   roundComments = [],
   warmupEntries = [],
   warmupFavoriteComment = null,
+  warmupTeacherNotes = "",
 }: {
   studentName: string;
   csvRows: CsvRow[];
   roundComments?: RoundCommentData[];
   warmupEntries?: WarmupEntry[];
   warmupFavoriteComment?: string | null;
+  warmupTeacherNotes?: string;
 }) {
   const download = () => {
     const lines: string[] = [];
@@ -114,16 +119,21 @@ export function StudentDashboardCsvButton({
     }
 
     // ── Section 3: Warm-up round ──
+    // Session 73: "Photo Description" replaced with "Teacher Comment".
+    // Shows the teacher's note to the student for each warm-up entry,
+    // or the general warm-up teacher notes if no per-entry notes exist.
     if (warmupEntries.length > 0) {
       lines.push(""); // blank separator
       lines.push("=== TEACHER'S WARM-UP ROUND ===");
       lines.push(
-        ["Photo Description", "Your Comment", "Is Your Favorite", "Your Favorite Comment"].join(","),
+        ["Teacher Comment", "Your Comment", "Is Your Favorite", "Your Favorite Comment"].join(","),
       );
       for (const we of warmupEntries) {
+        // Per-entry teacher note takes priority; fall back to general notes.
+        const teacherComment = we.teacherNote || warmupTeacherNotes || "";
         lines.push(
           [
-            escapeCsv(we.description_text || ""),
+            escapeCsv(teacherComment),
             escapeCsv(we.comment),
             we.isFavorite ? "yes" : "",
             we.isFavorite ? escapeCsv(warmupFavoriteComment || "") : "",

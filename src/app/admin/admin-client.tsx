@@ -1,13 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/admin/admin-client.tsx — Session 69 layout (v4)
 //
+// Session 74: C4 — class request workflow. TeacherTable "Requested"
+// column now shows Approve/Deny buttons for pending requests.
+//
 // NOTE: Tailwind grid-cols-N does NOT work in this project's build.
 // All multi-column layouts use inline styles.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState, useTransition } from "react";
-import type { TeacherRow, ClassRow, StarterRow, WarmupConfig } from "./page";
+import type { TeacherRow, ClassRow, StarterRow, WarmupConfig, ClassRequestRow } from "./page";
 import {
   updateMaxClasses,
   addToRotation,
@@ -16,6 +19,8 @@ import {
   moveInRotation,
   togglePhotoActive,
   updateWarmupMode,
+  approveClassRequest,
+  denyClassRequest,
 } from "./actions";
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -24,9 +29,11 @@ import {
 export function AdminClient({
   teachers,
   warmupConfig,
+  classRequests,
 }: {
   teachers: TeacherRow[];
   warmupConfig: WarmupConfig;
+  classRequests: ClassRequestRow[];
 }) {
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
   const [tab, setTab] = useState<"deck" | "classes" | "students">("deck");
@@ -96,6 +103,7 @@ export function AdminClient({
       <SectionLabel text="All teachers" />
       <TeacherTable
         teachers={teachers}
+        classRequests={classRequests}
         selectedId={selectedTeacherId}
         onSelect={(id) => { setSelectedTeacherId(id); setTab("deck"); }}
       />
@@ -338,10 +346,12 @@ function WarmupBlock({
 // ═════════════════════════════════════════════════════════════════════════
 function TeacherTable({
   teachers,
+  classRequests,
   selectedId,
   onSelect,
 }: {
   teachers: TeacherRow[];
+  classRequests: ClassRequestRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -354,6 +364,16 @@ function TeacherTable({
       const res = await fn();
       if (!res.ok && "error" in res) setError(res.error as string);
     });
+  }
+
+  // Index pending requests by teacher_id
+  const pendingByTeacher = new Map<string, ClassRequestRow[]>();
+  for (const r of classRequests) {
+    if (r.status === "pending") {
+      const arr = pendingByTeacher.get(r.teacher_id) || [];
+      arr.push(r);
+      pendingByTeacher.set(r.teacher_id, arr);
+    }
   }
 
   if (teachers.length === 0) {
@@ -371,7 +391,7 @@ function TeacherTable({
           <col />
           <col style={{ width: 80 }} />
           <col style={{ width: 85 }} />
-          <col style={{ width: 90 }} />
+          <col style={{ width: 130 }} />
           <col style={{ width: 110 }} />
         </colgroup>
         <thead>
@@ -388,6 +408,7 @@ function TeacherTable({
             const name = t.display_name || t.username || "Unnamed";
             const isSelected = t.id === selectedId;
             const inQueue = t.rotation !== null;
+            const teacherPending = pendingByTeacher.get(t.id) || [];
 
             return (
               <tr
@@ -414,7 +435,22 @@ function TeacherTable({
                 </td>
                 <td className="text-center text-white/40 py-1.5">{t.classes.length}/{t.max_classes}</td>
                 <td className="text-center text-white/20 py-1.5">0</td>
-                <td className="text-center text-white/20 py-1.5">—</td>
+                <td className="text-center py-1.5">
+                  {teacherPending.length > 0 ? (
+                    <div style={{ display: "flex", gap: 4, justifyContent: "center", alignItems: "center" }}>
+                      <button
+                        onClick={() => act(() => approveClassRequest(teacherPending[0].id))}
+                        className="text-[9px] px-1.5 py-0.5 rounded border border-emerald-500/20 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition"
+                      >Approve</button>
+                      <button
+                        onClick={() => act(() => denyClassRequest(teacherPending[0].id))}
+                        className="text-[9px] px-1.5 py-0.5 rounded border border-red-500/20 bg-red-500/10 text-red-300 hover:bg-red-500/20 transition"
+                      >Deny</button>
+                    </div>
+                  ) : (
+                    <span className="text-white/20">—</span>
+                  )}
+                </td>
                 <td className="text-center py-1.5">
                   {inQueue ? (
                     <button

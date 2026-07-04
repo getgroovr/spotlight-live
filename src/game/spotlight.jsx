@@ -207,6 +207,40 @@ function VideoStage({ student, src, mediaType = "video", onEnded, label }) {
 
 const MIN_COMMENT_CHARS = 8;
 
+// ── Rotating prompt phrases ──────────────────────────────────────────────
+// Fun/snarky/encouraging lines that cycle in the comment placeholder before
+// the actual rule appears. Sequence: fun → fun → rule → fun → fun → rule …
+// Future: this array will migrate to the DB (game_prompts table, C6) so
+// teachers can author and admin can approve custom prompts.
+const PROMPT_PHRASES = [
+  "Drop a comment so good they'll frame it.",
+  "Channel your inner art critic. Monocle optional.",
+  "Say something nice. Or something clever. Or both.",
+  "Your words here. Make 'em count.",
+  "Think of this as a tiny love letter to their photo.",
+  "Be the comment you wish someone left on YOUR photo.",
+  "No pressure… but everyone's watching.",
+  "Fun fact: great comments make the world go round.",
+  "Write like nobody's grading you. (We're not. Probably.)",
+  "Two thumbs up? Tell them WHY two thumbs up.",
+  "Pretend you're a food critic, but for photos.",
+  "Hot take? Cold take? Just give us A take.",
+  "Words of wisdom, words of chaos — dealer's choice.",
+  "Quick — say something before the moment passes!",
+  "This photo isn't going to compliment itself.",
+  "You've got opinions. We've got a text box. Let's go.",
+  "Shakespeare started with a blank page too. Just saying.",
+  "Make future-you proud of this comment.",
+  "If this photo could talk, what would YOU say back?",
+  "Somewhere out there, a perfect comment exists. Find it.",
+  "Plot twist: YOUR comment becomes everyone's favorite.",
+  "Type something. Anything. Okay, maybe not anything.",
+  "This is your moment. Don't waste it on 'nice pic.'",
+  "Dig deep. Or dig shallow. Just dig.",
+  "One does not simply scroll past without commenting.",
+];
+const RULE_TEXT = "What do you think? Write at least a sentence.";
+
 function ProfileCard({
   student, onWatchDescription, onContinue, myComment, onSaveComment,
 }) {
@@ -215,6 +249,35 @@ function ProfileCard({
   const [draft, setDraft] = useState(myComment || "");
   const trimmed = draft.trim();
   const meetsMin = trimmed.length >= MIN_COMMENT_CHARS;
+
+  // ── Rotating placeholder logic ───────────────────────────────────────
+  // Cycles: fun phrase → fun phrase → rule → fun phrase → fun phrase → rule …
+  // Pauses rotation once the student starts typing.
+  const [phraseIndex, setPhraseIndex] = useState(() => Math.floor(Math.random() * PROMPT_PHRASES.length));
+  const [cycleStep, setCycleStep] = useState(0); // 0,1 = fun phrase; 2 = rule
+  const [placeholderText, setPlaceholderText] = useState(PROMPT_PHRASES[phraseIndex % PROMPT_PHRASES.length]);
+
+  useEffect(() => {
+    // Don't rotate while the student is typing
+    if (draft.trim().length > 0) return;
+    const iv = setInterval(() => {
+      setCycleStep((prev) => {
+        const next = (prev + 1) % 3;
+        if (next === 2) {
+          // Show the rule on every third beat
+          setPlaceholderText(RULE_TEXT);
+        } else {
+          setPhraseIndex((pi) => {
+            const nextPi = (pi + 1) % PROMPT_PHRASES.length;
+            setPlaceholderText(PROMPT_PHRASES[nextPi]);
+            return nextPi;
+          });
+        }
+        return next;
+      });
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [draft]);
 
   useEffect(() => { setDraft(myComment || ""); }, [student.id]);
 
@@ -277,7 +340,7 @@ function ProfileCard({
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="What do you think? Write at least a sentence."
+          placeholder={placeholderText}
           rows={3}
           style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
             fontFamily: F, fontSize: 14, lineHeight: 1.5,

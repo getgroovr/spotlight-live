@@ -23,6 +23,13 @@
 //   The native input is hidden; a styled label/button proxies the
 //   click. Once a file is selected, the strip is replaced by the
 //   thumbnail plus a small filename caption + a "Change photo" link.
+//
+// Session 73: PHOTO IS NOW OPTIONAL. The teacher may reject an entry
+//   for the description only — forcing a new photo upload would be
+//   punitive. The student can resubmit with just a revised description,
+//   or with a new photo, or both. The "New photo" section makes this
+//   clear with "(optional)" labeling. If no file is chosen, the server
+//   keeps the existing media_url.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -91,11 +98,8 @@ export default function ResubmitEntryForm({
     fd.set("entry_id", entryId);
     fd.set("entry_description", description);
 
-    // Guard: require a file
-    if (!previewUrl) {
-      setFeedback("Please choose a new photo before resubmitting.");
-      return;
-    }
+    // Session 73: photo is now OPTIONAL — no guard requiring a file.
+    // If no file is chosen, the server keeps the existing media_url.
 
     setFeedback(null);
     startTransition(async () => {
@@ -154,20 +158,31 @@ export default function ResubmitEntryForm({
     }}>
       <div style={{
         fontSize: 12, fontWeight: 700, color: C.text,
-        marginBottom: 10, letterSpacing: 0.5,
+        marginBottom: 4, letterSpacing: 0.5,
       }}>
         Resubmit for Round {roundNumber}
       </div>
+      <p style={{
+        fontSize: 12, color: C.textDim, lineHeight: 1.5,
+        margin: "0 0 12px",
+      }}>
+        Fix your description, upload a new photo, or both — then hit Resubmit.
+        You only need a new photo if that&apos;s what your teacher asked you to change.
+      </p>
 
       <form ref={formRef} onSubmit={(e) => e.preventDefault()}>
-        {/* B74: Photo upload — thumbnail preview REPLACES the filename strip. */}
+        {/* Session 73: Photo upload — OPTIONAL. Student only uploads a new
+            photo if the photo itself was the issue. */}
         <div style={{ marginBottom: 12 }}>
           <label style={{
             fontSize: 11, fontWeight: 600, color: C.textDim,
             textTransform: "uppercase", letterSpacing: 1,
             display: "block", marginBottom: 6,
           }}>
-            New photo
+            New photo <span style={{
+              textTransform: "none", fontWeight: 400,
+              color: C.textFaint, letterSpacing: 0,
+            }}>(optional)</span>
           </label>
 
           {/* Hidden native input — reachable via ref */}
@@ -176,7 +191,6 @@ export default function ResubmitEntryForm({
             type="file"
             name="entry_photo"
             accept="image/*"
-            required
             onChange={handleFileChange}
             style={{
               position: "absolute",
@@ -241,7 +255,7 @@ export default function ResubmitEntryForm({
                 textAlign: "center",
               }}
             >
-              + Choose photo
+              + Choose a new photo
             </button>
           )}
         </div>

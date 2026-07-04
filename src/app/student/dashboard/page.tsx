@@ -1692,8 +1692,14 @@ export default async function StudentProfile() {
                     description_text: we.description_text,
                     comment: we.comment,
                     isFavorite: we.isFavorite,
+                    teacherNote: we.teacherNote,
                   }))}
                   warmupFavoriteComment={currentClass?.favoriteComment ?? null}
+                  warmupTeacherNotes={
+                    (currentClass?.generalNotes || [])
+                      .map((n) => n.body)
+                      .join(" | ")
+                  }
                 />
               </div>
             )}
