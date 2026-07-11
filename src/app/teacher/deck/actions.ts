@@ -1,12 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/teacher/deck/actions.ts — Server Actions for the deck UI
+// DESTINATION: src/app/teacher/deck/actions.ts   (REPLACES existing file)
 //
 // Session 70 rebuild: multi-mode photo selection.
 // Teachers select photos independently for Solo/Trio/Full modes.
 // Limits enforced server-side: Solo=9, Trio=3, Full=1 per teacher.
 //
+// Session 75: is_active is now admin-controlled. toggleModeSelection no
+// longer syncs is_active — teachers can select modes, but the photo only
+// appears in-game once an admin has approved it (is_active = true).
+//
 // Actions:
-//   - uploadStarter            : add a new photo + description to the pool
+//   - uploadStarter            : add a new photo (is_active defaults false)
 //   - deleteStarter            : remove a starter (DB row + storage file)
 //   - updateStarterDescription : edit the description text
 //   - toggleModeSelection      : toggle a photo's selection for a specific mode
@@ -99,7 +103,7 @@ export async function saveDisplayName(name: string): Promise<UploadResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// uploadStarter — new photos start with no mode selections
+// uploadStarter — new photos start inactive (awaiting admin approval)
 // ─────────────────────────────────────────────────────────────────────────
 export async function uploadStarter(formData: FormData): Promise<UploadResult> {
   const { error, supabase, userId } = await requireTeacher();
@@ -246,7 +250,10 @@ export async function updateStarterDescription(
 // selected: true to add, false to remove
 //
 // When selecting (true), checks count vs limit for that mode.
-// Also syncs is_active: true if selected for ANY mode, false if none.
+//
+// Session 75: is_active is NO LONGER synced here. Admin controls
+// is_active via the admin dashboard. Teachers can select modes freely,
+// but photos only appear in-game when is_active is true (admin approved).
 // ─────────────────────────────────────────────────────────────────────────
 export async function toggleModeSelection(
   entryId: string,
@@ -264,7 +271,7 @@ export async function toggleModeSelection(
 
   const { data: row } = await supabase
     .from("entries")
-    .select("id, is_starter, student_id, selected_solo, selected_trio, selected_full")
+    .select("id, is_starter, student_id")
     .eq("id", entryId)
     .maybeSingle();
   if (!row || !row.is_starter) {
@@ -291,14 +298,8 @@ export async function toggleModeSelection(
     }
   }
 
-  // Update the mode column
+  // Update only the mode column — is_active is admin-controlled
   const update: Record<string, boolean> = { [column]: selected };
-
-  // Sync is_active: true if selected for any mode after this change
-  const soloAfter = mode === "solo" ? selected : (row.selected_solo ?? false);
-  const trioAfter = mode === "trio" ? selected : (row.selected_trio ?? false);
-  const fullAfter = mode === "full" ? selected : (row.selected_full ?? false);
-  update.is_active = soloAfter || trioAfter || fullAfter;
 
   const { error: updErr } = await supabase
     .from("entries")

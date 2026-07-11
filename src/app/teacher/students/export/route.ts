@@ -1,25 +1,35 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/export/route.ts   (REPLACES existing)
 //
-// Whole-class spreadsheet export, reshaped for LANGUAGE REVIEW (#42).
+// Comprehensive class spreadsheet — ALL language produced in the class.
 //
-// One row per comment — the teacher sees every student's written output
-// across all rounds in a scannable format. Grouped by student, then by
-// round, with divider rows between students.
+// Session 79 overhaul. Brings the teacher spreadsheet up to parity with
+// the student spreadsheet (session 73 enrichment), plus adds topics.
 //
-// Structure (per student):
-//   Student header row   → screen name, real name, email
-//   Round header row     → "Warm-up Round" or "Round 1", "Round 2", …
-//   Comment rows         → photo description | student's comment (one per photo)
-//   Own photo row        → the student's own entry description for that round
-//   (repeat for each round)
-//   Divider rows         → blank row between students
+// Structure:
 //
-// Stripped: favorites, status badges, teacher notes. This is purely about
-// the language the students produced.
+//   === TEACHER'S WARM-UP PHOTOS — ClassName ===
+//   Photo Description
+//   (one row per starter photo belonging to this class's teacher)
 //
-// Seed voters (emails ending in @test.local) are excluded — they're test
-// data, not real student output.
+//   === STUDENT: ScreenName (RealName, email) — ClassName ===
+//
+//   --- PHOTO SUBMISSIONS ---
+//   Round | Photo Description | Status | Teacher Note
+//   (one row per student entry, student rounds only)
+//
+//   --- GAME COMMENTS ---
+//   Round | Photo Description | Student's Comment | Favorite? | Favorite Comment
+//   (one row per photo commented on, all rounds including warm-up)
+//   (favorite comment status + rejection reason appended when relevant)
+//
+//   (blank divider between students)
+//
+// Topics:
+//   Round headers include topic when set: "Round 1 — Nature"
+//   Reads from classes.round_topics jsonb (keyed by student round number).
+//
+// Seed voters (@test.local) excluded.
 //
 // Round numbering:
 //   DB game_sessions.round 1 = warm-up → "Warm-up Round"
@@ -28,9 +38,9 @@
 // Two-track ID handling:
 //   game_sessions.student_id = students.id
 //   entries.student_id = profiles.id (= auth.users.id)
-//   To fetch own entries, we resolve students.email → auth user → profiles.id.
+//   Bridge: student.email → auth user → profiles.id
 //
-// CSV-per-class scoping (from #32):
+// CSV-per-class scoping:
 //   ?class=<id> scopes to one class. Otherwise all teacher's classes.
 //
 // Auth: SSR client for auth.uid(), service client for the joins.
@@ -72,12 +82,13 @@ export async function GET(request: NextRequest) {
 
   let classIds: string[];
   let classNameById: Map<string, string>;
+  let roundTopicsByClass: Map<string, Record<string, string | null>>;
   let filenameSuffix: string;
 
   if (requestedClassId) {
     const { data: cls } = await admin
       .from("classes")
-      .select("id, name")
+      .select("id, name, round_topics")
       .eq("id", requestedClassId)
       .eq("teacher_id", user.id)
       .maybeSingle();
@@ -86,12 +97,13 @@ export async function GET(request: NextRequest) {
     }
     classIds = [cls.id];
     classNameById = new Map([[cls.id, cls.name]]);
+    roundTopicsByClass = new Map([[cls.id, cls.round_topics || {}]]);
     const safeName = cls.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
     filenameSuffix = safeName;
   } else {
     const { data: classes } = await admin
       .from("classes")
-      .select("id, name")
+      .select("id, name, round_topics")
       .eq("teacher_id", user.id);
     classIds = (classes || []).map((c) => c.id);
     if (classIds.length === 0) {
@@ -100,7 +112,19 @@ export async function GET(request: NextRequest) {
     classNameById = new Map(
       (classes || []).map((c) => [c.id, c.name])
     );
+    roundTopicsByClass = new Map(
+      (classes || []).map((c) => [c.id, c.round_topics || {}])
+    );
     filenameSuffix = "all-classes";
+  }
+
+  // ── Helper: build display string for a round, with topic if set ───────
+  function displayRound(dbRound: number, classId: string): string {
+    if (dbRound === 1) return "Warm-up Round";
+    const studentRound = dbRound - 1;
+    const topics = roundTopicsByClass.get(classId) || {};
+    const topic = topics[String(studentRound)];
+    return topic ? `Round ${studentRound} — ${topic}` : `Round ${studentRound}`;
   }
 
   // ── Enrollments — student list per class ──────────────────────────────
@@ -110,7 +134,6 @@ export async function GET(request: NextRequest) {
     .in("class_id", classIds)
     .order("enrolled_at", { ascending: true });
 
-  // Build a deduplicated student-per-class list, excluding seed voters.
   type StudentInfo = {
     id: string;
     name: string | null;
@@ -125,7 +148,6 @@ export async function GET(request: NextRequest) {
   for (const e of enrollments || []) {
     const s = e.students as unknown as StudentInfo | null;
     if (!s) continue;
-    // Exclude seed voters
     if (s.email && s.email.endsWith("@test.local")) continue;
     const key = `${s.id}:${e.class_id}`;
     if (seen.has(key)) continue;
@@ -134,30 +156,35 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Resolve profiles.id for each student (two-track ID bridge) ────────
-  // entries.student_id = profiles.id = auth.users.id, but we have students.id.
-  // Bridge: student.email → auth user → profiles.id.
   const { data: authList } = await admin.auth.admin.listUsers({ perPage: 1000 });
   const authByEmail = new Map<string, string>();
   for (const u of authList?.users || []) {
     if (u.email) authByEmail.set(u.email.toLowerCase(), u.id);
   }
 
-  // ── Fetch ALL game_sessions for these students in these classes ────────
+  // ── Fetch ALL game_sessions — now with favorites + favorite comments ──
   const studentIds = [...new Set(studentClasses.map((sc) => sc.student.id))];
 
   const { data: allSessions } = await admin
     .from("game_sessions")
-    .select("student_id, class_id, round, comments, completed_at")
+    .select(
+      "student_id, class_id, round, comments, favorites, " +
+      "favorite_comment, favorite_comment_status, " +
+      "favorite_comment_rejection_reason, completed_at"
+    )
     .in("student_id", studentIds)
     .in("class_id", classIds)
     .order("round", { ascending: true });
 
-  // Index sessions by student_id:class_id
   type SessionRow = {
     student_id: string;
     class_id: string;
     round: number;
     comments: Record<string, string> | null;
+    favorites: string | string[] | null;
+    favorite_comment: string | null;
+    favorite_comment_status: string | null;
+    favorite_comment_rejection_reason: string | null;
     completed_at: string | null;
   };
   const sessionsByKey = new Map<string, SessionRow[]>();
@@ -187,9 +214,13 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // ── Fetch own entries (student's non-starter submissions) per round ────
-  // Keyed by profilesId:classId:roundNumber
-  const ownDescByKey = new Map<string, string>();
+  // ── Fetch own entries with status + rejection_reason ──────────────────
+  type OwnEntry = {
+    description: string;
+    status: string;
+    rejectionReason: string;
+  };
+  const ownEntryByKey = new Map<string, OwnEntry>();
   const profilesIds = studentClasses
     .map((sc) => {
       if (!sc.student.email) return null;
@@ -200,89 +231,170 @@ export async function GET(request: NextRequest) {
   if (profilesIds.length > 0) {
     const { data: ownRows } = await admin
       .from("entries")
-      .select("student_id, class_id, round_number, description_text")
+      .select("student_id, class_id, round_number, description_text, status, rejection_reason")
       .in("student_id", [...new Set(profilesIds)])
       .in("class_id", classIds)
       .eq("is_starter", false)
       .order("uploaded_at", { ascending: false });
     for (const r of ownRows || []) {
       const key = `${r.student_id}:${r.class_id}:${r.round_number}`;
-      // First seen = most recent upload (ordered desc above)
-      if (!ownDescByKey.has(key)) {
-        ownDescByKey.set(key, r.description_text || "");
+      if (!ownEntryByKey.has(key)) {
+        ownEntryByKey.set(key, {
+          description: r.description_text || "",
+          status: r.status || "",
+          rejectionReason: r.rejection_reason || "",
+        });
       }
     }
   }
 
+  // ── Fetch teacher's starter entries (warm-up photos) per class ────────
+  const startersByClass = new Map<string, string[]>();
+  if (classIds.length > 0) {
+    const { data: starters } = await admin
+      .from("entries")
+      .select("class_id, description_text")
+      .in("class_id", classIds)
+      .eq("is_starter", true)
+      .order("uploaded_at", { ascending: true });
+    for (const s of starters || []) {
+      const arr = startersByClass.get(s.class_id) || [];
+      arr.push(s.description_text || "");
+      startersByClass.set(s.class_id, arr);
+    }
+  }
+
+  // ── Helper: check if an entry ID is in this session's favorites ────────
+  function isFavorite(sess: SessionRow, entryId: string): boolean {
+    if (!sess.favorites) return false;
+    if (Array.isArray(sess.favorites)) return sess.favorites.includes(entryId);
+    return sess.favorites === entryId;
+  }
+
   // ── Build CSV rows ────────────────────────────────────────────────────
-  // Two columns: "Photo description" | "Student's comment"
-  // Header/divider rows use column A only.
-  const COL_COUNT = 2;
-  const header = ["Photo description", "Student's comment"];
+  // 5 columns used across sections.
+  const COL_COUNT = 5;
   const blank: string[] = Array(COL_COUNT).fill("");
-  const rows: string[][] = [header];
+  const rows: string[][] = [];
 
-  for (let si = 0; si < studentClasses.length; si++) {
-    const { student, classId } = studentClasses[si];
-    const displayName = student.screen_name || student.name || student.email || "Unknown";
+  // Group studentClasses by classId so we can output class-by-class
+  const classBuckets = new Map<string, StudentClass[]>();
+  for (const sc of studentClasses) {
+    const arr = classBuckets.get(sc.classId) || [];
+    arr.push(sc);
+    classBuckets.set(sc.classId, arr);
+  }
+
+  let firstClass = true;
+  for (const classId of classIds) {
     const className = classNameById.get(classId) || "";
+    const studentsInClass = classBuckets.get(classId) || [];
 
-    // Resolve profiles.id for own-entry lookup
-    const profilesId = student.email
-      ? authByEmail.get(student.email.toLowerCase()) ?? null
-      : null;
+    if (!firstClass) {
+      rows.push(blank);
+      rows.push(blank);
+    }
+    firstClass = false;
 
-    // Student header row
-    rows.push([
-      `${displayName}, ${student.name || ""}, ${student.email || ""} — ${className}`,
-      "",
-    ]);
-
-    // Get this student's sessions for this class
-    const key = `${student.id}:${classId}`;
-    const sessions = sessionsByKey.get(key) || [];
-
-    if (sessions.length === 0) {
-      rows.push(["(no rounds played)", ""]);
+    // ── Teacher's warm-up photos ──────────────────────────────────────
+    const starters = startersByClass.get(classId) || [];
+    if (starters.length > 0) {
+      rows.push([`=== TEACHER'S WARM-UP PHOTOS — ${className} ===`, "", "", "", ""]);
+      rows.push(["Photo Description", "", "", "", ""]);
+      for (const desc of starters) {
+        rows.push([desc, "", "", "", ""]);
+      }
+      rows.push(blank);
     }
 
-    for (const sess of sessions) {
-      const isWarmup = sess.round === 1;
-      const displayRound = isWarmup
-        ? "Warm-up Round"
-        : `Round ${sess.round - 1}`;
+    // ── Per student ──────────────────────────────────────────────────
+    for (let si = 0; si < studentsInClass.length; si++) {
+      const { student } = studentsInClass[si];
+      const displayName = student.screen_name || student.name || student.email || "Unknown";
 
-      // Round header row
-      rows.push([displayRound, ""]);
+      const profilesId = student.email
+        ? authByEmail.get(student.email.toLowerCase()) ?? null
+        : null;
 
-      // Comment rows — one per photo commented on
-      const comments = sess.comments || {};
-      const commentEntries = Object.entries(comments);
+      // Student header
+      rows.push([
+        `=== STUDENT: ${displayName} (${student.name || ""}, ${student.email || ""}) — ${className} ===`,
+        "", "", "", "",
+      ]);
 
-      if (commentEntries.length === 0) {
-        rows.push(["(no comments this round)", ""]);
+      const sessKey = `${student.id}:${classId}`;
+      const sessions = sessionsByKey.get(sessKey) || [];
+
+      if (sessions.length === 0) {
+        rows.push(["(no rounds played)", "", "", "", ""]);
       } else {
-        for (const [entryId, commentText] of commentEntries) {
-          const photoDesc = captionById.get(entryId) || "";
-          rows.push([photoDesc, commentText]);
+        // ── Section 1: Photo submissions (student rounds only) ──────
+        const studentSessions = sessions.filter((s) => s.round > 1);
+        if (studentSessions.length > 0) {
+          rows.push(["--- PHOTO SUBMISSIONS ---", "", "", "", ""]);
+          rows.push(["Round", "Photo Description", "Status", "Teacher Note", ""]);
+          for (const sess of studentSessions) {
+            const roundLabel = displayRound(sess.round, classId);
+            const studentRoundNum = sess.round - 1;
+            if (profilesId) {
+              const ownKey = `${profilesId}:${classId}:${studentRoundNum}`;
+              const own = ownEntryByKey.get(ownKey);
+              if (own) {
+                rows.push([roundLabel, own.description, own.status, own.rejectionReason, ""]);
+              } else {
+                rows.push([roundLabel, "(no photo submitted)", "", "", ""]);
+              }
+            } else {
+              rows.push([roundLabel, "(profile not linked)", "", "", ""]);
+            }
+          }
+        }
+
+        // ── Section 2: Game comments (all rounds) ───────────────────
+        const sessionsWithComments = sessions.filter(
+          (s) => s.comments && Object.keys(s.comments).length > 0
+        );
+        if (sessionsWithComments.length > 0) {
+          rows.push(["--- GAME COMMENTS ---", "", "", "", ""]);
+          rows.push(["Round", "Photo Description", "Student's Comment", "Favorite?", "Favorite Comment"]);
+          for (const sess of sessionsWithComments) {
+            const roundLabel = displayRound(sess.round, classId);
+            const comments = sess.comments || {};
+            for (const [entryId, commentText] of Object.entries(comments)) {
+              const photoDesc = captionById.get(entryId) || "";
+              const fav = isFavorite(sess, entryId);
+              rows.push([
+                roundLabel,
+                photoDesc,
+                commentText,
+                fav ? "yes" : "",
+                fav ? (sess.favorite_comment || "") : "",
+              ]);
+            }
+          }
+
+          // Show favorite comment status if any were submitted
+          const sessionsWithFavComment = sessions.filter((s) => s.favorite_comment);
+          for (const sess of sessionsWithFavComment) {
+            const roundLabel = displayRound(sess.round, classId);
+            const status = sess.favorite_comment_status || "";
+            const reason = sess.favorite_comment_rejection_reason || "";
+            if (status && status !== "approved") {
+              rows.push([
+                roundLabel,
+                `Favorite comment status: ${status}`,
+                reason ? `Reason: ${reason}` : "",
+                "", "",
+              ]);
+            }
+          }
         }
       }
 
-      // Own photo description for this round (student rounds only)
-      if (!isWarmup && profilesId) {
-        const studentRoundNum = sess.round - 1;
-        const ownKey = `${profilesId}:${classId}:${studentRoundNum}`;
-        const ownDesc = ownDescByKey.get(ownKey);
-        if (ownDesc) {
-          rows.push([`Own photo: ${ownDesc}`, ""]);
-        }
+      // Divider between students
+      if (si < studentsInClass.length - 1) {
+        rows.push(blank);
       }
-    }
-
-    // Divider between students
-    if (si < studentClasses.length - 1) {
-      rows.push(blank);
-      rows.push(blank);
     }
   }
 

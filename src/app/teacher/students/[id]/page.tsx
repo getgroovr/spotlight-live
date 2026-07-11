@@ -40,6 +40,18 @@
 //      section (previously only in the regular list).
 //
 // Auth: gated on the teacher owning the class this student is enrolled in.
+//
+// Session 76 fix: warmup detection now uses the actual DB round value
+// (dbRound=0 for warmup) instead of sequential index (rd.round===1).
+// The old code broke when the warmup session was missing — student round 1
+// got treated as warmup, hiding the student's contribution photo.
+//
+// Session 77 fix: submissions query now tries BOTH students.id AND the
+// email-resolved profiles.id when looking up entries. The old code only
+// ran the query if the email bridge succeeded (profilesId not null).
+// If students.id = profiles.id (common in Supabase setups where the
+// students table uses auth.users.id as PK), the email bridge was
+// unnecessary but its failure meant submissions never loaded.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -77,6 +89,7 @@ type Entry = {
 
 type RoundData = {
   round: number;
+  dbRound: number;  // actual game_sessions.round value (0=warmup, 1+=student rounds)
   entries: Entry[];
   favoriteComment: string | null;
   favoriteCommentStatus: string | null;
@@ -252,6 +265,7 @@ async function getStudentJourney(studentId: string) {
 
     rounds.push({
       round: i + 1,  // #36 B1: sequential numbering (1, 2, 3 …)
+      dbRound: Number(s.round) || 0, // Session 77: Number() for runtime conversion (TS 'as' is compile-only)
       entries,
       favoriteComment: s.favorite_comment || null,
       favoriteCommentStatus: s.favorite_comment_status || null,
@@ -264,12 +278,21 @@ async function getStudentJourney(studentId: string) {
   // ── Fetch student's own submissions (entries) ─────────────────────────
   // #37: query entries table directly so approved/rejected/pending entries
   // show on the teacher's student detail page.
+  //
+  // Session 77 fix: use BOTH studentId and profilesId in the query.
+  // entries.student_id could be students.id OR profiles.id (auth user id)
+  // depending on how the enrollment was created. By trying both, we
+  // don't depend on the email-to-auth-user bridge succeeding.
   const submissions: Submission[] = [];
-  if (profilesId) {
+  {
+    const idsToTry = new Set<string>();
+    idsToTry.add(studentId); // students.id — might equal profiles.id directly
+    if (profilesId) idsToTry.add(profilesId); // email-resolved auth.users.id
+
     const { data: ownEntries } = await admin
       .from("entries")
       .select("id, media_url, description_text, status, round_number, rejection_reason, uploaded_at")
-      .eq("student_id", profilesId)
+      .in("student_id", [...idsToTry])
       .eq("class_id", enrollment.class_id)
       .eq("is_starter", false)
       .order("round_number", { ascending: true })
@@ -430,7 +453,21 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
   // #38: favorite section now shows approval status badge, rejection reason,
   //      and noteBlock. Favorited entry is excluded from the "all entries"
   //      list below to avoid duplication.
+  // P3 (session 75): Student's own submission shown biggest at top.
+  //     Favorite demoted to same thumbnail size as other entries, still labeled.
+  // P5 (session 75): standalone "why it was their favorite" removed —
+  //     the ★ label on the favorited entry card is sufficient.
   const renderRoundContent = (rd: RoundData) => {
+    // P3: find the student's own submission for this round.
+    // Session 76 fix: use rd.dbRound (actual DB round value) for warmup
+    // detection instead of sequential rd.round. Previously rd.round===1
+    // was assumed to be warmup, which broke when the warmup session was
+    // missing or ordered differently.
+    const isWarmup = rd.dbRound === 0;
+    const studentRoundNum = rd.dbRound; // DB round N = student round N
+    const ownSubmission = !isWarmup
+      ? submissions.find((s) => s.roundNumber === studentRoundNum)
+      : null;
     const favorite = rd.entries.find((e) => e.isFavorite) || null;
     // #38: exclude the favorited entry from the regular list
     const nonFavoriteEntries = rd.entries.filter((e) => !e.isFavorite);
@@ -458,70 +495,113 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
 
     return (
       <>
-        {/* Favorite highlight for this round */}
-        {favorite && (
+        {/* P3 (session 75): Student's own submission — biggest, at top */}
+        {ownSubmission && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10,
               background: C.panel, border: `1px solid ${C.panelEdge}`,
               borderRadius: 14, padding: 14 }}>
-              <div style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase",
-                color: C.light, fontWeight: 600 }}>
-                Their favorite
-                {favBadge(rd.favoriteCommentStatus)}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase",
+                  color: C.light, fontWeight: 600 }}>
+                  Their Round {rd.dbRound} Contribution
+                </span>
+                {statusBadge(ownSubmission.status)}
               </div>
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-              {favorite.publicUrl && (
-                <img src={favorite.publicUrl} alt=""
-                  style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 10,
-                    border: `2px solid ${C.light}`, flexShrink: 0 }} />
-              )}
-              <div style={{ flex: 1 }}>
-                {favorite.description_text && (
-                  <p style={{ fontSize: 13, color: C.text, fontStyle: "italic",
-                    margin: "0 0 10px", lineHeight: 1.5,
-                    borderLeft: `2px solid ${C.light}`, paddingLeft: 10 }}>
-                    &ldquo;{favorite.description_text}&rdquo;
-                  </p>
-                )}
-                {favorite.comment && (
-                  <>
-                    <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>
-                      What they said during the game:
-                    </div>
-                    <p style={{ fontSize: 13, color: C.text, margin: "0 0 10px", lineHeight: 1.5 }}>
-                      {favorite.comment}
-                    </p>
-                  </>
-                )}
-                {/* #40: "Why it was their favorite" only on the warm-up round (round 1).
-                   Students write a why-note only during enrollment, not student rounds. */}
-                {rd.favoriteComment && rd.round === 1 && (
-                  <>
-                    <div style={{ fontSize: 11, color: C.textDim, marginBottom: 3 }}>
-                      Why it was their favorite:
-                    </div>
-                    <p style={{ fontSize: 13, color: C.text, margin: 0, lineHeight: 1.5 }}>
-                      {rd.favoriteComment}
-                    </p>
-                  </>
-                )}
-                {/* #38: Show rejection reason when favorite comment was rejected */}
-                {rd.favoriteCommentStatus === "rejected" && rd.favoriteCommentRejectionReason && (
-                  <div style={{ marginTop: 10, background: C.red + "10",
-                    border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
-                    borderRadius: 6, padding: "6px 10px" }}>
-                    <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
-                      REJECTION REASON
-                    </div>
-                    <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
-                      {rd.favoriteCommentRejectionReason}
-                    </p>
+                {ownSubmission.publicUrl ? (
+                  <img src={ownSubmission.publicUrl} alt=""
+                    style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 10,
+                      border: `2px solid ${C.light}`, flexShrink: 0 }} />
+                ) : (
+                  <div style={{ width: 160, height: 160, borderRadius: 10, flexShrink: 0,
+                    background: C.panelEdge + "44", display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: 11, color: C.textFaint }}>
+                    no pic
                   </div>
                 )}
-                {/* #38: Add noteBlock to the favorite entry so teacher can add a note */}
-                {noteBlock(favorite, rd.round)}
+                <div style={{ flex: 1 }}>
+                  {ownSubmission.description_text && (
+                    <p style={{ fontSize: 13, color: C.text, fontStyle: "italic",
+                      margin: "0 0 10px", lineHeight: 1.5,
+                      borderLeft: `2px solid ${C.light}`, paddingLeft: 10 }}>
+                      &ldquo;{ownSubmission.description_text}&rdquo;
+                    </p>
+                  )}
+                  {ownSubmission.status === "rejected" && (ownSubmission.teacherNote || ownSubmission.rejectionReason) && (
+                    <div style={{ marginTop: 6, background: C.red + "10",
+                      border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
+                      borderRadius: 6, padding: "6px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
+                        REJECTION REASON
+                      </div>
+                      <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                        {ownSubmission.teacherNote || ownSubmission.rejectionReason}
+                      </p>
+                    </div>
+                  )}
+                  {ownSubmission.status !== "rejected" && ownSubmission.teacherNote && (
+                    <div style={{ marginTop: 6, background: C.light + "14",
+                      border: `1px solid ${C.light}55`, borderLeft: `3px solid ${C.light}`,
+                      borderRadius: 6, padding: "6px 10px" }}>
+                      <div style={{ fontSize: 10, color: C.light, fontWeight: 700, marginBottom: 2 }}>
+                        YOUR NOTE
+                      </div>
+                      <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                        {ownSubmission.teacherNote}
+                      </p>
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>
+                    Submitted {new Date(ownSubmission.uploadedAt).toLocaleDateString()}
+                  </div>
+                </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* P3: Favorite — same thumbnail size as other entries, still labeled with ★ */}
+        {favorite && (
+          <div key={`${rd.sessionId}-fav-${favorite.id}`} style={{ display: "flex", gap: 12, alignItems: "flex-start",
+            background: C.panel,
+            border: `1px solid ${C.panelEdge}`,
+            borderRadius: 10, padding: 10, marginBottom: 8 }}>
+            {favorite.publicUrl && (
+              <img src={favorite.publicUrl} alt=""
+                style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8,
+                  flexShrink: 0 }} />
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 10, letterSpacing: 1.5, fontWeight: 700,
+                color: C.light, textTransform: "uppercase", marginBottom: 4 }}>
+                ★ Their favorite
+              </div>
+              {favorite.description_text && (
+                <p style={{ fontSize: 12, color: C.textDim, fontStyle: "italic",
+                  margin: "0 0 5px", lineHeight: 1.4 }}>
+                  &ldquo;{favorite.description_text}&rdquo;
+                </p>
+              )}
+              {favorite.comment && (
+                <p style={{ fontSize: 13, color: C.text, margin: "0 0 5px", lineHeight: 1.5 }}>
+                  {favorite.comment}
+                </p>
+              )}
+              {/* #38: Show rejection reason when favorite comment was rejected */}
+              {rd.favoriteCommentStatus === "rejected" && rd.favoriteCommentRejectionReason && (
+                <div style={{ marginTop: 6, background: C.red + "10",
+                  border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
+                  borderRadius: 6, padding: "6px 10px" }}>
+                  <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
+                    REJECTION REASON
+                  </div>
+                  <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                    {rd.favoriteCommentRejectionReason}
+                  </p>
+                </div>
+              )}
+              {noteBlock(favorite, rd.round)}
             </div>
           </div>
         )}
@@ -601,85 +681,99 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
               {student.email}
             </div>
             <div style={{ fontSize: 12, color: C.textFaint, marginTop: 2 }}>
-              {rounds.length <= 1
-                ? (rounds.length === 1 ? "Warm-up round played" : "No rounds played")
-                : `${rounds.length - 1} ${rounds.length - 1 === 1 ? "round" : "rounds"} played${totalRounds ? ` of ${totalRounds}` : ""}`}
+              {(() => {
+                const studentRounds = rounds.filter((r) => r.dbRound > 0).length;
+                if (studentRounds === 0) return rounds.length > 0 ? "Warm-up round played" : "No rounds played";
+                return `${studentRounds} ${studentRounds === 1 ? "round" : "rounds"} played${totalRounds ? ` of ${totalRounds}` : ""}`;
+              })()}
             </div>
           </div>
         </div>
 
         {/* ── SUBMISSIONS — student's own entries ────────────────────── */}
-        {submissions.length > 0 && (
-          <section style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-              color: C.light, marginBottom: 12 }}>
-              Submissions
-            </h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {submissions.map((sub) => (
-                <div key={sub.id} style={{
-                  display: "flex", gap: 12, alignItems: "flex-start",
-                  background: sub.status === "rejected" ? C.red + "08" : C.panel,
-                  border: `1px solid ${sub.status === "rejected" ? C.red + "44" : C.panelEdge}`,
-                  borderRadius: 10, padding: 12,
-                }}>
-                  {sub.publicUrl ? (
-                    <img src={sub.publicUrl} alt=""
-                      style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8,
-                        flexShrink: 0 }} />
-                  ) : (
-                    <div style={{ width: 72, height: 72, borderRadius: 8, flexShrink: 0,
-                      background: C.panelEdge + "44", display: "flex", alignItems: "center",
-                      justifyContent: "center", fontSize: 10, color: C.textFaint }}>
-                      no pic
-                    </div>
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>
-                        Round {sub.roundNumber}
-                      </span>
-                      {statusBadge(sub.status)}
-                    </div>
-                    {sub.description_text && (
-                      <p style={{ fontSize: 12, color: C.textDim, fontStyle: "italic",
-                        margin: "0 0 4px", lineHeight: 1.4 }}>
-                        &ldquo;{sub.description_text}&rdquo;
-                      </p>
-                    )}
-                    {sub.status === "rejected" && (sub.teacherNote || sub.rejectionReason) && (
-                      <div style={{ marginTop: 6, background: C.red + "10",
-                        border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
-                        borderRadius: 6, padding: "6px 10px" }}>
-                        <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
-                          REJECTION REASON
-                        </div>
-                        <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
-                          {sub.teacherNote || sub.rejectionReason}
-                        </p>
+        {/* Session 77: only show entries for unplayed rounds that still
+            need the teacher's attention (pending or rejected). Approved
+            entries for future rounds are hidden — the teacher already
+            reviewed them, and they'll appear inside the round section
+            via ownSubmission when that round goes live. */}
+        {(() => {
+          const playedRounds = new Set(rounds.map((r) => r.dbRound));
+          const futureSubmissions = submissions.filter(
+            (s) => !playedRounds.has(s.roundNumber) && s.status !== "live",
+          );
+          if (futureSubmissions.length === 0) return null;
+          return (
+            <section style={{ marginBottom: 32 }}>
+              <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                color: C.light, marginBottom: 12 }}>
+                Upcoming submissions
+              </h2>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {futureSubmissions.map((sub) => (
+                  <div key={sub.id} style={{
+                    display: "flex", gap: 12, alignItems: "flex-start",
+                    background: sub.status === "rejected" ? C.red + "08" : C.panel,
+                    border: `1px solid ${sub.status === "rejected" ? C.red + "44" : C.panelEdge}`,
+                    borderRadius: 10, padding: 12,
+                  }}>
+                    {sub.publicUrl ? (
+                      <img src={sub.publicUrl} alt=""
+                        style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8,
+                          flexShrink: 0 }} />
+                    ) : (
+                      <div style={{ width: 72, height: 72, borderRadius: 8, flexShrink: 0,
+                        background: C.panelEdge + "44", display: "flex", alignItems: "center",
+                        justifyContent: "center", fontSize: 10, color: C.textFaint }}>
+                        no pic
                       </div>
                     )}
-                    {sub.status !== "rejected" && sub.teacherNote && (
-                      <div style={{ marginTop: 6, background: C.light + "14",
-                        border: `1px solid ${C.light}55`, borderLeft: `3px solid ${C.light}`,
-                        borderRadius: 6, padding: "6px 10px" }}>
-                        <div style={{ fontSize: 10, color: C.light, fontWeight: 700, marginBottom: 2 }}>
-                          YOUR NOTE
-                        </div>
-                        <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
-                          {sub.teacherNote}
-                        </p>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>
+                          Round {sub.roundNumber}
+                        </span>
+                        {statusBadge(sub.status)}
                       </div>
-                    )}
-                    <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>
-                      Submitted {new Date(sub.uploadedAt).toLocaleDateString()}
+                      {sub.description_text && (
+                        <p style={{ fontSize: 12, color: C.textDim, fontStyle: "italic",
+                          margin: "0 0 4px", lineHeight: 1.4 }}>
+                          &ldquo;{sub.description_text}&rdquo;
+                        </p>
+                      )}
+                      {sub.status === "rejected" && (sub.teacherNote || sub.rejectionReason) && (
+                        <div style={{ marginTop: 6, background: C.red + "10",
+                          border: `1px solid ${C.red}33`, borderLeft: `3px solid ${C.red}`,
+                          borderRadius: 6, padding: "6px 10px" }}>
+                          <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>
+                            REJECTION REASON
+                          </div>
+                          <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                            {sub.teacherNote || sub.rejectionReason}
+                          </p>
+                        </div>
+                      )}
+                      {sub.status !== "rejected" && sub.teacherNote && (
+                        <div style={{ marginTop: 6, background: C.light + "14",
+                          border: `1px solid ${C.light}55`, borderLeft: `3px solid ${C.light}`,
+                          borderRadius: 6, padding: "6px 10px" }}>
+                          <div style={{ fontSize: 10, color: C.light, fontWeight: 700, marginBottom: 2 }}>
+                            YOUR NOTE
+                          </div>
+                          <p style={{ fontSize: 12, color: C.text, margin: 0, lineHeight: 1.4 }}>
+                            {sub.teacherNote}
+                          </p>
+                        </div>
+                      )}
+                      <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>
+                        Submitted {new Date(sub.uploadedAt).toLocaleDateString()}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+                ))}
+              </div>
+            </section>
+          );
+        })()}
 
         {/* ── ROUNDS PLAYED ──────────────────────────────────────────── */}
         {rounds.length === 0 ? (
@@ -691,7 +785,7 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
           </div>
         ) : (
           <>
-            {submissions.length > 0 && (
+            {rounds.length > 0 && (
               <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
                 color: C.light, marginBottom: 12 }}>
                 Rounds played
@@ -699,53 +793,32 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {/* #40: Warm-up vs Student Round naming.
-                  rd.round is sequential (1 = warm-up session, 2 = student round 1, etc.)
+                  Session 76 fix: use rd.dbRound (actual DB round value) for
+                  warmup detection. DB round 0 = warmup, round N = student
+                  round N. Previously used sequential rd.round which broke
+                  when the warmup session was missing.
                   currentRound from computeCurrentRound = the active STUDENT round (1, 2, 3).
-                  Mapping: student round N lives at rd.round = N + 1.
                   Sort: live student round first → completed student rounds asc → warm-up last. */}
               {[...rounds].sort((a, b) => {
-                const aIsWarmup = a.round === 1;
-                const bIsWarmup = b.round === 1;
-                const aIsCurrent = !aIsWarmup && (a.round - 1) === currentRound;
-                const bIsCurrent = !bIsWarmup && (b.round - 1) === currentRound;
+                const aIsWarmup = a.dbRound === 0;
+                const bIsWarmup = b.dbRound === 0;
+                const aIsCurrent = !aIsWarmup && a.dbRound === currentRound;
+                const bIsCurrent = !bIsWarmup && b.dbRound === currentRound;
                 // Live round first
                 if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
                 // Warm-up last
                 if (aIsWarmup !== bIsWarmup) return aIsWarmup ? 1 : -1;
-                // Otherwise ascending
-                return a.round - b.round;
+                // Otherwise ascending by DB round
+                return a.dbRound - b.dbRound;
               }).map((rd) => {
-                const isWarmup = rd.round === 1;
-                const studentRoundNum = rd.round - 1;
-                const isCurrent = !isWarmup && studentRoundNum === currentRound;
-                // Fallback: if no round matches currentRound, expand the most recent
-                const anyLiveMatch = rounds.some(r => r.round > 1 && (r.round - 1) === currentRound);
-                const isExpanded = isCurrent || (!anyLiveMatch && rd === rounds[rounds.length - 1]);
-                const displayLabel = isWarmup ? "Warm-up Round" : `Round ${studentRoundNum}`;
+                const isWarmup = rd.dbRound === 0;
+                const isCurrent = !isWarmup && rd.dbRound === currentRound;
+                const displayLabel = isWarmup ? "Warm-up Round" : `Round ${rd.dbRound}`;
 
-                if (isExpanded) {
-                  return (
-                    <section key={rd.sessionId}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        {isCurrent && (
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase",
-                            background: C.green + "20", color: C.green,
-                            padding: "3px 10px", borderRadius: 4,
-                          }}>
-                            LIVE ROUND
-                          </span>
-                        )}
-                        <h2 style={{ fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
-                          color: C.light, margin: 0 }}>
-                          {displayLabel}
-                        </h2>
-                      </div>
-                      {renderRoundContent(rd)}
-                    </section>
-                  );
-                }
-
+                // Session 77: all rounds use the same collapsible <details>
+                // pattern. Live round gets a LIVE ROUND badge in the summary
+                // but otherwise behaves the same — teacher clicks "See the
+                // round" to open. Clean and consistent.
                 return (
                   <details key={rd.sessionId} className="round-toggle"
                     style={{ background: C.panel,
@@ -754,6 +827,15 @@ export default async function StudentDetail({ params }: { params: Promise<{ id: 
                       padding: "12px 16px", cursor: "pointer",
                       display: "flex", alignItems: "center", gap: 10,
                     }}>
+                      {isCurrent && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase",
+                          background: C.green + "20", color: C.green,
+                          padding: "3px 10px", borderRadius: 4,
+                        }}>
+                          LIVE ROUND
+                        </span>
+                      )}
                       <span style={{ fontSize: 11, color: C.light, fontWeight: 700,
                         letterSpacing: 1, textTransform: "uppercase" }}>
                         {displayLabel}

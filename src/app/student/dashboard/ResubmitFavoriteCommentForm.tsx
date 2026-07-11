@@ -13,6 +13,12 @@
 //   it, success leaves the parent warm-up card showing the OLD rejected
 //   state until a hard refresh. Calling router.refresh() after success
 //   makes the card transition out of the rejected branch immediately.
+//
+// Session 77: Removed the duplicate favorite-photo display from the
+//   expanded form. The parent (Action Needed / ROUND FAVORITE COMMENT
+//   SENT BACK) already shows the photo the student picked. Showing it
+//   again inside the form was redundant — now matches the cleaner
+//   entry-resubmit pattern. Props kept for backward compat.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -33,12 +39,20 @@ const F = "'Outfit',sans-serif";
 
 // B73 (session 73): round prop added so the action knows which
 // game_session to update. Defaults to 0 (warm-up) for backward compat.
+//
+// Session 76: favoritePhotoUrl / favoriteDescription props kept for
+// backward compat but the photo is no longer rendered inside the form
+// (parent already shows it — no duplicate).
 export default function ResubmitFavoriteCommentForm({
   currentText,
   round = 0,
+  favoritePhotoUrl = null,
+  favoriteDescription = null,
 }: {
   currentText: string;
   round?: number;
+  favoritePhotoUrl?: string | null;
+  favoriteDescription?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState(currentText);
@@ -121,6 +135,9 @@ export default function ResubmitFavoriteCommentForm({
       }}>
         Edit your favorite comment
       </div>
+
+      {/* Session 77: photo display removed — the parent section already
+          shows the favorited photo in context. No duplicate. */}
 
       <textarea
         value={text}

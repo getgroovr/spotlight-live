@@ -12,19 +12,17 @@
 //
 //   Section 1 — YOUR PHOTO SUBMISSIONS
 //     Round | Your Photo Description | Status | Teacher Note
-//     (same as before)
 //
 //   Section 2 — YOUR GAME COMMENTS
-//     Round | Photo Description | Your Comment | Favorite?
+//     Round | Photo Description | Your Comment | Favorite? | Favorite Comment
 //     One row per entry the student commented on, across all rounds.
 //
 //   Section 3 — TEACHER'S WARM-UP ROUND
-//     Session 73 change: "Photo Description" column REPLACED with
-//     "Teacher Comment" — shows the teacher's note to the student
-//     for that warm-up entry (if any). This is more useful for the
-//     student's portfolio than the teacher's own photo descriptions.
-//
 //     Teacher Comment | Your Comment | Favorite? | Favorite Comment
+//
+// Session 79: TOPIC SUPPORT
+//   Round headers now include topic when set: "Round 1 — Nature"
+//   roundTopics prop is a map from student round number string to topic text.
 // ─────────────────────────────────────────────────────────────────────────
 
 type CsvRow = {
@@ -64,6 +62,15 @@ function escapeCsv(value: string): string {
   return value;
 }
 
+// Session 79: build display label for a student round, with topic if set.
+function roundLabel(
+  roundNumber: number,
+  roundTopics: Record<string, string | null>,
+): string {
+  const topic = roundTopics[String(roundNumber)];
+  return topic ? `Round ${roundNumber} — ${topic}` : `Round ${roundNumber}`;
+}
+
 export function StudentDashboardCsvButton({
   studentName,
   csvRows,
@@ -71,6 +78,7 @@ export function StudentDashboardCsvButton({
   warmupEntries = [],
   warmupFavoriteComment = null,
   warmupTeacherNotes = "",
+  roundTopics = {},
 }: {
   studentName: string;
   csvRows: CsvRow[];
@@ -78,6 +86,7 @@ export function StudentDashboardCsvButton({
   warmupEntries?: WarmupEntry[];
   warmupFavoriteComment?: string | null;
   warmupTeacherNotes?: string;
+  roundTopics?: Record<string, string | null>;
 }) {
   const download = () => {
     const lines: string[] = [];
@@ -88,7 +97,7 @@ export function StudentDashboardCsvButton({
     for (const r of csvRows) {
       lines.push(
         [
-          String(r.round),
+          escapeCsv(roundLabel(r.round, roundTopics)),
           escapeCsv(r.description),
           r.status,
           escapeCsv(r.teacherNote),
@@ -104,10 +113,13 @@ export function StudentDashboardCsvButton({
         ["Round", "Photo Description", "Your Comment", "Is Your Favorite", "Your Favorite Comment"].join(","),
       );
       for (const rc of roundComments) {
+        const label = rc.roundNumber === 0
+          ? "Warm-up Round"
+          : roundLabel(rc.roundNumber, roundTopics);
         for (const ce of rc.commentedEntries) {
           lines.push(
             [
-              String(rc.roundNumber),
+              escapeCsv(label),
               escapeCsv(ce.description_text || ""),
               escapeCsv(ce.comment),
               ce.isFavorite ? "yes" : "",

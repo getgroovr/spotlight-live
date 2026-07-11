@@ -1,9 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/results/ResultsCeremony.tsx
 //
-// Session 70 — Progressive celebration + tie fix + dashboard links.
+// Session 76 — Canvas fireworks on finale burst.
 //
-// Changes from session 63:
+// Changes from session 70:
+//   • Canvas-based fireworks show during finale-burst: black background,
+//     colorful rocket launches → multi-particle explosions with trails.
+//   • Finale-burst extended from 3.5s → 5s to let fireworks breathe.
+//   • Text overlay styled white-on-dark to sit over the fireworks.
+//   • Confetti, balloons, and ribbons still fire alongside.
+//
+// Previous (session 70):
 //   • Progressive celebration: 3rd place modest, 2nd moderate, 1st over-
 //     the-top with floating balloons, streaming ribbons, bigger confetti.
 //   • Finale tie fix: shows ALL gold winners per round (was .find → now
@@ -93,7 +100,7 @@ function Confetti({ count = 50, active }: { count?: number; active: boolean }) {
         const left = Math.random() * 100;
         const delay = Math.random() * 2;
         const duration = 3 + Math.random() * 3;
-        const size = 5 + Math.random() * 7;
+        const size = 8 + Math.random() * 8;
         const color = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
         const shape = i % 3 === 0 ? "50%" : i % 3 === 1 ? "2px" : "0";
         return (
@@ -208,6 +215,212 @@ function Ribbons({ count = 8, active }: { count?: number; active: boolean }) {
         );
       })}
     </>
+  );
+}
+
+// ── Fireworks — canvas-based explosions for the finale burst ────────────
+function Fireworks({ active }: { active: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animRef = useRef<number>(0);
+  const particlesRef = useRef<FireworkParticle[]>([]);
+  const launchersRef = useRef<FireworkLauncher[]>([]);
+
+  type FireworkParticle = {
+    x: number; y: number; vx: number; vy: number;
+    life: number; maxLife: number;
+    color: string; size: number; trail: { x: number; y: number }[];
+    gravity: number; friction: number; type: "spark" | "streamer";
+  };
+  type FireworkLauncher = {
+    x: number; y: number; vy: number; targetY: number;
+    color: string; launched: boolean; timer: number;
+  };
+
+  const FIREWORK_PALETTE = [
+    "#FF4444", "#FF6B35", "#FFD700", "#44FF44", "#44DDFF",
+    "#FF44FF", "#FF8888", "#88CCFF", "#FFAA00", "#FF3388",
+    "#55FFAA", "#FFFF55", "#DD55FF", "#FF5555", "#55AAFF",
+  ];
+
+  useEffect(() => {
+    if (!active) {
+      cancelAnimationFrame(animRef.current);
+      particlesRef.current = [];
+      launchersRef.current = [];
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const resize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    let lastLaunch = 0;
+    const launchInterval = 350; // ms between launches
+    let startTime = performance.now();
+
+    const explode = (x: number, y: number, color: string) => {
+      const count = 60 + Math.floor(Math.random() * 50);
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.3;
+        const speed = 2 + Math.random() * 5;
+        const life = 50 + Math.random() * 40;
+        // Pick a color: mostly the main color, sometimes a neighbor
+        const c = Math.random() > 0.3
+          ? color
+          : FIREWORK_PALETTE[Math.floor(Math.random() * FIREWORK_PALETTE.length)];
+        particlesRef.current.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life, maxLife: life,
+          color: c, size: 2 + Math.random() * 2,
+          trail: [],
+          gravity: 0.03 + Math.random() * 0.02,
+          friction: 0.97 + Math.random() * 0.02,
+          type: Math.random() > 0.8 ? "streamer" : "spark",
+        });
+      }
+      // Secondary burst — smaller inner ring
+      const innerCount = 15 + Math.floor(Math.random() * 15);
+      for (let i = 0; i < innerCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 2;
+        const life = 30 + Math.random() * 25;
+        particlesRef.current.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life, maxLife: life,
+          color: "#FFFFFF",
+          size: 1.5 + Math.random(),
+          trail: [],
+          gravity: 0.02,
+          friction: 0.98,
+          type: "spark",
+        });
+      }
+    };
+
+    const animate = (now: number) => {
+      if (!ctx || !canvas) return;
+      const elapsed = now - startTime;
+
+      // Semi-transparent clear for motion trails
+      ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Launch new rockets
+      if (now - lastLaunch > launchInterval && elapsed < 3200) {
+        lastLaunch = now;
+        const x = canvas.width * 0.15 + Math.random() * canvas.width * 0.7;
+        const targetY = canvas.height * 0.1 + Math.random() * canvas.height * 0.35;
+        const color = FIREWORK_PALETTE[Math.floor(Math.random() * FIREWORK_PALETTE.length)];
+        launchersRef.current.push({
+          x, y: canvas.height + 10, vy: -(8 + Math.random() * 4),
+          targetY, color, launched: false, timer: 0,
+        });
+      }
+
+      // Update & draw launchers (rising rockets)
+      launchersRef.current = launchersRef.current.filter((l) => {
+        l.y += l.vy;
+        l.timer++;
+        // Draw rocket trail
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = "#FFDDAA";
+        ctx.fill();
+        // Faint trail sparks
+        for (let s = 0; s < 3; s++) {
+          const sx = l.x + (Math.random() - 0.5) * 4;
+          const sy = l.y + Math.random() * 8;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 1, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,200,100,${0.3 + Math.random() * 0.4})`;
+          ctx.fill();
+        }
+        if (l.y <= l.targetY) {
+          explode(l.x, l.y, l.color);
+          return false;
+        }
+        return true;
+      });
+
+      // Update & draw particles
+      particlesRef.current = particlesRef.current.filter((p) => {
+        p.trail.push({ x: p.x, y: p.y });
+        if (p.trail.length > (p.type === "streamer" ? 12 : 5)) p.trail.shift();
+
+        p.vx *= p.friction;
+        p.vy *= p.friction;
+        p.vy += p.gravity;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+
+        const alpha = Math.max(0, p.life / p.maxLife);
+
+        // Draw trail
+        if (p.trail.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(p.trail[0].x, p.trail[0].y);
+          for (let t = 1; t < p.trail.length; t++) {
+            ctx.lineTo(p.trail[t].x, p.trail[t].y);
+          }
+          ctx.strokeStyle = p.color + Math.floor(alpha * 80).toString(16).padStart(2, "0");
+          ctx.lineWidth = p.size * 0.5 * alpha;
+          ctx.stroke();
+        }
+
+        // Draw particle
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+        ctx.fillStyle = p.color + Math.floor(alpha * 255).toString(16).padStart(2, "0");
+        ctx.fill();
+
+        // Glowing core for streamers
+        if (p.type === "streamer" && alpha > 0.4) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha * 1.8, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255,255,255," + (alpha * 0.25) + ")";
+          ctx.fill();
+        }
+
+        return p.life > 0;
+      });
+
+      animRef.current = requestAnimationFrame(animate);
+    };
+
+    // Initial black fill
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    animRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      window.removeEventListener("resize", resize);
+    };
+  }, [active]);
+
+  if (!active) return null;
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: "fixed", top: 0, left: 0, width: "100%", height: "100%",
+        zIndex: 90, pointerEvents: "none",
+      }}
+    />
   );
 }
 
@@ -393,6 +606,7 @@ type Phase =
   | "medal-splash"
   | "card-reveal"
   | "podium"
+  | "finale-burst"
   | "finale";
 
 export default function ResultsCeremony({ rounds, className }: Props) {
@@ -406,6 +620,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
   const [finaleConfetti, setFinaleConfetti] = useState(false);
   const [finaleBalloons, setFinaleBalloons] = useState(false);
   const [finaleRibbons, setFinaleRibbons] = useState(false);
+  const [showFireworks, setShowFireworks] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const currentRound = rounds[roundIndex] ?? null;
@@ -456,9 +671,10 @@ export default function ResultsCeremony({ rounds, className }: Props) {
           setShowBalloons(false);
           setShowRibbons(true);
         } else {
-          setConfettiCount(15);
+          // P12: 3rd place matches 2nd place (confetti + ribbons)
+          setConfettiCount(40);
           setShowBalloons(false);
-          setShowRibbons(false);
+          setShowRibbons(true);
         }
       }
       setPhase("card-reveal");
@@ -486,6 +702,16 @@ export default function ResultsCeremony({ rounds, className }: Props) {
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [phase, revealIndex, sortedWinners.length, currentWinner]);
 
+  // ── P11: Finale burst → finale (dramatic pause with fireworks) ────
+  useEffect(() => {
+    if (phase !== "finale-burst") return;
+    timerRef.current = setTimeout(() => {
+      setShowFireworks(false);
+      setPhase("finale");
+    }, 5000);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [phase]);
+
   const beginCeremony = useCallback(() => {
     if (rounds.length === 0) { setPhase("finale"); return; }
     setRoundIndex(0);
@@ -496,10 +722,16 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
   const nextRound = useCallback(() => {
     if (isLastRound) {
+      // P11: dramatic fireworks burst BEFORE the finale winners page.
+      // Clear per-round celebrations first, then blast the big ones.
+      setConfettiCount(0);
+      setShowBalloons(false);
+      setShowRibbons(false);
+      setShowFireworks(true);
       setFinaleConfetti(true);
       setFinaleBalloons(true);
       setFinaleRibbons(true);
-      setPhase("finale");
+      setPhase("finale-burst");
       return;
     }
     setRoundIndex((i) => i + 1);
@@ -567,6 +799,11 @@ export default function ResultsCeremony({ rounds, className }: Props) {
           50% { transform: scale(1.2) rotate(180deg); opacity: 0.8; }
           100% { transform: scale(0) rotate(360deg); opacity: 0; }
         }
+        @keyframes fireworks-text-in {
+          0% { opacity: 0; transform: scale(0.8); }
+          60% { opacity: 1; transform: scale(1.05); }
+          100% { opacity: 1; transform: scale(1); }
+        }
         @keyframes finale-crown {
           0% { transform: translateY(-30px) scale(0.5); opacity: 0; }
           60% { transform: translateY(5px) scale(1.1); opacity: 1; }
@@ -574,12 +811,13 @@ export default function ResultsCeremony({ rounds, className }: Props) {
         }
       `}</style>
 
+      <Fireworks active={showFireworks} />
       <Confetti active={confettiCount > 0} count={confettiCount} />
-      <Confetti active={finaleConfetti} count={120} />
+      <Confetti active={finaleConfetti} count={180} />
       <Balloons active={showBalloons} count={14} />
-      <Balloons active={finaleBalloons} count={20} />
+      <Balloons active={finaleBalloons} count={24} />
       <Ribbons active={showRibbons} count={10} />
-      <Ribbons active={finaleRibbons} count={14} />
+      <Ribbons active={finaleRibbons} count={18} />
 
       <div style={{ maxWidth: 540, margin: "0 auto", padding: "2rem 1rem 4rem", position: "relative", zIndex: 1 }}>
 
@@ -769,6 +1007,37 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               <DashboardLink />
             </div>
           </div>
+        )}
+
+        {/* ═══ P11: FINALE BURST — dramatic fireworks before winners ═══ */}
+        {phase === "finale-burst" && (
+          <>
+            {/* Black overlay behind the fireworks canvas */}
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              background: "#000", zIndex: 89, pointerEvents: "none",
+            }} />
+            <div style={{
+              textAlign: "center", paddingTop: "30vh",
+              animation: "fireworks-text-in 1s ease 1.5s both",
+              position: "relative", zIndex: 95,
+            }}>
+              <h2 style={{
+                fontSize: 36, fontWeight: 800, color: "#FFFFFF",
+                margin: "0 0 10px", letterSpacing: 1,
+                textShadow: "0 0 30px rgba(212,168,67,0.8), 0 0 60px rgba(212,168,67,0.4)",
+              }}>
+                And the winners are&hellip;
+              </h2>
+              <p style={{
+                fontSize: 16, color: "rgba(255,255,255,0.7)", margin: 0,
+                animation: "fireworks-text-in 0.8s ease 2s both",
+                letterSpacing: 0.5,
+              }}>
+                The photos your class loved most
+              </p>
+            </div>
+          </>
         )}
 
         {/* ═══ FINALE ═══ */}

@@ -97,6 +97,18 @@
 //   so student-round favorite comments were invisible. Fixed: the favorite
 //   entry's comment is now extracted and written to favorite_comment with
 //   status='pending', mirroring the warm-up path in saveProfile.
+//
+// D2 (session 84): Student-side round-phase enforcement.
+//   - addEntry: rejects submissions after the game phase deadline
+//     (isSubmissionsClosed). Previously only checked isRoundLocked
+//     (round started). Now a started round that's still in its game
+//     phase allows submissions, but once game_phase_hours elapse,
+//     submissions are closed even though the round isn't "over" yet
+//     (review phase follows).
+//   - saveStudentRound: same game-phase-closed check. Students can't
+//     submit comments/favorites after the game phase ends.
+//   - ClassTiming reads now include game_phase_hours + review_phase_hours
+//     from the classes table (added by D1 migration).
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -108,6 +120,7 @@ import {
   computeCurrentRound,
   isRoundLocked,
   isGameOver,
+  isSubmissionsClosed,
 } from "@/lib/round-timing";
 
 export type EnrollResult =
@@ -153,7 +166,15 @@ async function findFirstAvailableRound(
 
   for (let r = 1; r <= maxRound; r++) {
     if (filled.has(r)) continue;
-    if (isRoundLocked(r, timing, now)) continue;
+    // D2: In phase mode, a locked round whose game phase is still open is
+    // available. In legacy mode, locked = unavailable.
+    if (isRoundLocked(r, timing, now)) {
+      if (timing.game_phase_hours != null && !isSubmissionsClosed(r, timing, now)) {
+        // Round started but game phase still open — this slot is available.
+        return r;
+      }
+      continue;
+    }
     return r;
   }
   return null;
@@ -752,16 +773,18 @@ export async function addEntry(
     };
   }
 
-  // ── Read class timing (#27) ──────────────────────────────────────────
+  // ── Read class timing (#27, D2) ──────────────────────────────────────
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, game_starts_at, round_duration_hours")
+    .select("total_rounds, game_starts_at, round_duration_hours, game_phase_hours, review_phase_hours")
     .eq("id", entryClassId)
     .maybeSingle();
   const timing: ClassTiming = {
     total_rounds: classRow?.total_rounds ?? null,
     game_starts_at: classRow?.game_starts_at ?? null,
     round_duration_hours: classRow?.round_duration_hours ?? null,
+    game_phase_hours: classRow?.game_phase_hours ?? null,
+    review_phase_hours: classRow?.review_phase_hours ?? null,
   };
 
   // Early reject if game is over.
@@ -798,10 +821,25 @@ export async function addEntry(
     };
   }
   if (isRoundLocked(targetRound, timing)) {
-    return {
-      ok: false,
-      error: `Round ${targetRound} has already started — that slot is locked.`,
-    };
+    // D2: A locked round might still be in its game phase (submissions open).
+    // Only reject if the game phase has also closed.
+    if (isSubmissionsClosed(targetRound, timing)) {
+      return {
+        ok: false,
+        error: `Submissions for round ${targetRound} are closed. The teacher is reviewing.`,
+      };
+    }
+    // If isSubmissionsClosed returns false, either we're still in the game
+    // phase OR there are no split fields (legacy mode). In legacy mode,
+    // locked = no more submissions — preserve existing behavior.
+    if (timing.game_phase_hours == null) {
+      return {
+        ok: false,
+        error: `Round ${targetRound} has already started — that slot is locked.`,
+      };
+    }
+    // Otherwise: round is locked (started) but game phase is still open.
+    // Fall through — submission is allowed.
   }
 
   // Already filled? Caller must remove first.
@@ -928,16 +966,18 @@ export async function removeEntry(
     return { ok: false, error: "You can't remove a photo that isn't yours." };
   }
 
-  // ── Lock check ───────────────────────────────────────────────────────
+  // ── Lock check (D2: phase-aware) ──────────────────────────────────────
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, game_starts_at, round_duration_hours")
+    .select("total_rounds, game_starts_at, round_duration_hours, game_phase_hours, review_phase_hours")
     .eq("id", entry.class_id)
     .maybeSingle();
   const timing: ClassTiming = {
     total_rounds: classRow?.total_rounds ?? null,
     game_starts_at: classRow?.game_starts_at ?? null,
     round_duration_hours: classRow?.round_duration_hours ?? null,
+    game_phase_hours: classRow?.game_phase_hours ?? null,
+    review_phase_hours: classRow?.review_phase_hours ?? null,
   };
   if (isRoundLocked(entry.round_number, timing)) {
     return {
@@ -1053,16 +1093,18 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
     };
   }
 
-  // ── Resolve current round ────────────────────────────────────────────
+  // ── Resolve current round (D2: includes phase columns) ───────────────
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, game_starts_at, round_duration_hours")
+    .select("total_rounds, game_starts_at, round_duration_hours, game_phase_hours, review_phase_hours")
     .eq("id", classId)
     .maybeSingle();
   const timing: ClassTiming = {
     total_rounds: classRow?.total_rounds ?? null,
     game_starts_at: classRow?.game_starts_at ?? null,
     round_duration_hours: classRow?.round_duration_hours ?? null,
+    game_phase_hours: classRow?.game_phase_hours ?? null,
+    review_phase_hours: classRow?.review_phase_hours ?? null,
   };
 
   if (isGameOver(timing)) {
@@ -1074,6 +1116,15 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
     return {
       ok: false,
       error: "The game hasn't started yet. Your teacher will let you know when it begins.",
+    };
+  }
+
+  // D2: Reject if the game phase has closed for this round. The student
+  // can no longer submit comments/favorites once submissions are closed.
+  if (isSubmissionsClosed(currentRound, timing)) {
+    return {
+      ok: false,
+      error: "Submissions for this round are closed. Your teacher is reviewing.",
     };
   }
 

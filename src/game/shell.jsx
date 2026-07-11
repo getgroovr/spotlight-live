@@ -21,8 +21,12 @@ import App from "./spotlight.jsx";
 // so the App never renders before the sessionStorage check completes.
 // null = still checking → show tan background only (matches SSR).
 // true = show splash. false = skip to game.
+//
+// Session 79 (Chunk 2 — topics):
+//   currentTopic / nextRoundTopic threaded from page → shell → App.
+//   RoundSplash shows "Round N — Topic" when currentTopic is set.
 /**
- * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student", warmupComplete?: boolean, currentRound?: number, totalRounds?: number | null }} props
+ * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student", warmupComplete?: boolean, currentRound?: number, totalRounds?: number | null, currentTopic?: string | null, nextRoundTopic?: string | null }} props
  */
 
 function hasSeenRoundSplash(round) {
@@ -36,7 +40,7 @@ function markRoundSplashSeen(round) {
   } catch {}
 }
 
-export default function GameShell({ initialStudents, mode, warmupComplete, currentRound, totalRounds } = {}) {
+export default function GameShell({ initialStudents, mode, warmupComplete, currentRound, totalRounds, currentTopic, nextRoundTopic } = {}) {
   // B57 FIX: tri-state — null means "still checking sessionStorage."
   // Server renders null → tan background div. Client hydrates to same.
   // useEffect then resolves to true (show splash) or false (skip).
@@ -107,6 +111,7 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
       <RoundSplash
         round={Number(currentRound)}
         totalRounds={totalRounds != null ? Number(totalRounds) : null}
+        currentTopic={currentTopic || null}
         onDismiss={() => {
           markRoundSplashSeen(Number(currentRound));
           setShowSplash(false);
@@ -128,7 +133,15 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
       }}
     >
       <div style={{ width: "100%", maxWidth: 560 }}>
-        <App initialStudents={initialStudents} mode={mode} warmupComplete={warmupComplete} currentRound={currentRound} totalRounds={totalRounds} />
+        <App
+          initialStudents={initialStudents}
+          mode={mode}
+          warmupComplete={warmupComplete}
+          currentRound={currentRound}
+          totalRounds={totalRounds}
+          currentTopic={currentTopic || null}
+          nextRoundTopic={nextRoundTopic || null}
+        />
       </div>
     </div>
   );
@@ -144,8 +157,12 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
 //
 // B20: splash only shows once per round (tracked in sessionStorage by
 // GameShell above).
+//
+// Session 79 (Chunk 2): When currentTopic is set, the placard shows
+// "Round N — Topic" instead of just "Round N". Topic text appears on
+// its own line below the round number, smaller and in the warm gold.
 // ─────────────────────────────────────────────────────────────────────────
-function RoundSplash({ round, totalRounds, onDismiss }) {
+function RoundSplash({ round, totalRounds, currentTopic, onDismiss }) {
   const isFinal = totalRounds != null && round === totalRounds;
   const [count, setCount] = useState(5);
 
@@ -308,6 +325,17 @@ function RoundSplash({ round, totalRounds, onDismiss }) {
           }}>
             Round {round}
           </div>
+
+          {/* ── Session 79: Topic line below the round number ── */}
+          {currentTopic && (
+            <div style={{
+              fontSize: 18, fontWeight: 700, color: "#D98A2B",
+              marginTop: 8, lineHeight: 1.2,
+              letterSpacing: 0.5,
+            }}>
+              {currentTopic}
+            </div>
+          )}
 
           {isFinal ? (
             <div style={{

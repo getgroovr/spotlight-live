@@ -3,6 +3,8 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/dashboard/AddEntryForm.tsx
 //
+// DESTINATION: src/app/student/dashboard/AddEntryForm.tsx   (REPLACES)
+//
 // Client wrapper around an "Add to Student Round N" <form>. Lives inside
 // each EMPTY UPCOMING slot of the dashboard's three-band round stack (#27).
 //
@@ -28,6 +30,9 @@
 // React/Next note: on Next 16 / React 19, useFormState from react-dom is
 // no longer available — useActionState from "react" replaces it. Same
 // signature; the third tuple element (isPending) is ignored.
+//
+// Session 76 — P1: submit button shrunk from full-width/14px to auto-width
+// /12px with snug padding, matching Resubmit buttons elsewhere.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { useActionState as useFormState } from "react";
@@ -112,10 +117,19 @@ export default function AddEntryForm({ roundNumber }: { roundNumber: number }) {
 
       <button
         type="submit"
-        style={{ width: "100%", padding: "11px", fontFamily: F,
-          fontSize: 14, fontWeight: 700, background: C.light,
-          color: "#fff", border: "none", borderRadius: 10,
-          cursor: "pointer", letterSpacing: 0.5, marginTop: 12 }}
+        style={{
+          fontFamily: F,
+          fontSize: 12,
+          fontWeight: 700,
+          padding: "7px 16px",
+          borderRadius: 8,
+          border: `1px solid ${C.light}`,
+          background: C.light,
+          color: "#fff",
+          cursor: "pointer",
+          letterSpacing: 0.5,
+          marginTop: 12,
+        }}
       >
         Add to Student Round {roundNumber} →
       </button>

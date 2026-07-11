@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/teacher/deck/deck-client.tsx — Session 70 rebuild
+// DESTINATION: src/app/teacher/deck/deck-client.tsx  (REPLACES existing)
 //
-// Multi-mode photo selection. Teachers select photos independently for
-// each warm-up mode (Solo/Trio/Full). A photo can be selected for
-// multiple modes simultaneously.
-//
-// Each photo card shows three mode toggle chips. A status banner at top
-// shows counts per mode and highlights which mode is currently active.
+// Session 70 rebuild: multi-mode photo selection.
+// Session 75: Added approval status indicators on each photo card.
+//   is_active=false → "Pending admin approval" amber banner
+//   is_active=true  → "Approved" green badge
+//   Mode selection works regardless of approval status, but photos
+//   only appear in-game once the admin has approved (is_active=true).
 //
 // All multi-column layouts use inline styles (Tailwind grid-cols broken).
 // ─────────────────────────────────────────────────────────────────────────
@@ -78,6 +78,8 @@ export function DeckClient({
     trio: optimisticStarters.filter((s) => s.selected_trio).length,
     full: optimisticStarters.filter((s) => s.selected_full).length,
   };
+
+  const pendingCount = optimisticStarters.filter((s) => !s.is_active).length;
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -187,7 +189,9 @@ export function DeckClient({
               <p className="text-sm text-red-400">{result.error}</p>
             )}
             {result && result.ok && (
-              <p className="text-sm text-emerald-400">Saved.</p>
+              <p className="text-sm text-amber-300">
+                Uploaded — awaiting admin approval before it appears in the game.
+              </p>
             )}
           </form>
         </section>
@@ -203,7 +207,12 @@ export function DeckClient({
       <section>
         <h2 className="text-lg font-semibold mb-1">Your photos</h2>
         <p className="text-xs text-white/50 mb-4">
-          Use the Solo / Trio / Full chips on each photo to select which modes it appears in.
+          Use the Solo / Trio / Full chips to select which modes each photo appears in.
+          {pendingCount > 0 && (
+            <span className="text-amber-300">
+              {" "}· {pendingCount} photo{pendingCount !== 1 ? "s" : ""} awaiting admin approval.
+            </span>
+          )}
         </p>
         {optimisticStarters.length === 0 ? (
           <p className="text-sm text-white/60">No photos yet.</p>
@@ -431,6 +440,10 @@ function ModeChip({
 
 // ─────────────────────────────────────────────────────────────────────────
 // StarterCard — one entry in the photo pool grid
+//
+// Session 75: Shows approval status.
+//   is_active=false → amber "PENDING" banner at top of card
+//   is_active=true  → green "APPROVED" badge on thumbnail
 // ─────────────────────────────────────────────────────────────────────────
 function StarterCard({
   starter,
@@ -451,6 +464,7 @@ function StarterCard({
   const [draft, setDraft] = useState(starter.description_text);
 
   const isSelectedAnywhere = starter.selected_solo || starter.selected_trio || starter.selected_full;
+  const isApproved = starter.is_active;
 
   const startEdit = () => {
     setDraft(starter.description_text);
@@ -504,45 +518,92 @@ function StarterCard({
       style={{
         borderRadius: "12px",
         overflow: "hidden",
-        border: isSelectedAnywhere
-          ? "2px solid rgba(168, 85, 247, 0.4)"
-          : "1px solid rgba(255,255,255,0.08)",
-        background: isSelectedAnywhere
-          ? "rgba(168, 85, 247, 0.06)"
-          : "rgba(255,255,255,0.02)",
-        opacity: isSelectedAnywhere ? 1 : 0.75,
+        border: isApproved
+          ? isSelectedAnywhere
+            ? "2px solid rgba(168, 85, 247, 0.4)"
+            : "2px solid rgba(16, 185, 129, 0.3)"
+          : "2px solid rgba(245, 158, 11, 0.3)",
+        background: isApproved
+          ? isSelectedAnywhere
+            ? "rgba(168, 85, 247, 0.06)"
+            : "rgba(255,255,255,0.02)"
+          : "rgba(245, 158, 11, 0.04)",
+        opacity: isApproved ? 1 : 0.85,
         transition: "all 0.2s ease",
       }}
     >
-      {/* Photo */}
-      {starter.signed_url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={starter.signed_url}
-          alt=""
-          style={{
-            display: "block",
-            aspectRatio: "4/3",
-            width: "100%",
-            objectFit: "cover",
-          }}
-        />
-      ) : (
-        <div
-          style={{
-            aspectRatio: "4/3",
-            width: "100%",
-            background: "rgba(255,255,255,0.1)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "12px",
-            color: "rgba(255,255,255,0.4)",
-          }}
-        >
-          (image unavailable)
+      {/* ── Approval status banner ── */}
+      {!isApproved && (
+        <div style={{
+          background: "rgba(245, 158, 11, 0.15)",
+          padding: "4px 10px",
+          display: "flex",
+          alignItems: "center",
+          gap: "6px",
+          borderBottom: "1px solid rgba(245, 158, 11, 0.2)",
+        }}>
+          <span style={{ fontSize: "10px", color: "#f59e0b" }}>⏳</span>
+          <span style={{
+            fontSize: "10px",
+            fontWeight: 600,
+            color: "#f59e0b",
+            letterSpacing: "0.5px",
+            textTransform: "uppercase" as const,
+          }}>
+            Pending admin approval
+          </span>
         </div>
       )}
+
+      {/* Photo */}
+      <div style={{ position: "relative" }}>
+        {starter.signed_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={starter.signed_url}
+            alt=""
+            style={{
+              display: "block",
+              aspectRatio: "4/3",
+              width: "100%",
+              objectFit: "cover",
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              aspectRatio: "4/3",
+              width: "100%",
+              background: "rgba(255,255,255,0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "12px",
+              color: "rgba(255,255,255,0.4)",
+            }}
+          >
+            (image unavailable)
+          </div>
+        )}
+        {/* Approved badge on thumbnail */}
+        {isApproved && (
+          <div style={{
+            position: "absolute",
+            top: 6,
+            right: 6,
+            background: "rgba(16, 185, 129, 0.85)",
+            color: "#fff",
+            fontSize: "9px",
+            fontWeight: 700,
+            padding: "2px 7px",
+            borderRadius: "999px",
+            letterSpacing: "0.5px",
+            textTransform: "uppercase" as const,
+          }}>
+            ✓ Approved
+          </div>
+        )}
+      </div>
 
       {/* Mode selection chips */}
       <div

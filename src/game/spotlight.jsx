@@ -251,21 +251,24 @@ function ProfileCard({
   const meetsMin = trimmed.length >= MIN_COMMENT_CHARS;
 
   // ── Rotating placeholder logic ───────────────────────────────────────
-  // Cycles: fun phrase → fun phrase → rule → fun phrase → fun phrase → rule …
+  // P10 (session 76): Shows 2 fun phrases then the rule, then stops.
+  // Sequence: fun → fun → rule (DONE). No continuous loop.
   // Pauses rotation once the student starts typing.
   const [phraseIndex, setPhraseIndex] = useState(() => Math.floor(Math.random() * PROMPT_PHRASES.length));
-  const [cycleStep, setCycleStep] = useState(0); // 0,1 = fun phrase; 2 = rule
+  const [cycleStep, setCycleStep] = useState(0); // 0,1 = fun phrase; 2 = rule (final)
   const [placeholderText, setPlaceholderText] = useState(PROMPT_PHRASES[phraseIndex % PROMPT_PHRASES.length]);
 
   useEffect(() => {
-    // Don't rotate while the student is typing
+    // Don't rotate while the student is typing, or after the rule has shown
     if (draft.trim().length > 0) return;
+    if (cycleStep >= 2) return; // rule already showing — stop
     const iv = setInterval(() => {
       setCycleStep((prev) => {
-        const next = (prev + 1) % 3;
-        if (next === 2) {
-          // Show the rule on every third beat
+        const next = prev + 1;
+        if (next >= 2) {
+          // Show the rule and stop rotating
           setPlaceholderText(RULE_TEXT);
+          clearInterval(iv);
         } else {
           setPhraseIndex((pi) => {
             const nextPi = (pi + 1) % PROMPT_PHRASES.length;
@@ -277,9 +280,16 @@ function ProfileCard({
       });
     }, 4000);
     return () => clearInterval(iv);
-  }, [draft]);
+  }, [draft, cycleStep]);
 
-  useEffect(() => { setDraft(myComment || ""); }, [student.id]);
+  useEffect(() => {
+    setDraft(myComment || "");
+    // P10: reset rotation for the new photo so they see 2 fun phrases + rule again
+    setCycleStep(0);
+    const newPi = Math.floor(Math.random() * PROMPT_PHRASES.length);
+    setPhraseIndex(newPi);
+    setPlaceholderText(PROMPT_PHRASES[newPi]);
+  }, [student.id]);
 
   const handleContinue = () => {
     if (!meetsMin) return;
@@ -671,7 +681,7 @@ function EnrollForm({ myComments, favoriteId, totalStudents, onBack }) {
 // ─────────────────────────────────────────────────────────────────────────
 function StudentFavoriteEdit({
   favoriteStudent, myComments, favoriteId, onBack, onCommentChange,
-  currentRound, totalRounds,
+  currentRound, totalRounds, nextRoundTopic,
 }) {
   const [comment, setComment] = useState(myComments[favoriteId] || "");
   const [loading, setLoading] = useState(false);
@@ -947,6 +957,7 @@ function StudentFavoriteEdit({
           <p style={{ fontFamily: F, fontSize: 13, color: C.textDim, lineHeight: 1.6,
             textAlign: "center", margin: "0 0 16px" }}>
             Upload the photo your classmates will see next round.
+            {nextRoundTopic ? ` The topic for Round ${nextRound} is: ${nextRoundTopic}.` : ""}
           </p>
 
           <form ref={uploadFormRef} onSubmit={(e) => e.preventDefault()}>
@@ -960,13 +971,12 @@ function StudentFavoriteEdit({
               <div style={{ display: uploadPreviewUrl ? "none" : "block" }}>
                 <label style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
-                  fontFamily: F, fontSize: 15, fontWeight: 700,
+                  fontFamily: F, fontSize: 13, fontWeight: 700,
                   background: C.light, color: C.stageDeep,
-                  padding: "13px 28px", borderRadius: 12,
+                  padding: "9px 20px", borderRadius: 10,
                   cursor: "pointer", letterSpacing: 0.5,
-                  boxShadow: `0 6px 20px ${C.light}44`,
+                  boxShadow: `0 4px 14px ${C.light}44`,
                   transition: "all 0.2s ease",
-                  width: "100%", justifyContent: "center", boxSizing: "border-box",
                 }}>
                   📷 Choose a photo
                   <input
@@ -1083,10 +1093,10 @@ function StudentFavoriteEdit({
               }}
               disabled={uploadLoading}
               style={{
-                width: "100%", padding: "13px", fontFamily: F, fontSize: 15, fontWeight: 700,
+                padding: "9px 20px", fontFamily: F, fontSize: 13, fontWeight: 700,
                 background: uploadLoading ? C.panelEdge : C.light,
                 color: uploadLoading ? C.textFaint : C.stageDeep,
-                border: "none", borderRadius: 12,
+                border: "none", borderRadius: 10,
                 cursor: uploadLoading ? "not-allowed" : "pointer",
                 letterSpacing: 0.5,
               }}
@@ -1118,7 +1128,7 @@ function StudentFavoriteEdit({
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
   myComments, students, totalStudents, onPlayAgain, onCommentChange, mode = "visitor",
-  currentRound, totalRounds,
+  currentRound, totalRounds, nextRoundTopic,
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
@@ -1200,13 +1210,14 @@ function DoneScreen({
           onBack={() => setDonePhase("review")}
           currentRound={currentRound}
           totalRounds={totalRounds}
+          nextRoundTopic={nextRoundTopic}
         />
       )}
     </div>
   );
 }
 
-export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds }) {
+export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds, currentTopic, nextRoundTopic }) {
   const [view, setView] = useState("splash");
   const [phase, setPhase] = useState("idle");
   const [order, setOrder] = useState(initialStudents);
@@ -1574,6 +1585,16 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
 
       {(phase === "idle" || phase === "running") && !allShown && (
         <>
+          {/* Session 79 (Chunk 2): Topic label above the photo grid */}
+          {currentTopic && (
+            <div style={{
+              fontFamily: F, fontSize: 14, fontWeight: 700,
+              color: C.light, textAlign: "center",
+              marginBottom: 10, letterSpacing: 0.5,
+            }}>
+              Topic: {currentTopic}
+            </div>
+          )}
           <StageGrid order={order} shownIds={shownIds} running={phase === "running"} />
           <div style={{ textAlign: "center", marginTop: 24 }}>
             {phase === "idle" ? (
@@ -1622,6 +1643,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
           mode={mode}
           currentRound={currentRound}
           totalRounds={totalRounds}
+          nextRoundTopic={nextRoundTopic}
         />
       )}
     </div>

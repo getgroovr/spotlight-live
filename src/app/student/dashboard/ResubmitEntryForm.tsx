@@ -247,11 +247,11 @@ export default function ResubmitEntryForm({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               style={{
-                fontFamily: F, fontSize: 13, fontWeight: 600,
-                padding: "10px 16px", borderRadius: 8,
+                fontFamily: F, fontSize: 12, fontWeight: 600,
+                padding: "7px 16px", borderRadius: 8,
                 border: `1px dashed ${C.panelEdge}`,
                 background: "#fff", color: C.textDim,
-                cursor: "pointer", width: "100%",
+                cursor: "pointer",
                 textAlign: "center",
               }}
             >

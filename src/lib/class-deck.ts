@@ -23,6 +23,18 @@
 //   spotlight.jsx consume it without changes. One EngineStudent per student
 //   (entries stacked; with "one live per student per class", typically one).
 //
+// Session 78: Added currentTopic and nextRoundTopic to the return value.
+//   Reads classes.round_topics (jsonb map) and resolves the topic for the
+//   current round and the next round. Passed through to GameShell and the
+//   spotlight engine for display above the grid and in the upload prompt.
+//
+// Session 85 (D2-UI):
+//   Added submissions-closed gate: when the game phase has ended for the
+//   current round (isSubmissionsClosed returns true), the deck returns
+//   reason:"submissions-closed" so the play page can show a holding screen.
+//   The class query now reads game_phase_hours + review_phase_hours and
+//   includes them in the ClassTiming for phase-aware helpers.
+//
 // isSelf FLAG (added in slice 1 engine-adaptation pass):
 //   Each EngineStudent now carries isSelf:boolean. We set it to true for the
 //   tile that belongs to the currently-logged-in student, false for everyone
@@ -37,6 +49,7 @@ import { createClient as createServiceClient } from "@supabase/supabase-js";
 import {
   computeCurrentRound,
   isGameOver as checkGameOver,
+  isSubmissionsClosed,
   type ClassTiming,
 } from "@/lib/round-timing";
 import type { EngineStudent } from "@/lib/deck";
@@ -52,8 +65,8 @@ const FALLBACK_PALETTE = [
 ];
 
 export type ClassDeckResult =
-  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean }
-  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending" | "teacher-account"; classId: string | null };
+  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean; currentTopic: string | null; nextRoundTopic: string | null }
+  | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending" | "teacher-account" | "submissions-closed"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
   const ssr = await createClient();
@@ -84,9 +97,12 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // If the game is over, don't let the student play — they should see
   // the game-over screen, not a playable deck. If the game hasn't
   // started yet, show a "not yet" holding page.
+  //
+  // Session 85 (D2-UI): added game_phase_hours + review_phase_hours to
+  // the select so the timing object can drive the submissions-closed gate.
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, round_duration_hours, game_starts_at")
+    .select("total_rounds, round_duration_hours, game_starts_at, round_topics, game_phase_hours, review_phase_hours")
     .eq("id", classId)
     .maybeSingle();
 
@@ -101,6 +117,14 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
       classRow.round_duration_hours === null
         ? null
         : Number(classRow.round_duration_hours),
+    game_phase_hours:
+      classRow.game_phase_hours === null
+        ? null
+        : Number(classRow.game_phase_hours),
+    review_phase_hours:
+      classRow.review_phase_hours === null
+        ? null
+        : Number(classRow.review_phase_hours),
   };
   const now = new Date();
 
@@ -109,6 +133,21 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   }
 
   const currentRound = computeCurrentRound(timing, now);
+
+  // ── D2-UI: Submissions-closed gate ──────────────────────────────────
+  // When game_phase_hours is configured and the game phase for the current
+  // round has ended, block the student from entering the game. The play
+  // page shows a "Submissions closed — your teacher is reviewing" holding
+  // screen. In legacy mode (no game_phase_hours), this check is a no-op
+  // (isSubmissionsClosed returns false).
+  if (currentRound > 0 && isSubmissionsClosed(currentRound, timing, now)) {
+    return { ok: false, reason: "submissions-closed", classId };
+  }
+
+  // ── Session 78: resolve per-round topics ──────────────────────────────
+  const roundTopicsMap = (classRow.round_topics ?? {}) as Record<string, string | null>;
+  const currentTopic = roundTopicsMap[String(currentRound)] ?? null;
+  const nextRoundTopic = roundTopicsMap[String(currentRound + 1)] ?? null;
 
   // ── B22 FIX (#45): Check if this student already has a completed
   // warm-up (round=0) game_session. If so, GameShell should skip the
@@ -415,5 +454,5 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // "I'm in the game" cue. Otherwise preserves Map iteration order.
   students.sort((a, b) => (a.id === user.id ? -1 : b.id === user.id ? 1 : 0));
 
-  return { ok: true, students, classId, currentRound, totalRounds: timing.total_rounds, warmupComplete };
+  return { ok: true, students, classId, currentRound, totalRounds: timing.total_rounds, warmupComplete, currentTopic, nextRoundTopic };
 }

@@ -22,8 +22,52 @@
 //      and favorited-pic thumbnail resolved, and passed to PendingQueue
 //      as the favoriteComments prop.
 //
+// Session 76 — P9: Warmup round (round=0) favorite comments were leaking
+//      into the student-round pending queue. Added .gt("round", 0) filter
+//      so only student game rounds show in the teacher's approval queue.
+//      Warmup comments don't require moderation (they're about the
+//      teacher's own starter photos).
+//
 // C4: Added "Request new class" button. Checks class_requests table for
 //     pending requests and profiles.max_classes to decide visibility.
+//
+// Session 77 — C5: Messaging. MessagePanel button in header. Teacher can
+//     message individual students, all students, or admin.
+//
+// Session 78: Game topics. Queries game_topics for approved topic presets
+//     and classes.round_topics for per-round assignments. Passes both to
+//     ClassHeader for the topic dropdown UI.
+//
+// Session 80: Auto-archive. In getPageData(), after fetching classes,
+//     any active class whose game is over (isGameOver) is automatically
+//     set to is_archived = true + archived_at = now. Piggybacks on the
+//     existing round-timing logic — no separate trigger needed.
+//
+// Session 80: Multi-teacher read-only mode. Queries admin_settings for
+//     warmup_teacher_count. When > 1, passes readOnly=true to ClassHeader
+//     so game settings (rounds, duration, start, topics) are display-only.
+//     Teachers can still edit class name and suggest topics.
+//
+// Session 81: Topic locking. Computes currentRound for the selected class
+//     and passes it to ClassHeader. Rounds that have already been played
+//     have their topic dropdown disabled so past topics can't be changed.
+//     Also fixed class dropdown to always include the selected class even
+//     if it was auto-archived.
+//
+// Session 84: Chunk D1 — game_phase_hours + review_phase_hours on ClassRow.
+//     Computes currentPhase (game/review) via computeCurrentPhase() and
+//     passes it to ClassHeader for the phase badge. ClassHeader props
+//     updated to use game_phase_hours + review_phase_hours instead of
+//     round_duration_hours.
+//
+// Session 86: Chunk M1 — Standard/Multi mode.
+//     Queries admin_settings.app_mode. Derives isStandardMode boolean.
+//     In standard mode:
+//       - isMultiTeacher forced to false (teacher owns their own schedule)
+//       - RequestClassSection gets isStandardMode (create vs request)
+//       - ClassHeader gets isStandardMode + topicOptionsWithId (for delete)
+//       - Zero-class state says "Create" not "Request"
+//     In multi mode: behavior unchanged from session 84.
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -31,16 +75,19 @@ import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 import {
   computeCurrentRound,
+  computeCurrentPhase,
   isGameOver,
   type ClassTiming,
 } from "@/lib/round-timing";
-import { ClassHeader } from "./class-header";
+import { ClassHeader, type TopicOption } from "./class-header";
 import {
   PendingQueue,
   type PendingEntryData,
   type PendingFavoriteCommentData,
 } from "./pending-queue";
-import { RequestClassButton } from "./request-class";
+import { RequestClassSection } from "./request-class";
+import MessagePanel, { type MessageRow, type Recipient } from "@/components/MessagePanel";
+import { ArchiveClassButton } from "./archive-class-button";
 
 const MEDIA_BUCKET = "media";
 
@@ -62,8 +109,12 @@ type ClassRow = {
   name: string;
   total_rounds: number | null;
   round_duration_hours: number | string | null;
+  game_phase_hours: number | string | null;      // D1
+  review_phase_hours: number | string | null;     // D1
   game_starts_at: string | null;
   created_at: string | null;
+  round_topics: Record<string, string | null> | null; // session 78
+  is_archived: boolean; // session 79
 };
 
 type StudentCard = {
@@ -78,15 +129,39 @@ type StudentCard = {
 };
 
 type PageData =
-  | { error: "no-session" | "not-teacher" | "config" }
+  | { error: "no-session" | "config" }
   | {
+      zeroClasses: true;
+      hasPendingRequest: boolean;
+      willingTrio: boolean;
+      willingNine: boolean;
+      isStandardMode: boolean; // M1
+      msgMessages: MessageRow[];
+      msgRecipients: Recipient[];
+      msgUnreadCount: number;
+      msgUserId: string;
+    }
+  | {
+      zeroClasses?: false;
       classes: ClassRow[];
       selectedClass: ClassRow;
       students: StudentCard[];
       pendingEntries: PendingEntryData[];
       pendingFavoriteComments: PendingFavoriteCommentData[];
       hasPendingRequest: boolean;
-      atClassLimit: boolean;
+      topicOptions: string[]; // session 78
+      topicOptionsWithId: TopicOption[]; // M1: topics with ids for deletion
+      isMultiTeacher: boolean; // session 80
+      isStandardMode: boolean; // M1
+      currentRound: number; // session 81: for locking past-round topics
+      currentPhase: "game" | "review" | null; // D1: current round phase
+      willingTrio: boolean; // session 81
+      willingNine: boolean; // session 81
+      msgMessages: MessageRow[];
+      msgRecipients: Recipient[];
+      msgUnreadCount: number;
+      msgUserId: string;
+      msgClassId: string;
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -106,18 +181,187 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
   const { data: classRows } = await admin
     .from("classes")
     .select(
-      "id, name, total_rounds, round_duration_hours, game_starts_at, created_at",
+      "id, name, total_rounds, round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, created_at, round_topics, is_archived",
     )
     .eq("teacher_id", user.id)
     .order("created_at", { ascending: false });
 
+  // ── Session 78: fetch approved game topics for the topic dropdown ────
+  const { data: topicRows } = await admin
+    .from("game_topics")
+    .select("id, topic_text")
+    .eq("status", "approved")
+    .order("topic_text", { ascending: true });
+  const topicOptions = (topicRows || []).map((r: { id: string; topic_text: string }) => r.topic_text);
+  // M1: topics with IDs for standard mode deletion
+  const topicOptionsWithId: TopicOption[] = (topicRows || []).map(
+    (r: { id: string; topic_text: string }) => ({ id: r.id, text: r.topic_text }),
+  );
+
+  // ── Session 80 + M1: check mode + multi-teacher ──────────────────────
+  const { data: adminSettings } = await admin
+    .from("admin_settings")
+    .select("warmup_teacher_count, app_mode")
+    .eq("id", 1)
+    .maybeSingle();
+  const appMode = adminSettings?.app_mode ?? "standard";
+  const isStandardMode = appMode === "standard";
+  // In standard mode, teacher always has full edit access (not read-only)
+  const isMultiTeacher = isStandardMode
+    ? false
+    : (adminSettings?.warmup_teacher_count ?? 1) > 1;
+
   const classes = (classRows || []) as ClassRow[];
-  if (classes.length === 0) return { error: "not-teacher" };
+
+  // ── Session 81: fetch teacher mode preferences ─────────────────────
+  const { data: rotationRow } = await admin
+    .from("teacher_rotation")
+    .select("willing_trio, willing_nine")
+    .eq("teacher_id", user.id)
+    .maybeSingle();
+  const willingTrio = rotationRow?.willing_trio ?? false;
+  const willingNine = rotationRow?.willing_nine ?? false;
+
+  // ── Session 81: zero-class teacher → show request/create form ─────────
+  if (classes.length === 0) {
+    // Still need hasPendingRequest + messaging for zero-class state
+    const { data: pendingReqs } = await admin
+      .from("class_requests")
+      .select("id")
+      .eq("teacher_id", user.id)
+      .eq("status", "pending")
+      .limit(1);
+    const hasPendingRequest = (pendingReqs?.length || 0) > 0;
+
+    // Messaging: teacher can message admins even without a class
+    const { data: adminRows } = await admin
+      .from("profiles")
+      .select("id, display_name, username, role, is_admin")
+      .eq("is_admin", true);
+
+    const msgRecipients: Recipient[] = [];
+    for (const a of adminRows || []) {
+      if (a.id !== user.id) {
+        msgRecipients.push({
+          id: a.id,
+          name: a.display_name || a.username || "Admin",
+          role: "admin",
+        });
+      }
+    }
+
+    const { data: rawMsgs } = await admin
+      .from("messages")
+      .select("id, sender_id, recipient_id, body, is_read, created_at")
+      .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    const msgUnreadCount = (rawMsgs || []).filter(
+      (m) => m.recipient_id === user.id && !m.is_read,
+    ).length;
+
+    const nameMap = new Map<string, string>();
+    for (const a of adminRows || []) {
+      nameMap.set(a.id, a.display_name || a.username || "Admin");
+    }
+
+    const msgMessages: MessageRow[] = (rawMsgs || []).map((m) => ({
+      id: m.id,
+      senderId: m.sender_id,
+      senderName: nameMap.get(m.sender_id) || "You",
+      recipientId: m.recipient_id,
+      recipientName: nameMap.get(m.recipient_id) || "You",
+      body: m.body,
+      isRead: m.is_read,
+      createdAt: m.created_at,
+    }));
+
+    return {
+      zeroClasses: true,
+      hasPendingRequest,
+      willingTrio,
+      willingNine,
+      isStandardMode,
+      msgMessages,
+      msgRecipients,
+      msgUnreadCount,
+      msgUserId: user.id,
+    };
+  }
+
+  // ── Session 80: Auto-archive completed games ──────────────────────
+  // On every page load, check each active class: if the game is over
+  // (all rounds elapsed), silently flip it to archived so it moves
+  // into the "Archived classes" section without teacher action.
+  const now = new Date();
+  for (const cls of classes) {
+    if (cls.is_archived) continue;
+    if (!cls.game_starts_at) continue;
+    const timing: ClassTiming = {
+      total_rounds: cls.total_rounds,
+      game_starts_at: cls.game_starts_at,
+      round_duration_hours:
+        cls.round_duration_hours === null
+          ? null
+          : Number(cls.round_duration_hours),
+    };
+    if (isGameOver(timing, now)) {
+      await admin
+        .from("classes")
+        .update({ is_archived: true, archived_at: now.toISOString() })
+        .eq("id", cls.id);
+      cls.is_archived = true;
+    }
+  }
 
   let selectedClass = classes[0];
   if (classParam) {
     const match = classes.find((c) => c.id === classParam);
     if (match) selectedClass = match;
+  }
+
+  // ── Session 81: compute current round for topic locking ─────────────
+  let currentRound = 0;
+  if (selectedClass.game_starts_at) {
+    const start = new Date(selectedClass.game_starts_at);
+    if (start <= now) {
+      const selTiming: ClassTiming = {
+        total_rounds: selectedClass.total_rounds,
+        game_starts_at: selectedClass.game_starts_at,
+        round_duration_hours:
+          selectedClass.round_duration_hours === null
+            ? null
+            : Number(selectedClass.round_duration_hours),
+      };
+      if (isGameOver(selTiming, now)) {
+        currentRound = (selectedClass.total_rounds ?? 0) + 1;
+      } else {
+        currentRound = computeCurrentRound(selTiming, now);
+      }
+    }
+  }
+
+  // ── D1: compute current phase (game / review) ──────────────────────
+  let currentPhase: "game" | "review" | null = null;
+  if (selectedClass.game_starts_at && currentRound > 0) {
+    const phaseTiming: ClassTiming = {
+      total_rounds: selectedClass.total_rounds,
+      game_starts_at: selectedClass.game_starts_at,
+      round_duration_hours:
+        selectedClass.round_duration_hours === null
+          ? null
+          : Number(selectedClass.round_duration_hours),
+      game_phase_hours:
+        selectedClass.game_phase_hours === null
+          ? null
+          : Number(selectedClass.game_phase_hours),
+      review_phase_hours:
+        selectedClass.review_phase_hours === null
+          ? null
+          : Number(selectedClass.review_phase_hours),
+    };
+    currentPhase = computeCurrentPhase(phaseTiming, now);
   }
 
   // ── Enrollments + students (existing logic) ─────────────────────────
@@ -264,7 +508,8 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       "id, student_id, round, favorite_comment, comments, favorites",
     )
     .eq("class_id", selectedClass.id)
-    .eq("favorite_comment_status", "pending");
+    .eq("favorite_comment_status", "pending")
+    .gt("round", 0);
 
   const pendingFavoriteComments: PendingFavoriteCommentData[] = [];
 
@@ -341,14 +586,93 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     .limit(1);
   const hasPendingRequest = (pendingReqs?.length || 0) > 0;
 
-  // Check if teacher is at their max_classes limit
-  const { data: teacherProfile } = await admin
+  // (Session 81: atClassLimit removed — request button always visible)
+
+  // ── MESSAGE DATA (session 77) ──────────────────────────────────────
+  let msgMessages: MessageRow[] = [];
+  let msgRecipients: Recipient[] = [];
+  let msgUnreadCount = 0;
+  const msgUserId = user.id;
+  const msgClassId = selectedClass.id;
+
+  // Fetch messages (inbox + sent)
+  const { data: rawMsgs } = await admin
+    .from("messages")
+    .select("id, sender_id, recipient_id, body, is_read, created_at")
+    .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  msgUnreadCount = (rawMsgs || []).filter(
+    (m) => m.recipient_id === user.id && !m.is_read,
+  ).length;
+
+  // Collect profile IDs for name resolution
+  const msgPids = new Set<string>();
+  for (const m of rawMsgs || []) {
+    msgPids.add(m.sender_id);
+    msgPids.add(m.recipient_id);
+  }
+
+  // Get admins for recipient list
+  const { data: adminRows } = await admin
     .from("profiles")
-    .select("max_classes")
-    .eq("id", user.id)
-    .maybeSingle();
-  const maxClasses = teacherProfile?.max_classes ?? 1;
-  const atClassLimit = classes.length >= maxClasses;
+    .select("id, display_name")
+    .eq("is_admin", true);
+  for (const a of adminRows || []) msgPids.add(a.id);
+
+  // Add enrolled students to pids
+  for (const s of students) msgPids.add(s.id);
+
+  // Resolve names
+  const nameMap = new Map<string, { name: string; role: string; isAdmin: boolean }>();
+  if (msgPids.size > 0) {
+    const { data: profs } = await admin
+      .from("profiles")
+      .select("id, display_name, username, role, is_admin")
+      .in("id", [...msgPids]);
+    for (const p of profs || []) {
+      nameMap.set(p.id, {
+        name: p.display_name || p.username || "Unknown",
+        role: p.role || "student",
+        isAdmin: p.is_admin ?? false,
+      });
+    }
+  }
+
+  // For students, prefer the display name from the students array (screen_name)
+  // since profiles.display_name may not be set for students.
+  for (const s of students) {
+    const existing = nameMap.get(s.id);
+    if (!existing || existing.name === "Unknown") {
+      nameMap.set(s.id, { name: s.displayName, role: "student", isAdmin: false });
+    }
+  }
+
+  msgMessages = (rawMsgs || []).map((m) => ({
+    id: m.id,
+    senderId: m.sender_id,
+    senderName: nameMap.get(m.sender_id)?.name || "Unknown",
+    recipientId: m.recipient_id,
+    recipientName: nameMap.get(m.recipient_id)?.name || "You",
+    body: m.body,
+    isRead: m.is_read,
+    createdAt: m.created_at,
+  }));
+
+  // Recipient list: admins + students in this class
+  for (const a of adminRows || []) {
+    if (a.id !== user.id) {
+      msgRecipients.push({
+        id: a.id,
+        name: nameMap.get(a.id)?.name || a.display_name || "Admin",
+        role: "admin",
+      });
+    }
+  }
+  for (const s of students) {
+    msgRecipients.push({ id: s.id, name: s.displayName, role: "student" });
+  }
 
   return {
     classes,
@@ -357,7 +681,19 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     pendingEntries,
     pendingFavoriteComments,
     hasPendingRequest,
-    atClassLimit,
+    topicOptions,
+    topicOptionsWithId,
+    isMultiTeacher,
+    isStandardMode,
+    currentRound,
+    currentPhase,
+    willingTrio,
+    willingNine,
+    msgMessages,
+    msgRecipients,
+    msgUnreadCount,
+    msgUserId,
+    msgClassId,
   };
 }
 
@@ -467,14 +803,59 @@ export default async function TeacherStudents({
         }}
       >
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
-        <h1 style={{ fontSize: 24, marginBottom: 12 }}>
-          {data.error === "not-teacher" ? "No class found" : "Something's off"}
-        </h1>
-        <p style={{ color: C.textDim }}>
-          {data.error === "not-teacher"
-            ? "This account doesn't own a class yet."
-            : "Server not configured."}
-        </p>
+        <h1 style={{ fontSize: 24, marginBottom: 12 }}>Something&apos;s off</h1>
+        <p style={{ color: C.textDim }}>Server not configured.</p>
+      </div>
+    );
+  }
+
+  // ── Session 81 + M1: zero-class teacher → show create/request form ────
+  if ("zeroClasses" in data && data.zeroClasses) {
+    return (
+      <div
+        style={{
+          background: C.bg,
+          minHeight: "100vh",
+          padding: "1.5rem 1rem 4rem",
+          fontFamily: F,
+          color: C.text,
+        }}
+      >
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+        <div style={{ maxWidth: 860, margin: "0 auto" }}>
+          <TopNav />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 6,
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
+              Your classes
+            </h1>
+            <MessagePanel
+              messages={data.msgMessages}
+              recipients={data.msgRecipients}
+              unreadCount={data.msgUnreadCount}
+              currentUserId={data.msgUserId}
+              classId=""
+              theme="warm"
+              canSendToAll={false}
+              allStudentsClassId=""
+            />
+          </div>
+          <RequestClassSection
+            hasPending={data.hasPendingRequest}
+            willingTrio={data.willingTrio}
+            willingNine={data.willingNine}
+            isProminent
+            isStandardMode={data.isStandardMode}
+          />
+        </div>
       </div>
     );
   }
@@ -486,9 +867,31 @@ export default async function TeacherStudents({
     pendingEntries,
     pendingFavoriteComments,
     hasPendingRequest,
-    atClassLimit,
+    topicOptions,
+    topicOptionsWithId,
+    isMultiTeacher,
+    isStandardMode,
+    currentRound,
+    currentPhase,
+    willingTrio,
+    willingNine,
+    msgMessages,
+    msgRecipients,
+    msgUnreadCount,
+    msgUserId,
+    msgClassId,
   } = data;
   const statusLine = buildStatusLine(selectedClass);
+
+  // Session 79: split active vs archived classes
+  const activeClasses = classes.filter((c) => !c.is_archived);
+  const archivedClasses = classes.filter((c) => c.is_archived);
+
+  // Session 81: ensure selected class always appears in the dropdown
+  // (covers edge case where auto-archive ran but we're still viewing it)
+  const dropdownClasses = activeClasses.some((c) => c.id === selectedClass.id)
+    ? activeClasses
+    : [selectedClass, ...activeClasses];
 
   return (
     <div
@@ -519,28 +922,71 @@ export default async function TeacherStudents({
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
             Your classes
           </h1>
-          <RequestClassButton
-            hasPending={hasPendingRequest}
-            atLimit={atClassLimit}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <MessagePanel
+              messages={msgMessages}
+              recipients={msgRecipients}
+              unreadCount={msgUnreadCount}
+              currentUserId={msgUserId}
+              classId={msgClassId}
+              theme="warm"
+              canSendToAll={students.length > 0}
+              allStudentsClassId={msgClassId}
+            />
+            <RequestClassSection
+              hasPending={hasPendingRequest}
+              willingTrio={willingTrio}
+              willingNine={willingNine}
+              isStandardMode={isStandardMode}
+            />
+          </div>
         </div>
 
         {/* ── SECTION 1: Class settings header ── */}
         <ClassHeader
           key={selectedClass.id}
-          classes={classes.map((c) => ({ id: c.id, name: c.name }))}
+          classes={dropdownClasses.map((c) => ({ id: c.id, name: c.name }))}
           selectedClass={{
             id: selectedClass.id,
             name: selectedClass.name,
             total_rounds: selectedClass.total_rounds ?? 5,
-            round_duration_hours:
-              selectedClass.round_duration_hours === null
-                ? 24
-                : Number(selectedClass.round_duration_hours),
+            game_phase_hours:
+              selectedClass.game_phase_hours != null
+                ? Number(selectedClass.game_phase_hours)
+                : selectedClass.round_duration_hours != null
+                  ? Number(selectedClass.round_duration_hours)
+                  : 24,
+            review_phase_hours:
+              selectedClass.review_phase_hours != null
+                ? Number(selectedClass.review_phase_hours)
+                : 0,
             game_starts_at: selectedClass.game_starts_at,
+            round_topics: (selectedClass.round_topics as Record<string, string | null>) ?? null,
           }}
           statusLine={statusLine}
+          topicOptions={topicOptions}
+          topicOptionsWithId={topicOptionsWithId}
+          readOnly={isMultiTeacher}
+          currentRound={currentRound}
+          currentPhase={currentPhase ?? undefined}
+          isStandardMode={isStandardMode}
         />
+
+        {/* Session 79: Archive button — shown when viewing a non-archived class */}
+        {!selectedClass.is_archived && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 8 }}>
+            <a
+              href={`/teacher/students/export?class=${selectedClass.id}`}
+              style={{
+                fontSize: 12, color: C.light, textDecoration: "none",
+                fontWeight: 600,
+              }}
+            >
+              Download class spreadsheet
+            </a>
+            <ArchiveClassButton classId={selectedClass.id} action="archive" />
+          </div>
+        )}
 
         {/* ── SECTION 2: Pending queue (submissions + favorite comments) ──
             Sits between settings and the student grid.
@@ -724,6 +1170,46 @@ export default async function TeacherStudents({
               </Link>
             ))}
           </div>
+        )}
+
+        {/* ── Session 79: ARCHIVED CLASSES ── */}
+        {archivedClasses.length > 0 && (
+          <details style={{ marginTop: 32 }}>
+            <summary style={{
+              cursor: "pointer",
+              fontSize: 13, fontWeight: 700, letterSpacing: 1,
+              textTransform: "uppercase", color: C.textFaint,
+              marginBottom: 12,
+            }}>
+              Archived classes ({archivedClasses.length})
+            </summary>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+              {archivedClasses.map((ac) => (
+                <div key={ac.id} style={{
+                  background: C.panel, border: `1px solid ${C.panelEdge}`,
+                  borderRadius: 12, padding: "12px 16px",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, flexWrap: "wrap", opacity: 0.8,
+                }}>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{ac.name}</span>
+                    <span style={{ fontSize: 11, color: C.textFaint, marginLeft: 8 }}>
+                      archived {ac.created_at ? new Date(ac.created_at).toLocaleDateString() : ""}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                    <a
+                      href={`/teacher/students/export?class=${ac.id}`}
+                      style={{ fontSize: 11, color: C.light, textDecoration: "none", fontWeight: 600 }}
+                    >
+                      Download spreadsheet
+                    </a>
+                    <ArchiveClassButton classId={ac.id} action="unarchive" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
         )}
       </div>
     </div>

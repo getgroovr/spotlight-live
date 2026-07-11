@@ -88,6 +88,16 @@
 //   teacher-deck bucket → getPublicUrl. Student entries (is_starter=false)
 //   live in the PRIVATE media bucket → createSignedUrl. The round-session
 //   builder checks is_starter per entry and branches accordingly.
+//
+// Session 85 (D2-UI):
+//   CurrentClassTiming extended with phase-aware fields:
+//     • roundPhase: "future" | "game" | "review" | "complete" | null
+//     • gamePhaseDeadline: ISO string | null (when submissions close)
+//     • gamePhaseHours / reviewPhaseHours: raw config values
+//   The class query now selects game_phase_hours + review_phase_hours.
+//   The ClassTiming object includes them so round-timing helpers can
+//   compute the phase split. The dashboard uses these to show deadlines
+//   and "submissions closed" banners.
 // ─────────────────────────────────────────────────────────────────────────
 import "server-only";
 import { createClient } from "@/lib/supabase-server";
@@ -96,6 +106,8 @@ import {
   type ClassTiming,
   computeCurrentRound,
   isGameOver,
+  getRoundPhase,
+  getGamePhaseDeadline,
 } from "@/lib/round-timing";
 
 const STARTER_BUCKET = "teacher-deck";
@@ -152,12 +164,20 @@ export type OwnEntry = {
 // Timing snapshot for the student's CURRENT class. Null when the student
 // has no current class. The slot grid renders totalRounds squares
 // (falling back to 1 when null) and locks any whose number ≤ currentRound.
+//
+// Session 85 (D2-UI): phase-aware fields added.
 export type CurrentClassTiming = {
   totalRounds: number | null;       // null → game not configured yet (show 1 slot)
   gameStartsAt: string | null;
   roundDurationHours: number | null;
   currentRound: number;             // 0 = pre-game; totalRounds+1 = over
   isGameOver: boolean;
+  // D2-UI: phase fields — null when game_phase_hours is not configured
+  // (legacy mode, no phase split).
+  roundPhase: "future" | "game" | "review" | "complete" | null;
+  gamePhaseDeadline: string | null; // ISO timestamp when submissions close
+  gamePhaseHours: number | null;    // raw config — null = legacy (no split)
+  reviewPhaseHours: number | null;  // raw config
 };
 
 // B2 (#41): one completed student round's worth of classmate comments.
@@ -365,22 +385,44 @@ export async function getStudentArchive(): Promise<ArchiveResult> {
 
   if (currentClassId) {
     // Class timing.
+    // Session 85 (D2-UI): added game_phase_hours + review_phase_hours to
+    // the select so the timing object can compute phase state.
     const { data: classRow } = await admin
       .from("classes")
-      .select("total_rounds, game_starts_at, round_duration_hours")
+      .select("total_rounds, game_starts_at, round_duration_hours, game_phase_hours, review_phase_hours")
       .eq("id", currentClassId)
       .maybeSingle();
     const timing: ClassTiming = {
       total_rounds: classRow?.total_rounds ?? null,
       game_starts_at: classRow?.game_starts_at ?? null,
       round_duration_hours: classRow?.round_duration_hours ?? null,
+      game_phase_hours: classRow?.game_phase_hours ?? null,
+      review_phase_hours: classRow?.review_phase_hours ?? null,
     };
+
+    const now = new Date();
+    const curRound = computeCurrentRound(timing, now);
+    const gameOver = isGameOver(timing, now);
+
+    // D2-UI: compute phase for the current round.
+    const roundPhase = curRound > 0 && !gameOver
+      ? getRoundPhase(curRound, timing, now)
+      : null;
+    const gameDeadline = curRound > 0 && !gameOver
+      ? getGamePhaseDeadline(curRound, timing)
+      : null;
+
     currentClassTiming = {
       totalRounds: timing.total_rounds,
       gameStartsAt: timing.game_starts_at,
       roundDurationHours: timing.round_duration_hours,
-      currentRound: computeCurrentRound(timing),
-      isGameOver: isGameOver(timing),
+      currentRound: curRound,
+      isGameOver: gameOver,
+      // D2-UI phase fields
+      roundPhase,
+      gamePhaseDeadline: gameDeadline?.toISOString() ?? null,
+      gamePhaseHours: timing.game_phase_hours ?? null,
+      reviewPhaseHours: timing.review_phase_hours ?? null,
     };
 
     // Own entries: order by round asc, then uploaded_at desc, then dedupe

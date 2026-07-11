@@ -6,43 +6,27 @@
 //   1. saveClassSettings       — class management header (slice 1, step 3)
 //   2. approveEntry            — approve a pending student submission
 //   3. rejectEntry             — reject a pending submission with a reason
-//   4. approveFavoriteComment  — NEW #38: approve a pending favorite comment
-//   5. rejectFavoriteComment   — NEW #38: reject a pending favorite comment
+//   4. approveFavoriteComment  — #38: approve a pending favorite comment
+//   5. rejectFavoriteComment   — #38: reject a pending favorite comment
+//   6. suggestTopic            — session 78: teacher suggests a game topic
+//   7. createClassDirect       — M1: standard mode direct class creation
+//   8. deleteGameTopic         — M1: standard mode direct topic deletion
 //
-// AUTH PATTERN (all actions):
-//   - SSR cookie client to resolve auth.uid()
-//   - Verify role = 'teacher' on profiles
-//   - Verify ownership (class belongs to this teacher)
-//
-// #35 T1: approveEntry now archives any existing live entry for the same
-//         student + class + round before flipping the new one to live.
-//         This prevents unique-constraint violations when a student
-//         resubmits and the teacher approves the replacement.
-//
-// #35 T2: Both approveEntry and rejectEntry write the teacher's comment
-//         to the `teacher_comments` table with `entry_id` set. This is
-//         the same table the student profile page reads from, so notes
-//         are editable from both the pending queue and the student detail
-//         view. rejectEntry ALSO writes to entries.rejection_reason for
-//         backward compatibility with older data paths.
-//
-// #38: Favorite comment moderation. game_sessions now has:
-//        favorite_comment_status   (null | pending | approved | rejected)
-//        favorite_comment_reviewed_by, favorite_comment_reviewed_at
-//        favorite_comment_rejection_reason
-//      The pending queue surfaces sessions where favorite_comment_status
-//      = 'pending'. Approve/reject flip the status. Rejection reason is
-//      stored on game_sessions directly (no teacher_comments write for
-//      this path — the student reads it from the session row).
-//
-// TWO-TRACK STUDENT IDS: teacher_comments.student_id uses students.id
-//   (not profiles.id / auth user id). The approval flow resolves this
-//   via the lookup chain: entry.student_id → auth user email → students
-//   table. See resolveStudentsId helper.
-//
-//   NOTE: game_sessions.student_id IS students.id already (written by
-//   enrollStudent in play/actions.ts), so the favorite-comment actions
-//   do NOT need the resolveStudentsId bridge.
+// Session 78: saveClassSettings now reads round_topics from formData.
+// Session 79: suggestTopic inserts with status='approved'.
+// Session 84: Chunk D1 —
+//   - saveClassSettings now reads game_phase_hours + review_phase_hours,
+//     computes round_duration_hours as the sum.
+//   - ALLOWED_DURATION_HOURS expanded for new preset values.
+//   - approveEntry + approveFavoriteComment include auto-advance trigger:
+//     after approving, if no pending items remain for that class's current
+//     round, update games.current_round_phase to 'game' (advance).
+// Session 86: Chunk M1 —
+//   - createClassDirect: standard mode, teacher creates class directly
+//     (no request→admin flow). Inserts into classes + creates a game row.
+//   - deleteGameTopic: standard mode, teacher deletes a topic directly.
+//   - suggestTopic: label updated but behavior unchanged (already inserts
+//     as approved). In standard mode this is "Add a topic".
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -53,7 +37,8 @@ import type { ActionResult } from "@/app/play/actions";
 
 // ── saveClassSettings ─────────────────────────────────────────────────────
 
-const ALLOWED_DURATION_HOURS = [0.25, 0.5, 1, 2, 5, 24, 48, 168] as const;
+// D1: expanded to cover all preset values in the game/review dropdowns
+const ALLOWED_DURATION_HOURS = [0, 0.25, 0.5, 1, 1.5, 2, 5, 22, 24, 46, 48, 144, 168] as const;
 const MIN_ROUNDS = 1;
 const MAX_ROUNDS = 100;
 const NAME_MIN = 1;
@@ -91,8 +76,12 @@ export async function saveClassSettings(
   const classId = String(formData.get("class_id") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const totalRoundsRaw = String(formData.get("total_rounds") || "").trim();
-  const durationRaw = String(formData.get("round_duration_hours") || "").trim();
   const startRaw = String(formData.get("game_starts_at") || "").trim();
+  const roundTopicsRaw = String(formData.get("round_topics") || "").trim();
+
+  // D1: read game/review phase hours
+  const gamePhaseRaw = String(formData.get("game_phase_hours") || "").trim();
+  const reviewPhaseRaw = String(formData.get("review_phase_hours") || "").trim();
 
   if (!classId) {
     return { ok: false, error: "Missing class id." };
@@ -117,17 +106,33 @@ export async function saveClassSettings(
     };
   }
 
-  const durationHours = parseFloat(durationRaw);
+  // D1: parse game and review phase hours
+  const gamePhaseHours = parseFloat(gamePhaseRaw);
+  const reviewPhaseHours = parseFloat(reviewPhaseRaw);
+
   if (
-    !Number.isFinite(durationHours) ||
-    !(ALLOWED_DURATION_HOURS as readonly number[]).includes(durationHours)
+    !Number.isFinite(gamePhaseHours) ||
+    !(ALLOWED_DURATION_HOURS as readonly number[]).includes(gamePhaseHours) ||
+    gamePhaseHours <= 0
   ) {
     return {
       ok: false,
-      error:
-        "Round duration must be one of: 15 min, 30 min, 1 hour, 2 hours, 5 hours, 1 day, 2 days, 1 week.",
+      error: "Game time must be one of the preset values.",
     };
   }
+
+  if (
+    !Number.isFinite(reviewPhaseHours) ||
+    !(ALLOWED_DURATION_HOURS as readonly number[]).includes(reviewPhaseHours)
+  ) {
+    return {
+      ok: false,
+      error: "Review time must be one of the preset values.",
+    };
+  }
+
+  // Compute total round duration for backward compatibility
+  const durationHours = gamePhaseHours + reviewPhaseHours;
 
   let gameStartsAtIso: string | null = null;
   let startInPast = false;
@@ -140,13 +145,35 @@ export async function saveClassSettings(
     startInPast = parsed.getTime() < Date.now();
   }
 
+  // ── Parse round_topics (session 78) ───────────────────────────────────
+  let roundTopics: Record<string, string | null> | null = null;
+  if (roundTopicsRaw) {
+    try {
+      const parsed = JSON.parse(roundTopicsRaw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        roundTopics = {};
+        for (const [key, val] of Object.entries(parsed)) {
+          const roundNum = parseInt(key, 10);
+          if (Number.isFinite(roundNum) && roundNum >= 1 && roundNum <= totalRounds) {
+            roundTopics[key] = typeof val === "string" && val.trim() ? val.trim() : null;
+          }
+        }
+      }
+    } catch {
+      // Malformed JSON — ignore, save null
+    }
+  }
+
   const { data: updated, error: updErr } = await supabase
     .from("classes")
     .update({
       name,
       total_rounds: totalRounds,
       round_duration_hours: durationHours,
+      game_phase_hours: gamePhaseHours,
+      review_phase_hours: reviewPhaseHours,
       game_starts_at: gameStartsAtIso,
+      round_topics: roundTopics,
     })
     .eq("id", classId)
     .eq("teacher_id", user.id)
@@ -171,6 +198,168 @@ export async function saveClassSettings(
         "Start time is in the past — the game is already underway. If that wasn't intentional, edit the start time and save again.",
     };
   }
+  return { ok: true };
+}
+
+// ── suggestTopic (session 78, updated session 79) ─────────────────────────
+// In standard mode this is called "Add a topic" (UI label only — behavior
+// is the same: inserts with status='approved').
+
+export async function suggestTopic(
+  topicText: string,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  if (!supabase) return { ok: false, error: "Server isn't configured." };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Sign-in expired." };
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("id, role, display_name, username")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (!profile || profile.role !== "teacher") {
+    return { ok: false, error: "Only teachers can suggest topics." };
+  }
+
+  const text = topicText.trim();
+  if (!text || text.length < 2 || text.length > 80) {
+    return { ok: false, error: "Topic must be 2–80 characters." };
+  }
+
+  // Use service client to bypass RLS for the insert
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return { ok: false, error: "Server config error." };
+  }
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  const { error: insErr } = await admin
+    .from("game_topics")
+    .insert({
+      topic_text: text,
+      status: "approved",
+      suggested_by: user.id,
+    });
+
+  if (insErr) {
+    if (insErr.message.includes("duplicate") || insErr.message.includes("unique")) {
+      return { ok: false, error: "That topic already exists." };
+    }
+    return { ok: false, error: `Could not save: ${insErr.message}` };
+  }
+
+  // ── Notify admin(s) (only in multi mode — harmless in standard) ─────
+  const teacherName = profile.display_name || profile.username || "A teacher";
+  const { data: admins } = await admin
+    .from("profiles")
+    .select("id")
+    .eq("is_admin", true);
+
+  if (admins && admins.length > 0) {
+    const notifications = admins.map((a) => ({
+      sender_id: user.id,
+      recipient_id: a.id,
+      note_type: "topic_created",
+      body: `${teacherName} created a custom topic: "${text}"`,
+    }));
+    await admin.from("notifications").insert(notifications);
+  }
+
+  return { ok: true };
+}
+
+// ── M1: deleteGameTopic (standard mode direct topic deletion) ─────────────
+
+export async function deleteGameTopic(
+  topicId: string,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  if (!topicId) return { ok: false, error: "Missing topic id." };
+
+  // Verify topic exists
+  const { data: topic } = await auth.admin
+    .from("game_topics")
+    .select("id, suggested_by")
+    .eq("id", topicId)
+    .maybeSingle();
+
+  if (!topic) return { ok: false, error: "Topic not found." };
+
+  // Delete the topic
+  const { error: delErr } = await auth.admin
+    .from("game_topics")
+    .delete()
+    .eq("id", topicId);
+
+  if (delErr) {
+    return { ok: false, error: `Could not delete: ${delErr.message}` };
+  }
+
+  revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ── M1: createClassDirect (standard mode) ─────────────────────────────────
+// In standard mode the teacher creates a class directly — no request→admin
+// approval flow. Inserts into `classes` and creates a `games` row.
+
+const ALLOWED_CAPACITIES = [9, 16, 25] as const;
+
+export async function createClassDirect(
+  className: string,
+  capacity: number,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  const name = className.trim();
+  if (!name || name.length < 1 || name.length > 100) {
+    return { ok: false, error: "Class name must be 1–100 characters." };
+  }
+
+  if (!(ALLOWED_CAPACITIES as readonly number[]).includes(capacity)) {
+    return { ok: false, error: "Invalid class size." };
+  }
+
+  // Insert the class
+  const { data: newClass, error: clsErr } = await auth.admin
+    .from("classes")
+    .insert({
+      teacher_id: auth.userId,
+      name,
+      capacity,
+      is_archived: false,
+    })
+    .select("id")
+    .single();
+
+  if (clsErr) {
+    return { ok: false, error: `Could not create class: ${clsErr.message}` };
+  }
+
+  // Create a game row for this class (status: pending until teacher sets schedule)
+  const { error: gameErr } = await auth.admin
+    .from("games")
+    .insert({
+      class_id: newClass.id,
+      name: `${name} Game`,
+      status: "pending",
+      current_round_phase: "game",
+    });
+
+  if (gameErr) {
+    console.error(`[createClassDirect] Could not create game row: ${gameErr.message}`);
+    // Non-fatal — class is created, game can be created later
+  }
+
+  revalidatePath("/teacher/students");
   return { ok: true };
 }
 
@@ -212,8 +401,6 @@ async function getTeacherAdmin(): Promise<
 
 // ── Entry ownership verification ──────────────────────────────────────────
 
-// Verify the entry is pending and belongs to a class this teacher owns.
-// Also returns student_id, class_id, round_number for the archive step.
 async function verifyEntryOwnership(
   admin: ReturnType<typeof createServiceClient>,
   entryId: string,
@@ -223,7 +410,7 @@ async function verifyEntryOwnership(
   | {
       ok: true;
       entryClassId: string;
-      studentId: string;       // profiles.id = auth user id
+      studentId: string;
       roundNumber: number;
     }
 > {
@@ -255,26 +442,15 @@ async function verifyEntryOwnership(
 }
 
 // ── Resolve students.id from profiles.id (auth user id) ───────────────────
-//
-// teacher_comments.student_id uses students.id, but entries.student_id is
-// profiles.id (= auth user id). Different UUIDs — see the TWO-TRACK
-// comment in student-archive.ts. This helper bridges the gap:
-//   profiles.id → auth.users.email → students.email → students.id
-//
-// Returns null if the student row can't be found (e.g. seed data with
-// fake UUIDs). The caller should silently skip the teacher_comments write
-// in that case — the note won't surface, but the approve/reject still
-// goes through.
+
 async function resolveStudentsId(
   adminClient: ReturnType<typeof createServiceClient>,
   profilesId: string,
 ): Promise<string | null> {
-  // Step 1: get the auth user's email.
   const { data: authData } = await adminClient.auth.admin.getUserById(profilesId);
   const email = authData?.user?.email;
   if (!email) return null;
 
-  // Step 2: look up the students row by email.
   const { data: studentRow } = await adminClient
     .from("students")
     .select("id")
@@ -284,25 +460,15 @@ async function resolveStudentsId(
 }
 
 // ── Write / update teacher comment in teacher_comments ────────────────────
-//
-// Upserts a teacher_comments row for (student_id, entry_id). If a row
-// already exists for this student + entry, the body is updated. Otherwise
-// a new row is inserted.
-//
-// ASSUMPTION: teacher_comments has at minimum these columns:
-//   student_id, class_id, entry_id, body, round, created_at
-// If the table has additional NOT NULL columns this INSERT may fail —
-// the approve/reject action will still succeed; only the note is lost.
-// A server-log error will surface the missing column so we can fix it.
+
 async function upsertTeacherComment(
   adminClient: ReturnType<typeof createServiceClient>,
-  studentId: string,     // students.id
+  studentId: string,
   classId: string,
   entryId: string,
   roundNumber: number,
   body: string,
 ): Promise<void> {
-  // Check for existing row.
   const { data: existing } = await adminClient
     .from("teacher_comments")
     .select("id")
@@ -311,7 +477,6 @@ async function upsertTeacherComment(
     .maybeSingle();
 
   if (existing) {
-    // Update the existing comment.
     const { error } = await adminClient
       .from("teacher_comments")
       .update({ body })
@@ -320,7 +485,6 @@ async function upsertTeacherComment(
       console.error("[actions] Failed to update teacher_comments:", error.message);
     }
   } else {
-    // Insert a new comment.
     const { error } = await adminClient
       .from("teacher_comments")
       .insert({
@@ -336,15 +500,68 @@ async function upsertTeacherComment(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// D1: Auto-advance helper
+//
+// After approving an entry or favorite comment, check if there are any
+// remaining pending items for this class in the given round. If none
+// remain, update games.current_round_phase to 'game' — signaling that
+// the review is complete and the next round can begin.
+//
+// For the FINAL round (round === total_rounds), this signals that the
+// awards ceremony is ready instead.
+// ─────────────────────────────────────────────────────────────────────────
+
+async function checkAutoAdvance(
+  adminClient: ReturnType<typeof createServiceClient>,
+  classId: string,
+  roundNumber: number,
+): Promise<void> {
+  // Count remaining pending entries for this class + round
+  const { count: pendingEntries } = await adminClient
+    .from("entries")
+    .select("id", { count: "exact", head: true })
+    .eq("class_id", classId)
+    .eq("round_number", roundNumber)
+    .eq("status", "pending")
+    .eq("is_starter", false);
+
+  // Count remaining pending favorite comments for this class + round
+  const { count: pendingComments } = await adminClient
+    .from("game_sessions")
+    .select("id", { count: "exact", head: true })
+    .eq("class_id", classId)
+    .eq("round", roundNumber)
+    .eq("favorite_comment_status", "pending");
+
+  const totalPending = (pendingEntries ?? 0) + (pendingComments ?? 0);
+
+  if (totalPending === 0) {
+    // All items approved for this round — advance.
+    // Find the game for this class.
+    const { data: game } = await adminClient
+      .from("games")
+      .select("id, class_id, status")
+      .eq("class_id", classId)
+      .in("status", ["active", "pending"])
+      .maybeSingle();
+
+    if (game) {
+      // Set phase back to 'game' — signals next round is open
+      await adminClient
+        .from("games")
+        .update({ current_round_phase: "game" })
+        .eq("id", game.id);
+
+      console.log(
+        `[auto-advance] Round ${roundNumber} review complete for class ${classId}. ` +
+        `Game ${game.id} phase set to 'game'.`,
+      );
+    }
+  }
+}
+
 // ── approveEntry ──────────────────────────────────────────────────────────
-//
-// #35 T1: Archive any existing live entry for the same student + class +
-//         round BEFORE flipping this one to live. Prevents unique-constraint
-//         violations on entries_one_live_per_student_class_round.
-//
-// #35 T2: If a comment is provided, writes it to teacher_comments with
-//         entry_id set. The student sees it as "Your teacher said" on
-//         their dashboard. Editable later from the student profile page.
 
 export async function approveEntry(
   entryId: string,
@@ -407,24 +624,16 @@ export async function approveEntry(
     }
   }
 
+  // D1: check auto-advance after approving
+  await checkAutoAdvance(auth.admin, ownership.entryClassId, ownership.roundNumber);
+
   revalidatePath("/teacher/students");
-  // #40: student dashboard and student-play also read entries.status — must
-  // be revalidated so the student sees the new APPROVED/NOT APPROVED state
-  // on next page load instead of stale cached data.
   revalidatePath("/student/dashboard");
   revalidatePath("/student/play");
   return { ok: true };
 }
 
 // ── rejectEntry ───────────────────────────────────────────────────────────
-//
-// Sets status to 'rejected'. Writes the reason to BOTH:
-//   1. entries.rejection_reason — backward compat for existing data paths
-//   2. teacher_comments (with entry_id) — the unified note the student
-//      dashboard and student profile page both read from
-//
-// The student sees the note in a red "NOT APPROVED" context box on their
-// dashboard (based on entry status, not which table the text came from).
 
 export async function rejectEntry(
   entryId: string,
@@ -440,7 +649,6 @@ export async function rejectEntry(
   const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
   if (!ownership.ok) return ownership;
 
-  // Set status to rejected + write rejection_reason on entries (backward compat).
   const { error: updErr } = await auth.admin
     .from("entries")
     .update({
@@ -455,7 +663,6 @@ export async function rejectEntry(
     return { ok: false, error: `Could not reject: ${updErr.message}` };
   }
 
-  // Also write to teacher_comments — the unified note.
   const studentsId = await resolveStudentsId(auth.admin, ownership.studentId);
   if (studentsId) {
     await upsertTeacherComment(
@@ -479,16 +686,6 @@ export async function rejectEntry(
 }
 
 // ── approveFavoriteComment ────────────────────────────────────────────────
-//
-// #38: Approves a pending favorite comment on a game_session.
-//
-// Flips favorite_comment_status from 'pending' → 'approved'.
-// No teacher_comments write — the approve is a simple status flip.
-// If the teacher wants to leave a note for the student, they can do
-// it from the student detail page.
-//
-// game_sessions.student_id is students.id (not profiles.id), written
-// by enrollStudent. No resolveStudentsId bridge needed here.
 
 export async function approveFavoriteComment(
   sessionId: string,
@@ -496,10 +693,9 @@ export async function approveFavoriteComment(
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
 
-  // Load the session and verify it's pending.
   const { data: session } = await auth.admin
     .from("game_sessions")
-    .select("id, class_id, favorite_comment_status")
+    .select("id, class_id, round, favorite_comment_status")
     .eq("id", sessionId)
     .maybeSingle();
 
@@ -508,7 +704,6 @@ export async function approveFavoriteComment(
     return { ok: false, error: "This favorite comment has already been reviewed." };
   }
 
-  // Verify teacher owns the class.
   const { data: cls } = await auth.admin
     .from("classes")
     .select("id")
@@ -517,7 +712,6 @@ export async function approveFavoriteComment(
     .maybeSingle();
   if (!cls) return { ok: false, error: "You don't own this class." };
 
-  // Flip to approved.
   const { error: updErr } = await auth.admin
     .from("game_sessions")
     .update({
@@ -531,6 +725,9 @@ export async function approveFavoriteComment(
     return { ok: false, error: `Could not approve: ${updErr.message}` };
   }
 
+  // D1: check auto-advance after approving
+  await checkAutoAdvance(auth.admin, session.class_id, session.round);
+
   revalidatePath("/teacher/students");
   revalidatePath("/student/dashboard");
   revalidatePath("/student/play");
@@ -538,13 +735,6 @@ export async function approveFavoriteComment(
 }
 
 // ── rejectFavoriteComment ─────────────────────────────────────────────────
-//
-// #38: Rejects a pending favorite comment on a game_session.
-//
-// Flips favorite_comment_status from 'pending' → 'rejected' and stores
-// the reason in favorite_comment_rejection_reason. The student sees this
-// on their dashboard and can edit + resubmit their favorite comment,
-// which resets the status back to 'pending'.
 
 export async function rejectFavoriteComment(
   sessionId: string,
@@ -557,7 +747,6 @@ export async function rejectFavoriteComment(
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
 
-  // Load the session and verify it's pending.
   const { data: session } = await auth.admin
     .from("game_sessions")
     .select("id, class_id, favorite_comment_status")
@@ -569,7 +758,6 @@ export async function rejectFavoriteComment(
     return { ok: false, error: "This favorite comment has already been reviewed." };
   }
 
-  // Verify teacher owns the class.
   const { data: cls } = await auth.admin
     .from("classes")
     .select("id")
@@ -578,7 +766,6 @@ export async function rejectFavoriteComment(
     .maybeSingle();
   if (!cls) return { ok: false, error: "You don't own this class." };
 
-  // Flip to rejected + store reason.
   const { error: updErr } = await auth.admin
     .from("game_sessions")
     .update({
@@ -596,5 +783,61 @@ export async function rejectFavoriteComment(
   revalidatePath("/teacher/students");
   revalidatePath("/student/dashboard");
   revalidatePath("/student/play");
+  return { ok: true };
+}
+
+// ── archiveClass (session 79) ────────────────────────────────────────────
+
+export async function archiveClass(
+  classId: string,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  const { data: cls } = await auth.admin
+    .from("classes")
+    .select("id")
+    .eq("id", classId)
+    .eq("teacher_id", auth.userId)
+    .maybeSingle();
+  if (!cls) return { ok: false, error: "Class not found or you don't own it." };
+
+  const { error: updErr } = await auth.admin
+    .from("classes")
+    .update({ is_archived: true, archived_at: new Date().toISOString() })
+    .eq("id", classId);
+
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/teacher/students");
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ── unarchiveClass (session 79) ──────────────────────────────────────────
+
+export async function unarchiveClass(
+  classId: string,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  const { data: cls } = await auth.admin
+    .from("classes")
+    .select("id")
+    .eq("id", classId)
+    .eq("teacher_id", auth.userId)
+    .maybeSingle();
+  if (!cls) return { ok: false, error: "Class not found or you don't own it." };
+
+  const { error: updErr } = await auth.admin
+    .from("classes")
+    .update({ is_archived: false, archived_at: null })
+    .eq("id", classId);
+
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/teacher/students");
+  revalidatePath("/admin");
   return { ok: true };
 }

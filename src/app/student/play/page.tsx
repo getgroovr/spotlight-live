@@ -13,6 +13,16 @@
 // Session 63:
 //   U6: game-over text uses awards/ceremony language.
 //   U7: "Go to the awards ceremony" not "See which photos…"
+//
+// Session 79 (Chunk 2 — topics):
+//   Passes currentTopic and nextRoundTopic from loadClassDeck through to
+//   GameShell so the game engine can display per-round topics in the
+//   splash, above the grid, and in the upload prompt.
+//
+// Session 85 (D2-UI):
+//   Added "submissions-closed" holding page — when the game phase has
+//   ended and the teacher is reviewing, the student sees a "Submissions
+//   closed" screen with a link back to their dashboard.
 // ─────────────────────────────────────────────────────────────────────────
 import GameShell from "@/game/shell";
 import { loadClassDeck } from "@/lib/class-deck";
@@ -35,6 +45,8 @@ export default async function StudentPlayPage() {
         warmupComplete={deck.warmupComplete}
         currentRound={deck.currentRound}
         totalRounds={deck.totalRounds}
+        currentTopic={deck.currentTopic ?? null}
+        nextRoundTopic={deck.nextRoundTopic ?? null}
       />
     );
   }
@@ -52,7 +64,8 @@ function ClassPlayHoldingPage({
     | "no-entries"
     | "game-over"
     | "game-not-started"
-    | "entry-pending";
+    | "entry-pending"
+    | "submissions-closed";
 }) {
   if (reason === "game-over") {
     return (
@@ -135,6 +148,53 @@ function ClassPlayHoldingPage({
             Your photo is waiting for your teacher to review it.
             Once it&apos;s approved, you&apos;ll be able to play this round.
             Check back soon!
+          </p>
+          <Link
+            href="/student/dashboard"
+            style={{
+              display: "inline-block",
+              background: "#D98A2B",
+              color: "#fff",
+              padding: "12px 28px",
+              borderRadius: 12,
+              fontSize: 15,
+              fontWeight: 700,
+              textDecoration: "none",
+              letterSpacing: 0.5,
+            }}
+          >
+            Back to your dashboard →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── D2-UI: submissions-closed holding page ──────────────────────────
+  if (reason === "submissions-closed") {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: "#D9BE8E",
+          color: "#3a2a1a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "24px",
+          fontFamily:
+            "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+        }}
+      >
+        <div style={{ maxWidth: 460, textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
+          <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 12px" }}>
+            Submissions are closed
+          </h1>
+          <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 24px" }}>
+            The submission window for this round has ended. Your teacher
+            is now reviewing everyone&apos;s work. Hang tight — the next
+            round will open soon!
           </p>
           <Link
             href="/student/dashboard"
