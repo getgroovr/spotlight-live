@@ -1,0 +1,11 @@
+-- ─────────────────────────────────────────────────────────────────────────
+-- Migration: teacher_prompt column on classes
+-- Session 89: Teacher guidance at upload/comment time.
+--
+-- Free-text field the teacher fills in per class. Shown to students in the
+-- spotlight comment box as encouragement/guidance (e.g. "Focus on textures
+-- today" or "Tell them what you notice first").
+--
+-- Safe to re-run.
+-- ─────────────────────────────────────────────────────────────────────────
+ALTER TABLE classes ADD COLUMN IF NOT EXISTS teacher_prompt text;
