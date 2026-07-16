@@ -83,6 +83,10 @@ export async function saveClassSettings(
   const gamePhaseRaw = String(formData.get("game_phase_hours") || "").trim();
   const reviewPhaseRaw = String(formData.get("review_phase_hours") || "").trim();
 
+  // Session 89: teacher guidance prompt
+  const teacherPromptRaw = formData.get("teacher_prompt");
+  const teacherPrompt = teacherPromptRaw != null ? String(teacherPromptRaw).trim() || null : undefined;
+
   if (!classId) {
     return { ok: false, error: "Missing class id." };
   }
@@ -164,17 +168,24 @@ export async function saveClassSettings(
     }
   }
 
+  // Session 89: build update payload — only include teacher_prompt if it
+  // was present in the form (so read-only mode doesn't accidentally null it)
+  const updatePayload: Record<string, unknown> = {
+    name,
+    total_rounds: totalRounds,
+    round_duration_hours: durationHours,
+    game_phase_hours: gamePhaseHours,
+    review_phase_hours: reviewPhaseHours,
+    game_starts_at: gameStartsAtIso,
+    round_topics: roundTopics,
+  };
+  if (teacherPrompt !== undefined) {
+    updatePayload.teacher_prompt = teacherPrompt;
+  }
+
   const { data: updated, error: updErr } = await supabase
     .from("classes")
-    .update({
-      name,
-      total_rounds: totalRounds,
-      round_duration_hours: durationHours,
-      game_phase_hours: gamePhaseHours,
-      review_phase_hours: reviewPhaseHours,
-      game_starts_at: gameStartsAtIso,
-      round_topics: roundTopics,
-    })
+    .update(updatePayload)
     .eq("id", classId)
     .eq("teacher_id", user.id)
     .select("id");
@@ -836,6 +847,90 @@ export async function unarchiveClass(
     .eq("id", classId);
 
   if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/teacher/students");
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ── deleteArchivedClass (session 88) ────────────────────────────────────
+// Only archived classes with zero enrollments can be deleted. This is a
+// cleanup tool for typo-classes or empty tests — not for classes that
+// had real student data.
+
+export async function deleteArchivedClass(
+  classId: string,
+): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  // Verify teacher owns this class AND it's archived
+  const { data: cls } = await auth.admin
+    .from("classes")
+    .select("id, is_archived")
+    .eq("id", classId)
+    .eq("teacher_id", auth.userId)
+    .maybeSingle();
+
+  if (!cls) return { ok: false, error: "Class not found or you don't own it." };
+  if (!cls.is_archived) return { ok: false, error: "Only archived classes can be deleted." };
+
+  // Check for enrollments — refuse if any student ever joined
+  const { count: enrollmentCount } = await auth.admin
+    .from("enrollments")
+    .select("id", { count: "exact", head: true })
+    .eq("class_id", classId);
+
+  if ((enrollmentCount ?? 0) > 0) {
+    return { ok: false, error: "This class has student data and cannot be deleted. Unarchive it instead." };
+  }
+
+  // Safe to delete — no student data. Delete associated game row first.
+  await auth.admin
+    .from("games")
+    .delete()
+    .eq("class_id", classId);
+
+  const { error: delErr } = await auth.admin
+    .from("classes")
+    .delete()
+    .eq("id", classId);
+
+  if (delErr) return { ok: false, error: `Could not delete: ${delErr.message}` };
+
+  revalidatePath("/teacher/students");
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ── switchToMultiMode (session 89) ──────────────────────────────────────
+// Admin-only action available from the teacher page in standard mode.
+// Switches app_mode back to 'multi' so the admin dashboard is accessible
+// again without needing to hit the SQL editor.
+
+export async function switchToMultiMode(): Promise<ActionResult> {
+  const auth = await getTeacherAdmin();
+  if (!auth.ok) return auth;
+
+  // Verify the user is actually an admin
+  const { data: profile } = await auth.admin
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", auth.userId)
+    .maybeSingle();
+
+  if (!profile?.is_admin) {
+    return { ok: false, error: "Only admins can switch app mode." };
+  }
+
+  const { error: updErr } = await auth.admin
+    .from("admin_settings")
+    .update({ app_mode: "multi" })
+    .eq("id", 1);
+
+  if (updErr) {
+    return { ok: false, error: `Could not switch mode: ${updErr.message}` };
+  }
 
   revalidatePath("/teacher/students");
   revalidatePath("/admin");

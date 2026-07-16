@@ -88,6 +88,8 @@ import {
 import { RequestClassSection } from "./request-class";
 import MessagePanel, { type MessageRow, type Recipient } from "@/components/MessagePanel";
 import { ArchiveClassButton } from "./archive-class-button";
+import { DeleteClassButton } from "./delete-class-button";
+import { SwitchToMultiFooter } from "./switch-mode-footer";
 
 const MEDIA_BUCKET = "media";
 
@@ -115,6 +117,7 @@ type ClassRow = {
   created_at: string | null;
   round_topics: Record<string, string | null> | null; // session 78
   is_archived: boolean; // session 79
+  teacher_prompt: string | null; // session 89
 };
 
 type StudentCard = {
@@ -162,6 +165,8 @@ type PageData =
       msgUnreadCount: number;
       msgUserId: string;
       msgClassId: string;
+      archivedEnrollmentCounts: Record<string, number>; // session 88
+      isAdmin: boolean; // session 89
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -181,7 +186,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
   const { data: classRows } = await admin
     .from("classes")
     .select(
-      "id, name, total_rounds, round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, created_at, round_topics, is_archived",
+      "id, name, total_rounds, round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, created_at, round_topics, is_archived, teacher_prompt",
     )
     .eq("teacher_id", user.id)
     .order("created_at", { ascending: false });
@@ -210,6 +215,14 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
   const isMultiTeacher = isStandardMode
     ? false
     : (adminSettings?.warmup_teacher_count ?? 1) > 1;
+
+  // Session 89: check if current user is admin (for mode-switch link)
+  const { data: currentProfile } = await admin
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", user.id)
+    .maybeSingle();
+  const isAdmin = currentProfile?.is_admin ?? false;
 
   const classes = (classRows || []) as ClassRow[];
 
@@ -315,10 +328,25 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
   }
 
-  let selectedClass = classes[0];
+  // Session 88: Fix archive bug — when a class is archived, the URL still
+  // has ?class=<archived_id>. Without this fix, the archived class stays
+  // in the dropdown (via session 81's "always show selected" logic) until
+  // a *different* class is archived. Fix: prefer active classes. Only fall
+  // back to an archived class if there are no active ones left.
+  const activeAfterArchive = classes.filter((c) => !c.is_archived);
+
+  let selectedClass = activeAfterArchive[0] || classes[0];
   if (classParam) {
     const match = classes.find((c) => c.id === classParam);
-    if (match) selectedClass = match;
+    if (match) {
+      // If the URL points to an archived class but active ones exist,
+      // ignore the stale param and pick the first active class.
+      if (match.is_archived && activeAfterArchive.length > 0) {
+        selectedClass = activeAfterArchive[0];
+      } else {
+        selectedClass = match;
+      }
+    }
   }
 
   // ── Session 81: compute current round for topic locking ─────────────
@@ -674,6 +702,18 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     msgRecipients.push({ id: s.id, name: s.displayName, role: "student" });
   }
 
+  // ── Session 88: enrollment counts for archived classes ─────────────────
+  // Used to decide whether an archived class can be deleted (only if 0).
+  const archivedIds = classes.filter((c) => c.is_archived).map((c) => c.id);
+  const archivedEnrollmentCounts: Record<string, number> = {};
+  for (const aId of archivedIds) {
+    const { count } = await admin
+      .from("enrollments")
+      .select("id", { count: "exact", head: true })
+      .eq("class_id", aId);
+    archivedEnrollmentCounts[aId] = count ?? 0;
+  }
+
   return {
     classes,
     selectedClass,
@@ -694,6 +734,8 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     msgUnreadCount,
     msgUserId,
     msgClassId,
+    archivedEnrollmentCounts,
+    isAdmin,
   };
 }
 
@@ -800,6 +842,7 @@ export default async function TeacherStudents({
           fontFamily: F,
           color: C.text,
           textAlign: "center",
+          colorScheme: "light",
         }}
       >
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
@@ -819,6 +862,7 @@ export default async function TeacherStudents({
           padding: "1.5rem 1rem 4rem",
           fontFamily: F,
           color: C.text,
+          colorScheme: "light",
         }}
       >
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
@@ -880,6 +924,8 @@ export default async function TeacherStudents({
     msgUnreadCount,
     msgUserId,
     msgClassId,
+    archivedEnrollmentCounts,
+    isAdmin,
   } = data;
   const statusLine = buildStatusLine(selectedClass);
 
@@ -901,6 +947,7 @@ export default async function TeacherStudents({
         padding: "1.5rem 1rem 4rem",
         fontFamily: F,
         color: C.text,
+        colorScheme: "light",
       }}
     >
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
@@ -923,6 +970,26 @@ export default async function TeacherStudents({
             Your classes
           </h1>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {isAdmin && !isStandardMode && (
+              <Link
+                href="/admin"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "8px 14px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: C.text,
+                  background: C.panel,
+                  border: `1px solid ${C.panelEdge}`,
+                  borderRadius: 20,
+                  textDecoration: "none",
+                  letterSpacing: 0.3,
+                }}
+              >
+                Admin
+              </Link>
+            )}
             <MessagePanel
               messages={msgMessages}
               recipients={msgRecipients}
@@ -962,6 +1029,7 @@ export default async function TeacherStudents({
                 : 0,
             game_starts_at: selectedClass.game_starts_at,
             round_topics: (selectedClass.round_topics as Record<string, string | null>) ?? null,
+            teacher_prompt: selectedClass.teacher_prompt ?? null,
           }}
           statusLine={statusLine}
           topicOptions={topicOptions}
@@ -1205,11 +1273,18 @@ export default async function TeacherStudents({
                       Download spreadsheet
                     </a>
                     <ArchiveClassButton classId={ac.id} action="unarchive" />
+                    {(archivedEnrollmentCounts[ac.id] ?? 0) === 0 && (
+                      <DeleteClassButton classId={ac.id} />
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           </details>
+        )}
+        {/* Session 89: Admin mode-switch footer (standard mode only) */}
+        {isStandardMode && isAdmin && (
+          <SwitchToMultiFooter />
         )}
       </div>
     </div>

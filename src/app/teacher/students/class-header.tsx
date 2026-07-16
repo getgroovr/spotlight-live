@@ -14,6 +14,11 @@
 //     - Delete button (✕) next to each topic in the dropdown presets.
 //     - readOnly is always false (teacher owns their own schedule).
 //   - topicOptions now carry id + text for deletion support.
+// Session 90: Chunk H —
+//   - BUG FIX: Added hidden total_rounds input to the form. In readOnly
+//     mode (multi-teacher), the visible total_rounds input didn't exist,
+//     so the form submitted with total_rounds="" → NaN → validation error
+//     "Rounds must be a whole number between 1 and 100." on every save.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState, useTransition } from "react";
@@ -86,6 +91,7 @@ type Props = {
     review_phase_hours: number;     // D1
     game_starts_at: string | null;
     round_topics: Record<string, string | null> | null;
+    teacher_prompt: string | null;  // session 89
   };
   statusLine: string;
   topicOptions: string[];           // kept for backward compat (multi mode)
@@ -146,6 +152,11 @@ export function ClassHeader({
   // Computed total for hidden field + display
   const totalDurationHours = parseFloat(gamePhaseHours) + parseFloat(reviewPhaseHours);
 
+  // ── Session 89: teacher guidance prompt state ──────────────────────────
+  const [teacherPrompt, setTeacherPrompt] = useState(
+    selectedClass.teacher_prompt || "",
+  );
+
   // ── Per-round topics state ────────────────────────────────────────────
   const [roundTopics, setRoundTopics] = useState<Record<string, string>>(() => {
     const rt: Record<string, string> = {};
@@ -198,6 +209,9 @@ export function ClassHeader({
       }
     });
   };
+
+  // ── Session 88: collapsible topic section ──────────────────────────────
+  const [topicsOpen, setTopicsOpen] = useState(false);
 
   // ── M1: Delete topic (standard mode) ──────────────────────────────────
   const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
@@ -319,7 +333,12 @@ export function ClassHeader({
         style={{ display: "flex", flexDirection: "column", gap: 12 }}
       >
         <input type="hidden" name="class_id" value={selectedClass.id} />
+        {/* Session 90: total_rounds must always be present — readOnly mode
+            hides the visible input, but saveClassSettings still validates it */}
+        <input type="hidden" name="total_rounds" value={String(totalRounds)} />
         <input type="hidden" name="round_topics" value={roundTopicsJson} />
+        {/* Session 89: teacher guidance prompt */}
+        <input type="hidden" name="teacher_prompt" value={teacherPrompt} />
         {/* D1: hidden computed round_duration_hours for backward compat */}
         <input type="hidden" name="round_duration_hours" value={String(totalDurationHours)} />
         {/* D1: individual phase values for saveClassSettings */}
@@ -583,194 +602,249 @@ export function ClassHeader({
               Total round: {durationLabel(totalDurationHours) || `${totalDurationHours}h`}
             </div>
 
-            {/* ── Row 3.5: Per-round topic selectors (session 78) ──── */}
+            {/* ── Row 3.4: Teacher guidance prompt (session 89) ───── */}
             <div>
-              <div
+              <label
                 style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
                   fontSize: 12,
                   color: C.textDim,
                   fontWeight: 600,
-                  marginBottom: 6,
+                  minWidth: 0,
                 }}
               >
-                Round topics{" "}
-                <span style={{ fontWeight: 400, color: C.textFaint }}>
-                  (optional — guides what photos students submit)
+                Prompt for students
+                <span style={{ fontWeight: 400, color: C.textFaint, fontSize: 11 }}>
+                  Shown in the comment box while students play — encouragement, guidance, or a fun challenge.
                 </span>
-              </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: totalRounds <= 3
-                    ? `repeat(${totalRounds}, 1fr)`
-                    : totalRounds <= 6
-                      ? "repeat(3, 1fr)"
-                      : "repeat(4, 1fr)",
-                  gap: 8,
-                }}
-              >
-                {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
-                  const locked = r < currentRound;
-                  return (
-                    <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
-                      <select
-                        value={roundTopics[String(r)] || ""}
-                        onChange={(e) => handleTopicChange(r, e.target.value)}
-                        disabled={locked}
-                        style={{
-                          ...selectStyle(),
-                          ...(locked ? { opacity: 0.55, cursor: "not-allowed", background: "#EDE5D4" } : {}),
-                        }}
-                      >
-                        <option value="">(No topic)</option>
-                        {topicOptions.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  );
-                })}
-              </div>
-
-              {/* ── M1: Topic management (standard mode: add + delete) ── */}
-              {isStandardMode && topicOptionsWithId && topicOptionsWithId.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4 }}>
-                    Your topics
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {topicOptionsWithId.map((t) => (
-                      <span
-                        key={t.id}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          background: C.bg,
-                          border: `1px solid ${C.panelEdge}`,
-                          borderRadius: 20,
-                          padding: "3px 10px",
-                          fontSize: 12,
-                          color: C.text,
-                          opacity: deletingTopicId === t.id ? 0.4 : 1,
-                        }}
-                      >
-                        {t.text}
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTopic(t.id)}
-                          disabled={deletingTopicId === t.id}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            color: C.textFaint,
-                            fontSize: 13,
-                            cursor: "pointer",
-                            padding: "0 0 0 2px",
-                            lineHeight: 1,
-                            fontFamily: "inherit",
-                          }}
-                          title="Delete topic"
-                        >
-                          ✕
-                        </button>
-                      </span>
-                    ))}
-                  </div>
+                <textarea
+                  value={teacherPrompt}
+                  onChange={(e) => setTeacherPrompt(e.target.value)}
+                  placeholder="e.g. Tell them what caught your eye first!"
+                  rows={2}
+                  maxLength={200}
+                  style={{
+                    ...inputStyle(),
+                    resize: "vertical",
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                  }}
+                />
+              </label>
+              {teacherPrompt.trim() && (
+                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>
+                  {teacherPrompt.trim().length}/200
                 </div>
               )}
+            </div>
 
-              {/* ── Add / suggest a topic ─────────────────────────────── */}
-              {!showSuggest ? (
-                <button
-                  type="button"
-                  onClick={() => { setShowSuggest(true); setSuggestMsg(null); }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: C.light,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    padding: "4px 0",
-                    marginTop: 4,
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {addTopicLabel}
-                </button>
-              ) : (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    marginTop: 6,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <input
-                    type="text"
-                    value={suggestText}
-                    onChange={(e) => setSuggestText(e.target.value)}
-                    placeholder={isStandardMode ? "New topic…" : "Your topic idea…"}
-                    maxLength={80}
-                    style={{ ...inputStyle(), flex: "1 1 180px", fontSize: 13 }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleSuggest();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSuggest}
-                    disabled={suggestPending || !suggestText.trim()}
+            {/* ── Row 3.5: Collapsible topic section (session 88) ──── */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setTopicsOpen(!topicsOpen)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: C.textDim,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  padding: "4px 0",
+                  fontFamily: "inherit",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span style={{ fontSize: 10, lineHeight: 1 }}>
+                  {topicsOpen ? "▾" : "▸"}
+                </span>
+                Round topics{" "}
+                <span style={{ fontWeight: 400, color: C.textFaint }}>
+                  (optional)
+                </span>
+              </button>
+
+              {topicsOpen && (
+                <div style={{ marginTop: 8 }}>
+                  <div
                     style={{
-                      background: C.light,
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: 8,
-                      padding: "7px 14px",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      fontFamily: "inherit",
-                      cursor:
-                        suggestPending || !suggestText.trim()
-                          ? "default"
-                          : "pointer",
-                      opacity: suggestPending || !suggestText.trim() ? 0.5 : 1,
+                      display: "grid",
+                      gridTemplateColumns: totalRounds <= 3
+                        ? `repeat(${totalRounds}, 1fr)`
+                        : totalRounds <= 6
+                          ? "repeat(3, 1fr)"
+                          : "repeat(4, 1fr)",
+                      gap: 8,
                     }}
                   >
-                    {addTopicButtonLabel}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setShowSuggest(false); setSuggestMsg(null); }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: C.textFaint,
-                      fontSize: 12,
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  {suggestMsg && (
-                    <span
+                    {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
+                      const locked = r < currentRound;
+                      return (
+                        <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
+                          <select
+                            value={roundTopics[String(r)] || ""}
+                            onChange={(e) => handleTopicChange(r, e.target.value)}
+                            disabled={locked}
+                            style={{
+                              ...selectStyle(),
+                              ...(locked ? { opacity: 0.55, cursor: "not-allowed", background: "#EDE5D4" } : {}),
+                            }}
+                          >
+                            <option value="">(No topic)</option>
+                            {topicOptions.map((t) => (
+                              <option key={t} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      );
+                    })}
+                  </div>
+
+                  {/* ── M1: Topic management (standard mode: add + delete) ── */}
+                  {isStandardMode && topicOptionsWithId && topicOptionsWithId.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4 }}>
+                        Your topics
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {topicOptionsWithId.map((t) => (
+                          <span
+                            key={t.id}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              background: C.bg,
+                              border: `1px solid ${C.panelEdge}`,
+                              borderRadius: 20,
+                              padding: "3px 10px",
+                              fontSize: 12,
+                              color: C.text,
+                              opacity: deletingTopicId === t.id ? 0.4 : 1,
+                            }}
+                          >
+                            {t.text}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTopic(t.id)}
+                              disabled={deletingTopicId === t.id}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                color: C.textFaint,
+                                fontSize: 13,
+                                cursor: "pointer",
+                                padding: "0 0 0 2px",
+                                lineHeight: 1,
+                                fontFamily: "inherit",
+                              }}
+                              title="Delete topic"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Add / suggest a topic ─────────────────────────────── */}
+                  {!showSuggest ? (
+                    <button
+                      type="button"
+                      onClick={() => { setShowSuggest(true); setSuggestMsg(null); }}
                       style={{
+                        background: "none",
+                        border: "none",
+                        color: C.light,
                         fontSize: 12,
-                        color: suggestMsg.ok ? "#2a7a4a" : "#8A2A22",
-                        flex: "1 0 100%",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        padding: "4px 0",
+                        marginTop: 4,
+                        fontFamily: "inherit",
                       }}
                     >
-                      {suggestMsg.text}
-                    </span>
+                      {addTopicLabel}
+                    </button>
+                  ) : (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        marginTop: 6,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <input
+                        type="text"
+                        value={suggestText}
+                        onChange={(e) => setSuggestText(e.target.value)}
+                        placeholder={isStandardMode ? "New topic…" : "Your topic idea…"}
+                        maxLength={80}
+                        style={{ ...inputStyle(), flex: "1 1 180px", fontSize: 13 }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleSuggest();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSuggest}
+                        disabled={suggestPending || !suggestText.trim()}
+                        style={{
+                          background: C.light,
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 8,
+                          padding: "7px 14px",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          fontFamily: "inherit",
+                          cursor:
+                            suggestPending || !suggestText.trim()
+                              ? "default"
+                              : "pointer",
+                          opacity: suggestPending || !suggestText.trim() ? 0.5 : 1,
+                        }}
+                      >
+                        {addTopicButtonLabel}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowSuggest(false); setSuggestMsg(null); }}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: C.textFaint,
+                          fontSize: 12,
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      {suggestMsg && (
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: suggestMsg.ok ? "#2a7a4a" : "#8A2A22",
+                            flex: "1 0 100%",
+                          }}
+                        >
+                          {suggestMsg.text}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
