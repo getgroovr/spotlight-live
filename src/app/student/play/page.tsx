@@ -47,6 +47,7 @@ export default async function StudentPlayPage() {
         totalRounds={deck.totalRounds}
         currentTopic={deck.currentTopic ?? null}
         nextRoundTopic={deck.nextRoundTopic ?? null}
+        teacherPrompt={deck.teacherPrompt ?? null}
       />
     );
   }

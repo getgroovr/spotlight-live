@@ -1875,15 +1875,30 @@ export default async function StudentProfile() {
               return null;
             })}
 
-            {/* ── COMPLETED band ── */}
+            {/* ── COMPLETED band (B54: collapsed by default) ── */}
             {completedRounds.length > 0 && (
-              <div style={{ marginTop: 20 }}>
-                <h3 style={{
-                  fontSize: 12, letterSpacing: 2, textTransform: "uppercase",
-                  color: C.textDim, marginBottom: 10,
+              <details className="round-toggle" style={{ marginTop: 20 }}
+                {...(isGameOver ? { open: true } : {})}
+              >
+                <summary style={{
+                  cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 10,
+                  marginBottom: 10,
                 }}>
-                  Completed rounds
-                </h3>
+                  <h3 style={{
+                    fontSize: 12, letterSpacing: 2, textTransform: "uppercase",
+                    color: C.textDim, margin: 0,
+                  }}>
+                    Completed rounds ({completedRounds.length})
+                  </h3>
+                  <span style={{ fontSize: 12, fontWeight: 600,
+                    color: C.light, background: C.light + "18",
+                    border: `1px solid ${C.light}44`, borderRadius: 6,
+                    padding: "3px 10px" }}>
+                    <span className="when-closed">Show</span>
+                    <span className="when-open">Hide</span>
+                  </span>
+                </summary>
 
                 {completedRounds.map((r) => {
                   const entry = entryByRound.get(r);
@@ -2055,7 +2070,7 @@ export default async function StudentProfile() {
                     </details>
                   );
                 })}
-              </div>
+              </details>
             )}
 
             {/* ── B51: Results link moved to primary CTA position above.

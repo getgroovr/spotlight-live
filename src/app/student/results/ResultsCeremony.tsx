@@ -1,6 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/results/ResultsCeremony.tsx
 //
+// Session 88 — Monster mascots sprinkled through the ceremony:
+//   • Intro: row of 5 random monsters flanking the trophy as "audience"
+//   • Countdown: random monster peeking from the corner, bobbing
+//   • Podium: random monster "presenting" the round results
+//   • Finale: celebration row of all 9 monsters
+//
 // Session 76 — Canvas fireworks on finale burst.
 //
 // Changes from session 70:
@@ -30,8 +36,9 @@
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
+import { MonsterCard, MONSTERS } from "@/game/monsters.jsx";
 
 // ── Types ───────────────────────────────────────────────────────────────
 type TopEntry = {
@@ -424,6 +431,293 @@ function Fireworks({ active }: { active: boolean }) {
   );
 }
 
+// ── Session 88: Monster mascot components ─────────────────────────────
+// Each picks random monsters on mount so every visit feels different.
+
+/** Hook: suppresses SSR render to avoid hydration mismatch from Math.random() */
+function useMounted() {
+  const [m, setM] = useState(false);
+  useEffect(() => setM(true), []);
+  return m;
+}
+
+/** Shuffle helper (Fisher–Yates) */
+function shuffleIndices(count: number, total: number) {
+  const indices = Array.from({ length: total }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  return indices.slice(0, count);
+}
+
+/** Row of monsters — "audience" watching the ceremony (intro) */
+function MonsterAudience({ count = 3 }: { count?: number }) {
+  const mounted = useMounted();
+  const picks = useMemo(
+    () => (mounted ? shuffleIndices(count, MONSTERS.length) : []),
+    [mounted, count],
+  );
+
+  if (!mounted) return null;
+
+  return (
+    <div style={{
+      display: "flex", justifyContent: "center", gap: 16, marginBottom: 16,
+      animation: "fade-in 1.2s ease 0.4s both",
+    }}>
+      {picks.map((mi, i) => (
+        <div key={mi} style={{
+          opacity: 0.65 + (i === Math.floor(count / 2) ? 0.15 : 0),
+          animation: `trophy-bounce ${2 + i * 0.3}s ease-in-out ${0.5 + i * 0.15}s infinite`,
+        }}>
+          <MonsterCard index={mi} size={110} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Scattered monsters across the countdown screen — fade in and out gently */
+function MonsterScatter() {
+  const mounted = useMounted();
+  const picks = useMemo(
+    () => (mounted ? shuffleIndices(MONSTERS.length, MONSTERS.length) : []),
+    [mounted],
+  );
+
+  if (!mounted) return null;
+
+  // Dense grid closer to center — 18 slots (monsters repeat via modulo)
+  const positions = [
+    { top: "6%",  left: "15%" },
+    { top: "10%", left: "78%" },
+    { top: "18%", left: "40%" },
+    { top: "22%", left: "62%" },
+    { top: "32%", left: "22%" },
+    { top: "35%", left: "74%" },
+    { top: "45%", left: "32%" },
+    { top: "42%", left: "65%" },
+    { top: "55%", left: "48%" },
+    { top: "58%", left: "18%" },
+    { top: "60%", left: "80%" },
+    { top: "68%", left: "38%" },
+    { top: "72%", left: "58%" },
+    { top: "80%", left: "28%" },
+    { top: "78%", left: "70%" },
+    { top: "88%", left: "50%" },
+    { top: "15%", left: "52%" },
+    { top: "48%", left: "12%" },
+  ];
+
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      pointerEvents: "none" as const, zIndex: 0, overflow: "hidden",
+    }}>
+      {positions.map((pos, i) => {
+        const mi = picks[i % picks.length];
+        const dur = 1.5 + (i % 4) * 0.5;  // 1.5–3s — fast fade cycles
+        const delay = i * 0.3;
+        return (
+          <div key={`scatter-${i}`} style={{
+            position: "absolute",
+            ...pos,
+            opacity: 0,
+            animation: `monster-ghost ${dur}s ease-in-out ${delay}s infinite`,
+          }}>
+            <MonsterCard index={mi} size={75} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Two monsters flanking the "Next round" button on the podium */
+function MonsterButtonGuards({ seed = 0 }: { seed?: number }) {
+  const mounted = useMounted();
+  const picks = useMemo(
+    () => (mounted ? shuffleIndices(2, MONSTERS.length) : []),
+    [mounted, seed],
+  );
+
+  if (!mounted) return null;
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      gap: 16, marginTop: 32, marginBottom: 4,
+    }}>
+      <div style={{
+        animation: "trophy-bounce 2s ease-in-out infinite",
+        opacity: 0.65, transform: "scaleX(-1)",
+      }}>
+        <MonsterCard index={picks[0]} size={80} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }} />
+      <div style={{
+        animation: "trophy-bounce 2.3s ease-in-out 0.3s infinite",
+        opacity: 0.65,
+      }}>
+        <MonsterCard index={picks[1]} size={80} />
+      </div>
+    </div>
+  );
+}
+
+/** Monsters celebrating — single row of 4 in the finale footer */
+function MonsterCelebration() {
+  const mounted = useMounted();
+  const order = useMemo(
+    () => (mounted ? shuffleIndices(4, MONSTERS.length) : []),
+    [mounted],
+  );
+
+  if (!mounted) return null;
+
+  return (
+    <div style={{
+      display: "flex", justifyContent: "center", gap: 14,
+      margin: "24px auto 8px",
+      animation: "fade-in 0.8s ease 0.6s both",
+    }}>
+      {order.map((mi, i) => (
+        <div key={mi} style={{
+          animation: `trophy-bounce ${1.6 + (i % 3) * 0.4}s ease-in-out ${0.1 * i}s infinite`,
+          opacity: 0.65,
+        }}>
+          <MonsterCard index={mi} size={100} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Finale monster show — all 9 monsters rise along the LEFT and RIGHT edges
+ * of the screen (well outside the center card area), slowly drift upward,
+ * swell, and explode. One at a time, alternating sides. Continuous loop.
+ * Speed: ~10s per monster, staggered ~5s apart so 2 are visible at once.
+ */
+function MonsterParade() {
+  const mounted = useMounted();
+  const order = useMemo(
+    () => (mounted ? shuffleIndices(MONSTERS.length, MONSTERS.length) : []),
+    [mounted],
+  );
+
+  // Give each monster a slightly different animation duration for
+  // randomised explosion timing (8–12s range).
+  // MUST be before the early return so hooks always run in the same order.
+  const durations = useMemo(
+    () => order.map(() => 8 + Math.random() * 4),
+    [order],
+  );
+
+  if (!mounted || order.length === 0) return null;
+
+  // Slow stagger: each monster starts 5s after the previous
+  const stagger = 5;
+
+  // Spread 9 monsters evenly across the full screen width.
+  // Each position uses translateX(-50%) so the monster is centered on that %.
+  // Includes center and edges — no clustering.
+  const spreadPositions = [10, 22, 35, 48, 60, 72, 78, 18, 55];
+
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      pointerEvents: "none" as const, zIndex: 70, overflow: "hidden",
+    }}>
+      {order.map((mi, i) => {
+        const xPos = spreadPositions[i % spreadPositions.length];
+        const delay = i * stagger;
+        const dur = durations[i];
+        const flipDir = i % 2 === 0;
+
+        return (
+          <div
+            key={`parade-${mi}-${i}`}
+            style={{
+              position: "absolute",
+              bottom: -180,
+              left: `${xPos}%`,
+              transform: flipDir ? "translateX(-50%)" : "translateX(-50%) scaleX(-1)",
+              animation: `monster-side-rise ${dur}s ease-in-out ${delay}s infinite`,
+            }}
+          >
+            <MonsterCard index={mi} size={120} />
+          </div>
+        );
+      })}
+      <style>{`
+        @keyframes monster-side-rise {
+          0% {
+            transform: translateY(0) scale(0.5);
+            opacity: 0;
+          }
+          3% {
+            opacity: 0.65;
+          }
+          12% {
+            transform: translateY(-20vh) scale(0.8);
+            opacity: 0.7;
+          }
+          24% {
+            transform: translateY(-40vh) scale(0.85);
+            opacity: 0.7;
+          }
+          36% {
+            transform: translateY(-60vh) scale(0.9);
+            opacity: 0.7;
+          }
+          48% {
+            transform: translateY(-80vh) scale(0.95);
+            opacity: 0.7;
+          }
+          56% {
+            transform: translateY(-92vh) scale(1.0);
+            opacity: 0.7;
+          }
+          62% {
+            transform: translateY(-100vh) scale(1.1);
+            opacity: 0.7;
+          }
+          68% {
+            transform: translateY(-105vh) scale(1.3);
+            opacity: 0.7;
+            filter: brightness(1.1);
+          }
+          74% {
+            transform: translateY(-108vh) scale(1.6);
+            opacity: 0.65;
+            filter: brightness(1.3);
+          }
+          80% {
+            transform: translateY(-110vh) scale(2.0);
+            opacity: 0.5;
+            filter: brightness(1.6);
+          }
+          86% {
+            transform: translateY(-112vh) scale(2.6);
+            opacity: 0.15;
+            filter: brightness(2.2);
+          }
+          90% {
+            transform: translateY(-112vh) scale(0);
+            opacity: 0;
+          }
+          100% {
+            transform: translateY(-112vh) scale(0);
+            opacity: 0;
+          }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // ── Dashboard link (text, not button) ───────────────────────────────────
 function DashboardLink() {
   return (
@@ -804,6 +1098,12 @@ export default function ResultsCeremony({ rounds, className }: Props) {
           60% { opacity: 1; transform: scale(1.05); }
           100% { opacity: 1; transform: scale(1); }
         }
+        @keyframes monster-ghost {
+          0%, 100% { opacity: 0; transform: scale(0.85); }
+          15% { opacity: 0.5; transform: scale(1); }
+          50% { opacity: 0.55; transform: scale(1.05); }
+          85% { opacity: 0.45; transform: scale(1); }
+        }
         @keyframes finale-crown {
           0% { transform: translateY(-30px) scale(0.5); opacity: 0; }
           60% { transform: translateY(5px) scale(1.1); opacity: 1; }
@@ -835,6 +1135,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
                 animation: "trophy-bounce 2.5s ease-in-out infinite",
               }}>🏆</span>
             </div>
+            <MonsterAudience count={5} />
             <h1 style={{ fontSize: 32, fontWeight: 800, margin: "0 0 8px", color: C.text, letterSpacing: -0.5 }}>
               The Spotlight Awards
             </h1>
@@ -864,7 +1165,8 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
         {/* ═══ COUNTDOWN ═══ */}
         {phase === "countdown" && currentRound && (
-          <div style={{ textAlign: "center", paddingTop: "18vh" }}>
+          <div style={{ textAlign: "center", paddingTop: "18vh", position: "relative" }}>
+            <MonsterScatter />
             <h2 style={{
               fontSize: 36, fontWeight: 800, margin: "0 0 6px", color: C.text,
               animation: "fade-in 0.4s ease forwards",
@@ -967,7 +1269,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
         {/* ═══ PODIUM ═══ */}
         {phase === "podium" && currentRound && (
-          <div style={{ paddingTop: 16, animation: "fade-in 0.5s ease forwards" }}>
+          <div style={{ paddingTop: 16, animation: "fade-in 0.5s ease forwards", position: "relative" }}>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
               <div style={{
                 fontSize: 12, letterSpacing: 2.5, textTransform: "uppercase" as const,
@@ -989,7 +1291,9 @@ export default function ResultsCeremony({ rounds, className }: Props) {
                 </p>
               </div>
             )}
-            <div style={{ textAlign: "center", marginTop: 28 }}>
+            {/* Monsters flanking the button */}
+            <MonsterButtonGuards seed={roundIndex} />
+            <div style={{ textAlign: "center", marginTop: 4 }}>
               <button
                 onClick={nextRound}
                 style={{
@@ -1043,6 +1347,9 @@ export default function ResultsCeremony({ rounds, className }: Props) {
         {/* ═══ FINALE ═══ */}
         {phase === "finale" && (
           <div style={{ textAlign: "center", paddingTop: "6vh", animation: "fade-in 0.8s ease forwards" }}>
+            {/* Monster parade — all 9 rise from bottom, swell & explode */}
+            <MonsterParade />
+
             {/* Crown + party popper */}
             <div style={{ marginBottom: 16 }}>
               <span style={{
@@ -1065,7 +1372,7 @@ export default function ResultsCeremony({ rounds, className }: Props) {
             </p>
 
             {/* ── Per-round gold winners (FIXED: shows ALL tied 1st place) ── */}
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 20, marginBottom: 32 }}>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 28, marginBottom: 32, position: "relative" as const, zIndex: 60 }}>
               {rounds.map((round) => {
                 const goldEntries = round.topEntries.filter((e) => e.rank === 1);
                 const colors = MEDAL_COLORS[0];
@@ -1158,11 +1465,14 @@ export default function ResultsCeremony({ rounds, className }: Props) {
               })}
             </div>
 
+            <MonsterCelebration />
+
             <Link href="/student/dashboard" style={{
               display: "block", width: "100%", boxSizing: "border-box" as const,
               textAlign: "center", textDecoration: "none", padding: "14px",
               fontFamily: F, fontSize: 15, fontWeight: 700,
               background: C.light, color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+              position: "relative" as const, zIndex: 60,
             }}>
               Back to your dashboard →
             </Link>
