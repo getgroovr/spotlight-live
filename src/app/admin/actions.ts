@@ -17,6 +17,14 @@
 //   and requested_capacity. Admin can override capacity before approving.
 // Session 84: Chunk D1 — saveGameSchedule now handles game_phase_hours
 //   and review_phase_hours. round_duration_hours is computed as the sum.
+// Session 86: Chunk M2 — updateAppMode (standard ↔ multi).
+// Session 90: Chunk J — saveGameSchedule auto-posts schedule notification
+//   to all teachers in rotation. New postScheduleMessage action for admin
+//   thread replies (broadcast to all teachers in rotation).
+//   Chunk K — archiveClass now also archives messages with that class_id.
+// Session 91: saveGameSchedule redesign — teacher picks round_duration_hours
+//   (total round time) and review_phase_hours. game_phase_hours is computed
+//   as round_duration_hours minus review_phase_hours (play time).
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -180,14 +188,6 @@ export async function moveInRotation(
 
 // ─────────────────────────────────────────────────────────────────────────
 // Toggle is_active on a warm-up deck photo + send notification
-//
-// Session 75: Now accepts an optional note (for rejection feedback).
-// Inserts a row into the notifications table so the teacher sees it
-// on their dashboard.
-//
-//   active=true  → "entry_approved" notification (auto-message)
-//   active=false + note → "entry_rejected" notification (with note)
-//   active=false, no note → silent deactivation (no notification)
 // ─────────────────────────────────────────────────────────────────────────
 export async function togglePhotoActive(
   entryId: string,
@@ -212,14 +212,12 @@ export async function togglePhotoActive(
   if (updErr) return { ok: false, error: updErr.message };
 
   // ── Send notification to the teacher ─────────────────────────────
-  // entry.student_id is the teacher's auth user ID for starters.
   const teacherId = entry.student_id;
   const descSnippet = entry.description_text
     ? entry.description_text.slice(0, 60) + (entry.description_text.length > 60 ? "…" : "")
     : "your warm-up photo";
 
   if (active) {
-    // Approved — auto-message
     await supabase.from("notifications").insert({
       sender_id: userId,
       recipient_id: teacherId,
@@ -228,7 +226,6 @@ export async function togglePhotoActive(
       body: `Your warm-up photo "${descSnippet}" has been approved.`,
     });
   } else if (note && note.trim().length > 0) {
-    // Rejected with a note
     await supabase.from("notifications").insert({
       sender_id: userId,
       recipient_id: teacherId,
@@ -237,7 +234,6 @@ export async function togglePhotoActive(
       body: note.trim().slice(0, 500),
     });
   }
-  // If deactivating without a note, no notification (silent revoke)
 
   revalidatePath("/admin");
   return { ok: true };
@@ -265,44 +261,48 @@ export async function updateWarmupMode(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 80 + Session 84 Chunk D1: Admin game schedule
+// Session 91: Admin game schedule — redesigned
 //
-// In multi-teacher mode (warmup_teacher_count > 1), the admin sets the
-// game schedule centrally. On save the values are stored in admin_settings
-// AND pushed to every active (non-archived) class.
+// Teacher picks:
+//   round_duration_hours — total time for one round (e.g. 24 = 1 day)
+//   review_phase_hours   — portion of round for teacher review
 //
-// D1: Now handles game_phase_hours and review_phase_hours instead of a
-// single round_duration_hours. round_duration_hours is computed as the
-// sum of the two phases for backward compatibility with existing round
-// timing logic.
+// App computes:
+//   game_phase_hours = round_duration_hours - review_phase_hours (play time)
+//
+// All three values are stored in admin_settings AND pushed to every
+// active (non-archived) class.
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function saveGameSchedule(
   fd: FormData,
 ): Promise<ActionResult> {
-  const { error, supabase } = await requireAdmin();
-  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+  const { error, supabase, userId } = await requireAdmin();
+  if (error || !supabase || !userId) return { ok: false, error: error || "Auth failed." };
 
   const totalRounds = parseInt(fd.get("total_rounds") as string, 10);
   if (!Number.isFinite(totalRounds) || totalRounds < 1 || totalRounds > 100) {
     return { ok: false, error: "Rounds must be between 1 and 100." };
   }
 
-  // D1: parse game phase and review phase separately
-  const gamePhaseStr = fd.get("game_phase_hours") as string;
+  // Session 91: parse round duration (total) and review phase
+  const roundDurationStr = fd.get("round_duration_hours") as string;
   const reviewPhaseStr = fd.get("review_phase_hours") as string;
-  const gamePhaseHours = parseFloat(gamePhaseStr);
+  const roundDurationHours = parseFloat(roundDurationStr);
   const reviewPhaseHours = parseFloat(reviewPhaseStr);
 
-  if (!Number.isFinite(gamePhaseHours) || gamePhaseHours <= 0) {
-    return { ok: false, error: "Invalid game time." };
+  if (!Number.isFinite(roundDurationHours) || roundDurationHours <= 0) {
+    return { ok: false, error: "Invalid round time." };
   }
   if (!Number.isFinite(reviewPhaseHours) || reviewPhaseHours < 0) {
     return { ok: false, error: "Invalid review time." };
   }
+  if (reviewPhaseHours >= roundDurationHours) {
+    return { ok: false, error: "Review time must be less than round time." };
+  }
 
-  // Compute total round duration for backward compatibility
-  const roundDurationHours = gamePhaseHours + reviewPhaseHours;
+  // Compute play time (game phase) = total round - review
+  const gamePhaseHours = roundDurationHours - reviewPhaseHours;
 
   const startsAtRaw = fd.get("game_starts_at") as string;
   let gameStartsAt: string | null = null;
@@ -352,13 +352,33 @@ export async function saveGameSchedule(
     .eq("is_archived", false);
   if (pushErr) return { ok: false, error: `Saved settings but failed to push to classes: ${pushErr.message}` };
 
+  // 3. Auto-post schedule notification to all teachers in rotation
+  const { data: rotTeachers } = await supabase
+    .from("teacher_rotation")
+    .select("teacher_id");
+  if (rotTeachers && rotTeachers.length > 0) {
+    const durationLabel = `${gamePhaseHours}h play + ${reviewPhaseHours}h review`;
+    const startLabel = gameStartsAt
+      ? `starts ${new Date(gameStartsAt).toLocaleString()}`
+      : "no start time set";
+    const body = `📋 Schedule updated: ${totalRounds} rounds, ${roundDurationHours}h per round (${durationLabel}), ${startLabel}. Please review and respond with any concerns.`;
+    const inserts = rotTeachers.map((rt) => ({
+      sender_id: userId,
+      recipient_id: rt.teacher_id,
+      body,
+      thread_context: "schedule",
+      is_read: false,
+    }));
+    await supabase.from("messages").insert(inserts);
+  }
+
   revalidatePath("/admin");
   revalidatePath("/teacher/students");
   return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 71: Teacher archiving
+// Teacher archiving
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function archiveTeacher(
@@ -405,13 +425,7 @@ export async function unarchiveTeacher(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 74 + Session 82 Chunk C: Class request workflow
-//
-// approveClassRequest now:
-//   - Reads class_name from the request (falls back to "Class N")
-//   - Reads requested_capacity from the request (falls back to 9)
-//   - Accepts optional capacityOverride so admin can change the size
-//   - Uses the requested class_name as the created class name
+// Class request workflow
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function approveClassRequest(
@@ -432,13 +446,11 @@ export async function approveClassRequest(
     return { ok: false, error: "Request is no longer pending." };
   }
 
-  // Determine capacity: admin override > teacher request > default 9
   const capacity = capacityOverride ?? req.requested_capacity ?? 9;
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > 100) {
     return { ok: false, error: "Invalid capacity value." };
   }
 
-  // Determine class name: use teacher's requested name, fall back to "Class N"
   let className = req.class_name?.trim();
   if (!className) {
     const { data: existingClasses } = await supabase
@@ -502,11 +514,7 @@ export async function denyClassRequest(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 79: Game topic management (Chunk 3)
-//
-//   addTopic       — admin creates a new global (seeded) topic
-//   updateTopicText — admin edits topic text
-//   deleteTopic    — admin removes a topic (seeded or teacher-created)
+// Game topic management
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function addTopic(
@@ -579,9 +587,7 @@ export async function deleteTopic(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 79: Class archiving (admin)
-//
-// Admin can archive or unarchive any class regardless of ownership.
+// Class archiving (admin)
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function archiveClass(
@@ -596,6 +602,12 @@ export async function archiveClass(
     .eq("id", classId);
 
   if (updErr) return { ok: false, error: updErr.message };
+
+  // Chunk K: also archive messages associated with this class
+  await supabase
+    .from("messages")
+    .update({ is_archived: true })
+    .eq("class_id", classId);
 
   revalidatePath("/admin");
   revalidatePath("/teacher/students");
@@ -615,15 +627,19 @@ export async function unarchiveClass(
 
   if (updErr) return { ok: false, error: updErr.message };
 
+  // Chunk K: also restore archived messages for this class
+  await supabase
+    .from("messages")
+    .update({ is_archived: false })
+    .eq("class_id", classId);
+
   revalidatePath("/admin");
   revalidatePath("/teacher/students");
   return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Session 82 Chunk E: Topic status management
-//
-// Admin can approve or deny teacher-submitted topics.
+// Topic status management
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function setTopicStatus(
@@ -641,5 +657,67 @@ export async function setTopicStatus(
   if (updErr) return { ok: false, error: updErr.message };
 
   revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Schedule thread messaging
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function postScheduleMessage(
+  body: string,
+): Promise<ActionResult> {
+  const { error, supabase, userId } = await requireAdmin();
+  if (error || !supabase || !userId) return { ok: false, error: error || "Auth failed." };
+
+  const trimmed = body.trim();
+  if (trimmed.length === 0) return { ok: false, error: "Message cannot be empty." };
+  if (trimmed.length > 500) return { ok: false, error: "Message too long (500 char max)." };
+
+  const { data: rotTeachers } = await supabase
+    .from("teacher_rotation")
+    .select("teacher_id");
+
+  if (!rotTeachers || rotTeachers.length === 0) {
+    return { ok: false, error: "No teachers in rotation to message." };
+  }
+
+  const inserts = rotTeachers.map((rt) => ({
+    sender_id: userId,
+    recipient_id: rt.teacher_id,
+    body: trimmed,
+    thread_context: "schedule",
+    is_read: false,
+  }));
+
+  const { error: insErr } = await supabase.from("messages").insert(inserts);
+  if (insErr) return { ok: false, error: insErr.message };
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// App mode toggle
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function updateAppMode(
+  mode: "standard" | "multi",
+): Promise<ActionResult> {
+  const { error, supabase } = await requireAdmin();
+  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
+
+  if (!["standard", "multi"].includes(mode)) {
+    return { ok: false, error: "Mode must be 'standard' or 'multi'." };
+  }
+
+  const { error: updErr } = await supabase
+    .from("admin_settings")
+    .update({ app_mode: mode, updated_at: new Date().toISOString() })
+    .eq("id", 1);
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/admin");
+  revalidatePath("/teacher/students");
   return { ok: true };
 }

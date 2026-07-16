@@ -12,11 +12,17 @@
 //             Chunk E — query fetches requested_capacity for class requests.
 // Session 84: Chunk D1 — game_phase_hours + review_phase_hours on
 //             admin_settings, classes, and GameSchedule type.
+// Session 86: Chunk M2 — Mode routing. Queries app_mode from admin_settings.
+//             Color scheme: tan/white to match other dashboards.
+// Session 89: Standard mode now shows a landing page at /admin instead
+//             of redirecting, with a "Switch to Multi" button + explanation.
+// Session 90: Chunk J — schedule thread query (thread_context='schedule').
+//             Chunk K — main messages exclude archived + schedule thread.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
-import { AdminClient } from "./admin-client";
+import { AdminClient, StandardModeLanding } from "./admin-client";
 import type { MessageRow, Recipient } from "@/components/MessagePanel";
 
 export const dynamic = "force-dynamic";
@@ -111,12 +117,22 @@ export type TopicRow = {
   created_at: string;
 };
 
+// Session 90 Chunk J: schedule coordination thread
+export type ScheduleThreadMessage = {
+  id: string;
+  senderId: string;
+  senderName: string;
+  body: string;
+  createdAt: string;
+  isFromAdmin: boolean;
+};
+
 export default async function AdminPage() {
   const supabase = await createClient();
   if (!supabase) {
     return (
       <Frame>
-        <p className="text-white/70 text-center py-12">
+        <p className="text-stone-500 text-center py-12">
           Supabase isn&apos;t configured.
         </p>
       </Frame>
@@ -137,7 +153,7 @@ export default async function AdminPage() {
   if (!profile || !profile.is_admin) {
     return (
       <Frame>
-        <p className="text-white/70 text-center py-12">
+        <p className="text-stone-500 text-center py-12">
           Your account does not have admin privileges.
         </p>
       </Frame>
@@ -237,9 +253,21 @@ export default async function AdminPage() {
   // ── Fetch admin settings (D1: added game_phase_hours, review_phase_hours) ──
   const { data: settings } = await supabase
     .from("admin_settings")
-    .select("warmup_teacher_count, game_total_rounds, game_round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, game_round_topics")
+    .select("warmup_teacher_count, game_total_rounds, game_round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, game_round_topics, app_mode")
     .eq("id", 1)
     .single();
+
+  // ── M2: Mode check ──────────────────────────────────────────────────
+  const appMode = (settings?.app_mode as "standard" | "multi") || "standard";
+  if (appMode === "standard") {
+    // Show a simple landing page instead of redirecting —
+    // lets admin switch to multi mode from /admin
+    return (
+      <Frame>
+        <StandardModeLanding />
+      </Frame>
+    );
+  }
 
   const warmupConfig: WarmupConfig = {
     warmup_teacher_count: (settings?.warmup_teacher_count as 1 | 3 | 9) || 1,
@@ -350,10 +378,13 @@ export default async function AdminPage() {
   let msgUnreadCount = 0;
 
   {
+    // Chunk K: exclude archived messages; Chunk J: exclude schedule thread
     const { data: rawMsgs } = await supabase
       .from("messages")
       .select("id, sender_id, recipient_id, body, is_read, created_at")
       .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
+      .or("is_archived.is.null,is_archived.eq.false")
+      .is("thread_context", null)
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -412,6 +443,57 @@ export default async function AdminPage() {
           role: "student",
         });
       }
+    }
+  }
+
+  // ── SCHEDULE THREAD (session 90 Chunk J) ─────────────────────────
+  let scheduleThread: ScheduleThreadMessage[] = [];
+  {
+    const { data: threadMsgs } = await supabase
+      .from("messages")
+      .select("id, sender_id, recipient_id, body, created_at")
+      .eq("thread_context", "schedule")
+      .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
+      .order("created_at", { ascending: true })
+      .limit(100);
+
+    if (threadMsgs && threadMsgs.length > 0) {
+      // Deduplicate: admin broadcasts create one row per teacher.
+      // For display, show each unique (sender_id, body, created_at) combo once.
+      const seen = new Set<string>();
+      const deduped: typeof threadMsgs = [];
+      for (const m of threadMsgs) {
+        const key = `${m.sender_id}|${m.body}|${m.created_at}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(m);
+        }
+      }
+
+      // Resolve names for thread participants
+      const threadPids = new Set<string>();
+      for (const m of deduped) {
+        threadPids.add(m.sender_id);
+      }
+      const threadNameMap = new Map<string, string>();
+      if (threadPids.size > 0) {
+        const { data: tProfs } = await supabase
+          .from("profiles")
+          .select("id, display_name, username")
+          .in("id", [...threadPids]);
+        for (const p of tProfs || []) {
+          threadNameMap.set(p.id, p.display_name || p.username || "Unknown");
+        }
+      }
+
+      scheduleThread = deduped.map((m) => ({
+        id: m.id,
+        senderId: m.sender_id,
+        senderName: threadNameMap.get(m.sender_id) || "Unknown",
+        body: m.body,
+        createdAt: m.created_at,
+        isFromAdmin: m.sender_id === user.id,
+      }));
     }
   }
 
@@ -483,8 +565,11 @@ export default async function AdminPage() {
         msgRecipients={msgRecipients}
         msgUnreadCount={msgUnreadCount}
         msgUserId={user.id}
+        isTeacherAdmin={profile.role === "teacher"}
         willingTrioCount={willingTrioCount}
         willingNineCount={willingNineCount}
+        appMode={appMode}
+        scheduleThread={scheduleThread}
       />
     </Frame>
   );
@@ -492,7 +577,7 @@ export default async function AdminPage() {
 
 function Frame({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-gradient-to-br from-black via-purple-950 to-blue-950 p-4 sm:p-6 text-white">
+    <main className="min-h-screen bg-gradient-to-br from-amber-50 to-stone-100 p-4 sm:p-6 text-stone-800">
       <div style={{ maxWidth: 660, margin: "0 auto", width: "100%" }}>{children}</div>
     </main>
   );
