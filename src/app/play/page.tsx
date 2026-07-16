@@ -7,8 +7,8 @@
 // door comes later (and may never come — see BUILD_PLAN).
 //
 // Three states this page renders:
-//   1. Supabase configured AND public class has ≥ 9 live starters: the game.
-//   2. Supabase configured but pool is < 9: a "deck being prepared" page.
+//   1. Supabase configured AND public class has ≥ 3 live starters: the game.
+//   2. Supabase configured but pool is < 3: a "deck being prepared" page.
 //   3. Supabase not configured (local dev with no .env): falls back to the
 //      static STUDENTS array via the engine's default prop, so /play stays
 //      playable without a backend.
@@ -37,7 +37,7 @@ export const metadata = {
   title: "Spotlight — Play",
 };
 
-// Always render on each request — the deck shuffles per visit (pool > 9
+// Always render on each request — the deck shuffles per visit (pool > 3
 // rotates), and signed URLs would otherwise get baked into a static prerender.
 export const dynamic = "force-dynamic";
 
@@ -105,12 +105,12 @@ function DeckBeingPrepared({ have }: { have: number }) {
           The deck is being prepared
         </h1>
         <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 4px" }}>
-          Spotlight needs nine photos before the front door opens.
+          Spotlight needs three photos before the front door opens.
         </p>
         <p style={{ fontSize: 13, color: "#6a4f33", margin: 0 }}>
           {have === 0
             ? "None have been added yet."
-            : `${have} of 9 added so far.`}
+            : `${have} of 3 added so far.`}
         </p>
       </div>
     </div>

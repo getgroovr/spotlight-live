@@ -1,100 +1,246 @@
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/auth/login/page.tsx — TEACHER password login.
+// DESTINATION: src/app/auth/login/page.tsx   (REPLACES existing file)
 //
-// Parked D fix: post-login redirect now points at /teacher/students (a real
-// route — the cohort grid) instead of /dashboard (which 404'd). Login always
-// worked; only the landing was broken.
+// Session 89 — Restyled to match the app's tan/cream palette.
+//   Purple gradient → warm cream background with tan card.
+//   Same auth logic (email + password → Supabase signInWithPassword).
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-client";
 
-export default function LoginPage() {
-  const router = useRouter();
-  const supabase = createClient();
+const C = {
+  bg: "#FBF6EC",
+  card: "#FFFDF7",
+  cardBorder: "#E8D5B5",
+  text: "#3A2A18",
+  textDim: "#6E5536",
+  textFaint: "#9A815E",
+  accent: "#D98A2B",
+  accentHover: "#C47A20",
+  error: "#C0392B",
+  inputBg: "#FFFFFF",
+  inputBorder: "#D4C4A8",
+  inputFocus: "#D98A2B",
+};
+const F = "'Outfit', sans-serif";
 
+export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
-  const handleLogin = async (e: React.FormEvent) => {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
+    setError("");
     setLoading(true);
 
-    if (!supabase) {
+    try {
+      const supabase = createClient();
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (authError) {
+        setError(authError.message);
+        setLoading(false);
+        return;
+      }
+
+      router.push("/");
+      router.refresh();
+    } catch {
+      setError("Something went wrong. Please try again.");
       setLoading(false);
-      setError("Accounts aren't enabled yet. You can still play without an account.");
-      return;
     }
-
-    const { error: loginError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    setLoading(false);
-
-    if (loginError) {
-      setError(loginError.message);
-      return;
-    }
-
-    router.push("/teacher/students");
-    router.refresh();
-  };
+  }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-purple-950 to-blue-950 p-6">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur">
-        <h1 className="mb-6 bg-gradient-to-r from-fuchsia-400 to-violet-400 bg-clip-text text-3xl font-extrabold text-transparent">
-          Log in to Spotlight
-        </h1>
+    <div style={{
+      background: C.bg,
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "2rem 1rem",
+      fontFamily: F,
+    }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-sm text-white/80">Email</label>
+      <div style={{
+        background: C.card,
+        border: `1px solid ${C.cardBorder}`,
+        borderRadius: 20,
+        padding: "40px 36px 36px",
+        width: "100%",
+        maxWidth: 420,
+        boxShadow: "0 4px 24px rgba(58, 42, 24, 0.08)",
+      }}>
+        {/* Logo / Title */}
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{
+            fontSize: 36,
+            marginBottom: 8,
+            filter: "drop-shadow(0 2px 8px rgba(217, 138, 43, 0.3))",
+          }}>
+            📸
+          </div>
+          <h1 style={{
+            fontSize: 26,
+            fontWeight: 800,
+            color: C.text,
+            margin: "0 0 4px",
+            letterSpacing: -0.5,
+          }}>
+            Log in to Spotlight
+          </h1>
+          <p style={{
+            fontSize: 14,
+            color: C.textFaint,
+            margin: 0,
+          }}>
+            Welcome back
+          </p>
+        </div>
+
+        <form onSubmit={handleLogin}>
+          {/* Email */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{
+              display: "block",
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.textDim,
+              marginBottom: 6,
+              letterSpacing: 0.3,
+            }}>
+              Email
+            </label>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white outline-none focus:border-fuchsia-400"
+              placeholder="you@example.com"
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "12px 14px",
+                fontSize: 15,
+                fontFamily: F,
+                color: C.text,
+                background: C.inputBg,
+                border: `1.5px solid ${C.inputBorder}`,
+                borderRadius: 10,
+                outline: "none",
+                transition: "border-color 0.2s ease",
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = C.inputFocus; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = C.inputBorder; }}
             />
           </div>
 
-          <div>
-            <label className="mb-1 block text-sm text-white/80">Password</label>
+          {/* Password */}
+          <div style={{ marginBottom: 24 }}>
+            <label style={{
+              display: "block",
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.textDim,
+              marginBottom: 6,
+              letterSpacing: 0.3,
+            }}>
+              Password
+            </label>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white outline-none focus:border-fuchsia-400"
+              placeholder="••••••••"
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "12px 14px",
+                fontSize: 15,
+                fontFamily: F,
+                color: C.text,
+                background: C.inputBg,
+                border: `1.5px solid ${C.inputBorder}`,
+                borderRadius: 10,
+                outline: "none",
+                transition: "border-color 0.2s ease",
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = C.inputFocus; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = C.inputBorder; }}
             />
           </div>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Error */}
+          {error && (
+            <div style={{
+              background: "#FDF2F0",
+              border: `1px solid ${C.error}33`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              marginBottom: 16,
+              fontSize: 13,
+              color: C.error,
+              lineHeight: 1.5,
+            }}>
+              {error}
+            </div>
+          )}
 
+          {/* Submit */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 py-3 font-semibold text-white disabled:opacity-50"
+            style={{
+              width: "100%",
+              padding: "14px",
+              fontSize: 16,
+              fontWeight: 700,
+              fontFamily: F,
+              color: "#fff",
+              background: loading ? C.textFaint : C.accent,
+              border: "none",
+              borderRadius: 12,
+              cursor: loading ? "not-allowed" : "pointer",
+              letterSpacing: 0.5,
+              boxShadow: "0 3px 12px rgba(217, 138, 43, 0.3)",
+              transition: "background 0.2s ease, transform 0.15s ease",
+            }}
+            onMouseOver={(e) => { if (!loading) e.currentTarget.style.background = C.accentHover; }}
+            onMouseOut={(e) => { if (!loading) e.currentTarget.style.background = C.accent; }}
           >
-            {loading ? "Logging in..." : "Log in"}
+            {loading ? "Logging in…" : "Log in"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-white/60">
-          Don't have an account?{" "}
-          <Link href="/auth/signup" className="text-fuchsia-400 hover:underline">
+        {/* Sign up link */}
+        <p style={{
+          textAlign: "center",
+          marginTop: 20,
+          fontSize: 14,
+          color: C.textDim,
+        }}>
+          Don&apos;t have an account?{" "}
+          <Link href="/auth/signup" style={{
+            color: C.accent,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}>
             Sign up
           </Link>
         </p>
       </div>
-    </main>
+    </div>
   );
 }
