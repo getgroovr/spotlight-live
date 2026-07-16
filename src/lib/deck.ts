@@ -97,7 +97,12 @@ export type DeckResult =
   | { ok: true; students: EngineStudent[] }
   | { ok: false; reason: "no-supabase" | "no-class" | "underfilled"; have: number };
 
+// Chunk F: minimum 3 entries to render the game. The 3×3 grid stays
+// visually the same — monster filler cards pad the remaining slots
+// client-side in spotlight.jsx. The deck still TRIES to fill 9, but
+// returns ok:true as soon as it has ≥ 3.
 const DECK_SIZE = 9;
+const DECK_MIN = 3;
 
 // Fisher-Yates shuffle (in-place, returns same array).
 function shuffleInPlace<T>(arr: T[]): T[] {
@@ -217,7 +222,7 @@ export async function loadGenericDeck(): Promise<DeckResult> {
     }
   }
 
-  if (picked.length < DECK_SIZE) {
+  if (picked.length < DECK_MIN) {
     return { ok: false, reason: "underfilled", have: picked.length };
   }
 

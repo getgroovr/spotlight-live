@@ -65,7 +65,7 @@ const FALLBACK_PALETTE = [
 ];
 
 export type ClassDeckResult =
-  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean; currentTopic: string | null; nextRoundTopic: string | null }
+  | { ok: true; students: EngineStudent[]; classId: string; currentRound: number; totalRounds: number | null; warmupComplete: boolean; currentTopic: string | null; nextRoundTopic: string | null; teacherPrompt: string | null }
   | { ok: false; reason: "no-supabase" | "no-session" | "no-class" | "no-entries" | "game-over" | "game-not-started" | "entry-pending" | "teacher-account" | "submissions-closed"; classId: string | null };
 
 export async function loadClassDeck(): Promise<ClassDeckResult> {
@@ -102,7 +102,7 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // the select so the timing object can drive the submissions-closed gate.
   const { data: classRow } = await admin
     .from("classes")
-    .select("total_rounds, round_duration_hours, game_starts_at, round_topics, game_phase_hours, review_phase_hours")
+    .select("total_rounds, round_duration_hours, game_starts_at, round_topics, game_phase_hours, review_phase_hours, teacher_prompt")
     .eq("id", classId)
     .maybeSingle();
 
@@ -148,6 +148,9 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   const roundTopicsMap = (classRow.round_topics ?? {}) as Record<string, string | null>;
   const currentTopic = roundTopicsMap[String(currentRound)] ?? null;
   const nextRoundTopic = roundTopicsMap[String(currentRound + 1)] ?? null;
+
+  // ── Session 89: teacher guidance prompt ──────────────────────────────
+  const teacherPrompt = (classRow.teacher_prompt as string | null) ?? null;
 
   // ── B22 FIX (#45): Check if this student already has a completed
   // warm-up (round=0) game_session. If so, GameShell should skip the
@@ -454,5 +457,5 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // "I'm in the game" cue. Otherwise preserves Map iteration order.
   students.sort((a, b) => (a.id === user.id ? -1 : b.id === user.id ? 1 : 0));
 
-  return { ok: true, students, classId, currentRound, totalRounds: timing.total_rounds, warmupComplete, currentTopic, nextRoundTopic };
+  return { ok: true, students, classId, currentRound, totalRounds: timing.total_rounds, warmupComplete, currentTopic, nextRoundTopic, teacherPrompt };
 }

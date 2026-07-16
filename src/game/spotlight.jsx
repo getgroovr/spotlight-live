@@ -13,7 +13,7 @@
 //   • The "check your email" screen now briefly explains what the class is.
 // ─────────────────────────────────────────────────────────────────────────
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   STUDENTS,
   TEACHER,
@@ -22,6 +22,7 @@ import {
   addEntry,
 } from "./students.js";
 import { enrollStudent, saveStudentRound, addEntry as addEntryAction } from "@/app/play/actions";
+import { MonsterCard, padWithMonsters } from "./monsters.jsx";
 
 const F = "'Outfit',sans-serif";
 const SOCIAL = false;
@@ -243,6 +244,7 @@ const RULE_TEXT = "What do you think? Write at least a sentence.";
 
 function ProfileCard({
   student, onWatchDescription, onContinue, myComment, onSaveComment,
+  teacherPrompt,
 }) {
   const live = liveEntry(student);
   const hasDescription = !!(live && live.description);
@@ -254,9 +256,15 @@ function ProfileCard({
   // P10 (session 76): Shows 2 fun phrases then the rule, then stops.
   // Sequence: fun → fun → rule (DONE). No continuous loop.
   // Pauses rotation once the student starts typing.
+  //
+  // Session 89: When teacherPrompt is present, it replaces the first fun
+  // phrase. Sequence becomes: teacher → fun → rule (DONE). The teacher's
+  // voice leads, a fun phrase follows, then the rule anchors.
   const [phraseIndex, setPhraseIndex] = useState(() => Math.floor(Math.random() * PROMPT_PHRASES.length));
-  const [cycleStep, setCycleStep] = useState(0); // 0,1 = fun phrase; 2 = rule (final)
-  const [placeholderText, setPlaceholderText] = useState(PROMPT_PHRASES[phraseIndex % PROMPT_PHRASES.length]);
+  const [cycleStep, setCycleStep] = useState(0); // 0,1 = fun phrase (or teacher prompt); 2 = rule (final)
+  const [placeholderText, setPlaceholderText] = useState(
+    teacherPrompt ? teacherPrompt : PROMPT_PHRASES[phraseIndex % PROMPT_PHRASES.length],
+  );
 
   useEffect(() => {
     // Don't rotate while the student is typing, or after the rule has shown
@@ -284,12 +292,12 @@ function ProfileCard({
 
   useEffect(() => {
     setDraft(myComment || "");
-    // P10: reset rotation for the new photo so they see 2 fun phrases + rule again
+    // P10: reset rotation for the new photo so they see teacher prompt (or fun phrase) + rule again
     setCycleStep(0);
     const newPi = Math.floor(Math.random() * PROMPT_PHRASES.length);
     setPhraseIndex(newPi);
-    setPlaceholderText(PROMPT_PHRASES[newPi]);
-  }, [student.id]);
+    setPlaceholderText(teacherPrompt ? teacherPrompt : PROMPT_PHRASES[newPi]);
+  }, [student.id, teacherPrompt]);
 
   const handleContinue = () => {
     if (!meetsMin) return;
@@ -343,6 +351,23 @@ function ProfileCard({
       )}
 
       <div style={{ marginTop: 22 }}>
+        {/* Session 89: teacher guidance banner — only shown in student mode
+            when the teacher has written a prompt for the class */}
+        {teacherPrompt && (
+          <div style={{
+            fontFamily: F, fontSize: 12, color: C.textDim,
+            background: C.light + "12", border: `1px solid ${C.light}33`,
+            borderRadius: 10, padding: "8px 12px",
+            marginBottom: 10, lineHeight: 1.5,
+            fontStyle: "italic",
+          }}>
+            <span style={{ fontWeight: 700, fontStyle: "normal", color: C.light, fontSize: 10,
+              letterSpacing: 0.5, textTransform: "uppercase", display: "block", marginBottom: 2 }}>
+              From your teacher
+            </span>
+            {teacherPrompt}
+          </div>
+        )}
         <label style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: C.text,
           display: "block", marginBottom: 7 }}>
           Your comment on this photo
@@ -392,6 +417,28 @@ function StageGrid({ order, shownIds, running }) {
       maxWidth: 460, margin: "0 auto",
     }}>
       {order.map((s) => {
+        // Chunk F: monster filler cards — non-interactive visual padding.
+        if (s.isMonster) {
+          return (
+            <div key={s.id} style={{
+              background: C.panel,
+              border: `1px solid ${s.color}44`,
+              borderRadius: 14, padding: "10px 8px 12px",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+              opacity: 0.7,
+              transition: running ? "all 0.18s ease" : "all 0.3s ease",
+            }}>
+              <div style={{
+                width: "100%", aspectRatio: "1/1",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: s.color + "18", borderRadius: 10,
+              }}>
+                <MonsterCard index={s.monsterIndex} size={56} />
+              </div>
+            </div>
+          );
+        }
+
         const shown = shownIds.has(s.id);
         const live = liveEntry(s);
         const hasPhoto = !!(live && live.primary && live.mediaType === "photo");
@@ -452,6 +499,29 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
       maxWidth: 580, margin: "0 auto",
     }}>
       {students.map((s) => {
+        // Chunk F: monster filler cards — non-interactive in the review grid.
+        if (s.isMonster) {
+          return (
+            <div
+              key={s.id}
+              style={{
+                background: C.panel,
+                border: `2px solid ${s.color}33`,
+                borderRadius: 12,
+                padding: 7,
+                display: "flex", flexDirection: "column", gap: 6,
+                opacity: 0.45,
+              }}
+            >
+              <div style={{ width: "100%", aspectRatio: "1/1",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: s.color + "15", borderRadius: 8 }}>
+                <MonsterCard index={s.monsterIndex} size={46} />
+              </div>
+            </div>
+          );
+        }
+
         const isSelf = !!s.isSelf;
         const isPlaceholder = !!s.isPlaceholder;
         const inactive = isSelf || isPlaceholder;
@@ -966,10 +1036,30 @@ function StudentFavoriteEdit({
                 letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Your photo
               </label>
-              {/* U2: Prominent button-style upload trigger */}
-              {/* U3: File input hidden once preview is visible */}
-              <div style={{ display: uploadPreviewUrl ? "none" : "block" }}>
-                <label style={{
+              {/* B87 FIX: Single file input. Two inputs with the same name
+                  caused formData.get("entry_photo") to grab the stale first
+                  input when the user picked via "Choose a different photo."
+                  Now one input is always visible (hidden via CSS); both
+                  trigger labels point to it. */}
+              <input
+                type="file"
+                name="entry_photo"
+                accept="image/*"
+                required
+                id="upload-entry-photo"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const url = URL.createObjectURL(file);
+                    setUploadPreviewUrl(url);
+                  } else {
+                    setUploadPreviewUrl(null);
+                  }
+                }}
+                style={{ display: "none" }}
+              />
+              {!uploadPreviewUrl && (
+                <label htmlFor="upload-entry-photo" style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
                   fontFamily: F, fontSize: 13, fontWeight: 700,
                   background: C.light, color: C.stageDeep,
@@ -979,24 +1069,8 @@ function StudentFavoriteEdit({
                   transition: "all 0.2s ease",
                 }}>
                   📷 Choose a photo
-                  <input
-                    type="file"
-                    name="entry_photo"
-                    accept="image/*"
-                    required
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const url = URL.createObjectURL(file);
-                        setUploadPreviewUrl(url);
-                      } else {
-                        setUploadPreviewUrl(null);
-                      }
-                    }}
-                    style={{ display: "none" }}
-                  />
                 </label>
-              </div>
+              )}
               {uploadPreviewUrl && (
                 <div style={{ marginTop: 0, textAlign: "center" }}>
                   <img src={uploadPreviewUrl} alt="Preview"
@@ -1007,27 +1081,11 @@ function StudentFavoriteEdit({
                     }}
                   />
                   <div style={{ marginTop: 8 }}>
-                    <label style={{
+                    <label htmlFor="upload-entry-photo" style={{
                       fontFamily: F, fontSize: 12, color: C.textDim,
                       cursor: "pointer", textDecoration: "underline",
                     }}>
                       Choose a different photo
-                      <input
-                        type="file"
-                        name="entry_photo"
-                        accept="image/*"
-                        required
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            const url = URL.createObjectURL(file);
-                            setUploadPreviewUrl(url);
-                          } else {
-                            setUploadPreviewUrl(null);
-                          }
-                        }}
-                        style={{ display: "none" }}
-                      />
                     </label>
                   </div>
                 </div>
@@ -1179,7 +1237,7 @@ function DoneScreen({
                 transition: "all 0.2s ease",
               }}
             >
-              {mode === "student" ? "Save my comments →" : "Join the class →"}
+              {mode === "student" ? "Save your favorite →" : "Join the class →"}
             </button>
             {mode !== "student" && (
               <button onClick={onPlayAgain}
@@ -1217,13 +1275,20 @@ function DoneScreen({
   );
 }
 
-export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds, currentTopic, nextRoundTopic }) {
+export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds, currentTopic, nextRoundTopic, teacherPrompt }) {
+  // Chunk F: pad the deck to 9 with monster filler cards. useMemo ensures
+  // the same set of monsters persists across re-renders (shuffle positions
+  // are fixed for the session). Monster tiles have isMonster:true and
+  // isPlaceholder:true so the engine skips them in shuffle/stop and the
+  // grids render them as non-interactive visual padding.
+  const paddedStudents = useMemo(() => padWithMonsters(initialStudents), [initialStudents]);
+
   const [view, setView] = useState("splash");
   const [phase, setPhase] = useState("idle");
-  const [order, setOrder] = useState(initialStudents);
+  const [order, setOrder] = useState(paddedStudents);
   const [shownIds, setShownIds] = useState(new Set());
   const [selected, setSelected] = useState(null);
-  const [students, setStudents] = useState(initialStudents);
+  const [students, setStudents] = useState(paddedStudents);
   const [myComments, setMyComments] = useState({});
 
   // ─────────────────────────────────────────────────────────────────────
@@ -1398,7 +1463,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
               ? "Here you are. Classmates' photos will appear in the empty spots as they join."
               : hasSelf
                 ? `${playableCount} ${playableCount === 1 ? "classmate" : "classmates"} to meet. Hit stop, look closely, and tell us what you see.`
-                : `${students.length} photos. Hit stop, look closely, and tell us what you see.`}
+                : `${playableCount} photos. Hit stop, look closely, and tell us what you see.`}
           </p>
           {soloSelf ? (
             // No game to play yet — only the student's own tile exists. Render
@@ -1450,16 +1515,21 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
                       </div>
                     );
                   }
-                  // Placeholder slot for a classmate not yet here. Dashed
-                  // border + low opacity = "this spot is reserved, somebody
-                  // will fill it later."
+                  // Chunk F: show monster cards in the empty slots instead
+                  // of dashed borders. Gives the preview grid personality.
                   return (
                     <div key={i} style={{
                       aspectRatio: "1",
                       borderRadius: 8,
-                      border: `2px dashed ${C.panelEdge}`,
-                      opacity: 0.45,
-                    }} />
+                      border: `1px solid ${C.panelEdge}`,
+                      opacity: 0.4,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: C.panel,
+                    }}>
+                      <MonsterCard index={i < 4 ? i : i - 1} size={36} />
+                    </div>
                   );
                 })}
               </div>
@@ -1579,6 +1649,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
             onContinue={finishStudent}
             myComment={myComments[entryIdOf(selected)] || ""}
             onSaveComment={(text) => saveComment(entryIdOf(selected), text)}
+            teacherPrompt={teacherPrompt}
           />
         </div>
       )}
@@ -1637,7 +1708,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
         <DoneScreen
           myComments={myComments}
           students={students}
-          totalStudents={students.length}
+          totalStudents={students.filter(s => !s.isMonster).length}
           onPlayAgain={resetAll}
           onCommentChange={saveComment}
           mode={mode}
