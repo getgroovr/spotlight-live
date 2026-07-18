@@ -1,15 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/admin/admin-client.tsx   (REPLACES existing file)
 //
-// Session 91: Aesthetic + functional fixes:
-//   1. "Total round duration" text: visible (was white-on-beige).
-//   2. Card backgrounds: warmer amber tone, matching Messages button.
-//   3. Padding: text no longer touches frame edges anywhere.
-//   4. "1 message" badge is now clickable to toggle thread.
-//   5. Schedule: teacher picks Round time (total) + Review time.
-//      Play time = Round time − Review time (computed, displayed).
-//   6. "Game time" → "Play time" rename throughout.
-//   7. Two-tab layout (Recruitment | Oversight) from Chunk R1.
+// Session 92: Three-tab restructure + auto-recruiting display.
+//
+//   RECRUITMENT tab — the recruiting game pipeline:
+//     • Warm-up control (live status, mode selector)
+//     • Teacher rotation queue (auto-recruiting based on mode slots)
+//     • Game schedule + teacher coordination thread
+//     • Game topics
+//
+//   OVERSIGHT tab — managing established teachers & classes:
+//     • Overview stats
+//     • Teacher profiles (new — all teachers with class/topic summaries)
+//     • Messages
+//     • Current classes (active + archived)
+//
+//   BUSINESS tab (placeholder) — subscriptions, payment tiers:
+//     • Coming-soon placeholder for the online platform admin
+//
+//   Bug fix: Teachers in the top N rotation positions (where N = warmup
+//   mode count) now auto-display as "recruiting" instead of "waiting".
+//   No more manual Recruit button — reorder to change who recruits,
+//   Pause to opt out, Resume to rejoin.
+//
+//   Removed: AppModeSelector (use SQL for mode switching during dev)
 //
 // NOTE: Tailwind grid-cols-N does NOT work in this project's build.
 // All multi-column layouts use inline styles.
@@ -41,13 +55,10 @@ import {
 
 /* ── shared warm card color ────────────────────────────────────────────── */
 const CARD_BG = "#f2e8d5";
-// Inline-style card look: Tailwind border-2/border-stone-300/bg-amber-600 are
-// not in this project's build (they silently drop), so anything visual that
-// MUST render lives here as an inline style.
-const CARD_BORDER = "2px solid #b8a888";     // warm stone, visible against beige
+const CARD_BORDER = "2px solid #b8a888";
 const CARD_STYLE = { backgroundColor: CARD_BG, border: CARD_BORDER } as const;
-const CARD_PAD = { padding: "20px 28px" } as const;          // roomy content padding
-const CARD_PAD_TIGHT = { padding: "14px 28px" } as const;    // for header rows / collapsible triggers
+const CARD_PAD = { padding: "20px 28px" } as const;
+const CARD_PAD_TIGHT = { padding: "14px 28px" } as const;
 
 // ═════════════════════════════════════════════════════════════════════════
 // Standard mode landing — shown at /admin when app_mode = 'standard'
@@ -62,7 +73,6 @@ export function StandardModeLanding() {
     startTransition(async () => {
       const res = await updateAppMode("multi");
       if (!res.ok) setError(res.error);
-      // On success the page will re-render with the full admin dashboard
     });
   }
 
@@ -131,6 +141,22 @@ export function StandardModeLanding() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// Helper: compute which teachers are actively recruiting based on warmup
+// mode. The top N non-paused teachers in rotation order are "recruiting";
+// others are "waiting" (in queue) or "paused" (opted out).
+// ═════════════════════════════════════════════════════════════════════════
+function computeActiveRecruitIds(
+  teachers: TeacherRow[],
+  warmupTeacherCount: number,
+): Set<string> {
+  const eligible = teachers
+    .filter((t) => t.rotation && t.rotation.status !== "paused")
+    .sort((a, b) => a.rotation!.sort_order - b.rotation!.sort_order);
+  const active = eligible.slice(0, warmupTeacherCount);
+  return new Set(active.map((t) => t.id));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Main component
 // ═════════════════════════════════════════════════════════════════════════
 export function AdminClient({
@@ -147,7 +173,7 @@ export function AdminClient({
   willingTrioCount,
   willingNineCount,
   appMode,
-scheduleThread,
+  scheduleThread,
   isTeacherAdmin,
 }: {
   teachers: TeacherRow[];
@@ -168,21 +194,27 @@ scheduleThread,
 }) {
   const modeLabels: Record<number, string> = { 1: "Solo", 3: "Trio", 9: "Full" };
 
-  // Chunk E: overview stats
+  // Overview stats
   const activeTeachers = teachers.filter((t) => !t.is_archived).length;
-  const inactiveTeachers = teachers.filter((t) => t.is_archived).length;
   const inRotation = teachers.filter((t) => t.rotation !== null).length;
 
   const seededTopics = topics.filter((t) => !t.suggested_by);
   const teacherTopics = topics.filter((t) => !!t.suggested_by);
 
-  // Collect all classes across all teachers
+  // All classes across all teachers
   const allClasses = teachers.flatMap((t) => t.classes);
   const activeClasses = allClasses.filter((c) => !c.is_archived);
   const archivedClasses = allClasses.filter((c) => c.is_archived);
 
-  // ── R1: Tab state ──────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"recruitment" | "oversight">("oversight");
+  // Active recruit computation
+  const activeRecruitIds = computeActiveRecruitIds(teachers, warmupConfig.warmup_teacher_count);
+
+  // Pending items for tab badges
+  const pendingRequests = classRequests.filter((r) => r.status === "pending").length;
+  const pendingTopics = teacherTopics.filter((t) => t.status === "pending").length;
+
+  // ── Tab state ──────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<"recruitment" | "oversight" | "business">("recruitment");
 
   return (
     <div className="space-y-4">
@@ -213,13 +245,13 @@ scheduleThread,
         )}
       </div>
 
-      {/* ─── R1: TAB BAR ─────────────────────────────────────────── */}
+      {/* ─── TAB BAR ─────────────────────────────────────────────── */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(120,113,108,0.15)" }}>
         <TabButton
           label="Recruitment"
           active={activeTab === "recruitment"}
           onClick={() => setActiveTab("recruitment")}
-          badge={inRotation > 0 ? `${inRotation} in queue` : undefined}
+          badge={activeRecruitIds.size > 0 ? `${activeRecruitIds.size} recruiting` : inRotation > 0 ? `${inRotation} in queue` : undefined}
         />
         <TabButton
           label="Oversight"
@@ -227,30 +259,53 @@ scheduleThread,
           onClick={() => setActiveTab("oversight")}
           badge={msgUnreadCount > 0 ? `${msgUnreadCount} unread` : undefined}
         />
+        <TabButton
+          label="Business"
+          active={activeTab === "business"}
+          onClick={() => setActiveTab("business")}
+        />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════ */}
       {/* RECRUITMENT TAB                                           */}
-      {/* Warmup control, teacher rotation queue                    */}
+      {/* Warmup control, rotation queue, schedule, topics          */}
       {/* ═══════════════════════════════════════════════════════════ */}
       {activeTab === "recruitment" && (
         <>
           {/* ─── WARM-UP CONTROL ─────────────────────────────────── */}
           <SectionLabel text="Warm-up control" />
-          <WarmupBlock config={warmupConfig} teachers={teachers} />
+          <WarmupBlock
+            config={warmupConfig}
+            teachers={teachers}
+            activeRecruitIds={activeRecruitIds}
+          />
 
           {/* ─── TEACHER ROTATION QUEUE ──────────────────────────── */}
           <SectionLabel text="Teacher rotation queue" />
           <TeacherSection
             teachers={teachers}
             classRequests={classRequests}
+            warmupConfig={warmupConfig}
+            activeRecruitIds={activeRecruitIds}
           />
+
+          {/* ─── GAME SCHEDULE ────────────────────────────────────── */}
+          <SectionLabel text="Game schedule" />
+          <GameScheduleSection
+            schedule={gameSchedule}
+            topicOptions={topicOptions}
+            scheduleThread={scheduleThread}
+          />
+
+          {/* ─── GAME TOPICS ─────────────────────────────────────── */}
+          <SectionLabel text="Game topics" />
+          <TopicsSection seededTopics={seededTopics} teacherTopics={teacherTopics} />
         </>
       )}
 
       {/* ═══════════════════════════════════════════════════════════ */}
       {/* OVERSIGHT TAB                                             */}
-      {/* Overview, mode, messages, schedule, topics, classes        */}
+      {/* Overview, teacher profiles, messages, classes             */}
       {/* ═══════════════════════════════════════════════════════════ */}
       {activeTab === "oversight" && (
         <>
@@ -258,16 +313,19 @@ scheduleThread,
           <SectionLabel text="Overview" />
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             <StatItem label="Active teachers" value={activeTeachers} />
-            {inactiveTeachers > 0 && (
-              <StatItem label="Inactive teachers" value={inactiveTeachers} color="text-stone-400" />
-            )}
-            <StatItem label="App mode" value={appMode === "multi" ? "Multi" : "Standard"} color="text-violet-600" />
             <StatItem label="Warmup mode" value={modeLabels[warmupConfig.warmup_teacher_count]} />
             <StatItem label="In rotation" value={inRotation} color="text-violet-600" />
+            <StatItem label="Active classes" value={activeClasses.length} />
+            {archivedClasses.length > 0 && (
+              <StatItem label="Archived" value={archivedClasses.length} color="text-stone-400" />
+            )}
           </div>
 
-          {/* ─── APP MODE SELECTOR (M2) ──────────────────────────── */}
-          <AppModeSelector currentMode={appMode} />
+          {/* ─── TEACHER PROFILES ────────────────────────────────── */}
+          <SectionLabel text="Teachers" />
+          <TeacherProfilesSection
+            teachers={teachers}
+          />
 
           {/* ─── MESSAGES ────────────────────────────────────────── */}
           <SectionLabel text="Messages" />
@@ -281,25 +339,34 @@ scheduleThread,
             />
           </div>
 
-          {/* ─── GAME SCHEDULE ────────────────────────────────────── */}
-          <SectionLabel text="Game schedule" />
-          <GameScheduleSection
-            schedule={gameSchedule}
-            topicOptions={topicOptions}
-            scheduleThread={scheduleThread}
-          />
-
-          {/* ─── GAME TOPICS ─────────────────────────────────────── */}
-          <SectionLabel text="Game topics" />
-          <TopicsSection seededTopics={seededTopics} teacherTopics={teacherTopics} />
-
           {/* ─── CURRENT CLASSES ──────────────────────────────────── */}
           <SectionLabel text="Current classes" />
           <CurrentClassesSection
             activeClasses={activeClasses}
-            archivedClasses={archivedClasses}
             teachers={teachers}
           />
+
+          {/* ─── ARCHIVED CLASSES ─────────────────────────────────── */}
+          {archivedClasses.length > 0 && (
+            <>
+              <SectionLabel text="Archived classes" />
+              <ArchivedClassesSection
+                archivedClasses={archivedClasses}
+                teachers={teachers}
+              />
+            </>
+          )}
+        </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* BUSINESS TAB                                              */}
+      {/* Subscriptions, revenue — online platform only             */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {activeTab === "business" && (
+        <>
+          <SectionLabel text="Platform" />
+          <BusinessPlaceholder />
         </>
       )}
     </div>
@@ -331,7 +398,7 @@ function SectionLabel({ text }: { text: string }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Tab button — R1
+// Tab button
 // ═════════════════════════════════════════════════════════════════════════
 function TabButton({
   label,
@@ -382,21 +449,39 @@ function TabButton({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Warm-up block
+// Warm-up block — updated for multi-recruiting display
 // ═════════════════════════════════════════════════════════════════════════
 function WarmupBlock({
   config,
   teachers,
+  activeRecruitIds,
 }: {
   config: WarmupConfig;
   teachers: TeacherRow[];
+  activeRecruitIds: Set<string>;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
   const modeLabels: Record<number, string> = { 1: "Solo (1)", 3: "Trio (3)", 9: "Full (9)" };
-  const recruiting = teachers.find((t) => t.rotation?.status === "recruiting");
-  const isLive = !!recruiting;
+
+  // Build recruiting teacher list for display
+  const activeRecruits = teachers
+    .filter((t) => activeRecruitIds.has(t.id))
+    .sort((a, b) => (a.rotation?.sort_order ?? 99) - (b.rotation?.sort_order ?? 99));
+  const isLive = activeRecruits.length > 0;
+  const shortfall = config.warmup_teacher_count - activeRecruits.length;
+
+  // Banner text
+  let bannerText = "";
+  if (activeRecruits.length === 1) {
+    const name = activeRecruits[0].display_name || activeRecruits[0].username || "1 teacher";
+    bannerText = `${name} is recruiting`;
+  } else if (activeRecruits.length > 1) {
+    const names = activeRecruits.map((t) => t.display_name || t.username || "?").join(", ");
+    bannerText = `${activeRecruits.length} teachers recruiting`;
+    if (activeRecruits.length <= 4) bannerText += ` — ${names}`;
+  }
 
   function handleModeChange(val: string) {
     const count = parseInt(val, 10) as 1 | 3 | 9;
@@ -413,9 +498,12 @@ function WarmupBlock({
       <div className="flex items-center gap-3" style={{ ...CARD_PAD_TIGHT, borderBottom: "1px solid rgba(120,113,108,0.2)" }}>
         <span className={`w-2 h-2 rounded-full ${isLive ? "bg-emerald-500 animate-pulse" : "bg-stone-300"}`} />
         <span className="text-xs font-medium">{isLive ? "Live" : "Off"}</span>
-        {recruiting && (
-          <span className="text-xs text-stone-400">
-            {recruiting.display_name || recruiting.username} is recruiting
+        {bannerText && (
+          <span className="text-xs text-stone-400">{bannerText}</span>
+        )}
+        {shortfall > 0 && isLive && (
+          <span className="text-[9px] px-2 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200">
+            {shortfall} slot{shortfall !== 1 ? "s" : ""} unfilled
           </span>
         )}
       </div>
@@ -439,14 +527,18 @@ function WarmupBlock({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Teachers section — collapsible, merged table with rotation ↑↓
+// Teachers section — collapsible rotation queue
 // ═════════════════════════════════════════════════════════════════════════
 function TeacherSection({
   teachers,
   classRequests,
+  warmupConfig,
+  activeRecruitIds,
 }: {
   teachers: TeacherRow[];
   classRequests: ClassRequestRow[];
+  warmupConfig: WarmupConfig;
+  activeRecruitIds: Set<string>;
 }) {
   const [showSection, setShowSection] = useState(false);
 
@@ -479,6 +571,8 @@ function TeacherSection({
             teachers={sorted}
             classRequests={classRequests}
             inRotationCount={inRotation.length}
+            warmupConfig={warmupConfig}
+            activeRecruitIds={activeRecruitIds}
           />
         </div>
       )}
@@ -487,16 +581,20 @@ function TeacherSection({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Teacher table
+// Teacher table — auto-recruiting display based on mode slots
 // ═════════════════════════════════════════════════════════════════════════
 function TeacherTable({
   teachers,
   classRequests,
   inRotationCount,
+  warmupConfig,
+  activeRecruitIds,
 }: {
   teachers: TeacherRow[];
   classRequests: ClassRequestRow[];
   inRotationCount: number;
+  warmupConfig: WarmupConfig;
+  activeRecruitIds: Set<string>;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -546,7 +644,12 @@ function TeacherTable({
           {teachers.map((t, idx) => {
             const name = t.display_name || t.username || "Unnamed";
             const inQueue = t.rotation !== null;
-            const isRecruiting = t.rotation?.status === "recruiting";
+            const isPaused = t.rotation?.status === "paused";
+            const isActiveRecruit = activeRecruitIds.has(t.id);
+
+            // Display status: computed from position, not DB status
+            const displayStatus = isPaused ? "paused" : isActiveRecruit ? "recruiting" : inQueue ? "waiting" : null;
+
             const teacherPending = pendingByTeacher.get(t.id) || [];
             const showSeparator = idx === inRotationCount && inRotationCount > 0;
             const activeClassCount = t.classes.filter((c) => !c.is_archived).length;
@@ -569,8 +672,8 @@ function TeacherTable({
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        isRecruiting ? "bg-emerald-500"
-                          : inQueue ? "bg-amber-500"
+                        isActiveRecruit ? "bg-emerald-500"
+                          : inQueue && !isPaused ? "bg-amber-500"
                           : "bg-stone-300"
                       }`} />
                       <span className="text-stone-700">{name}</span>
@@ -579,7 +682,7 @@ function TeacherTable({
                           admin
                         </span>
                       )}
-                      {inQueue && <StatusBadge status={t.rotation!.status} />}
+                      {displayStatus && <StatusBadge status={displayStatus} />}
                     </div>
                   </td>
                   {/* Classes: active / max */}
@@ -668,10 +771,10 @@ function TeacherTable({
                         <>
                           <Pill onClick={() => act(() => moveInRotation(t.id, "up"))} variant="default">↑</Pill>
                           <Pill onClick={() => act(() => moveInRotation(t.id, "down"))} variant="default">↓</Pill>
-                          {isRecruiting ? (
-                            <Pill onClick={() => act(() => setRotationStatus(t.id, "waiting"))} variant="amber">Pause</Pill>
+                          {isPaused ? (
+                            <Pill onClick={() => act(() => setRotationStatus(t.id, "waiting"))} variant="green">Resume</Pill>
                           ) : (
-                            <Pill onClick={() => act(() => setRotationStatus(t.id, "recruiting"))} variant="green">Recruit</Pill>
+                            <Pill onClick={() => act(() => setRotationStatus(t.id, "paused"))} variant="amber">Pause</Pill>
                           )}
                           <Pill onClick={() => act(() => removeFromRotation(t.id))} variant="red">✕</Pill>
                         </>
@@ -692,15 +795,117 @@ function TeacherTable({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// Teacher Profiles — Oversight tab, teacher-centric view
+// ═════════════════════════════════════════════════════════════════════════
+function TeacherProfilesSection({
+  teachers,
+}: {
+  teachers: TeacherRow[];
+}) {
+  const [showSection, setShowSection] = useState(false);
+
+  const activeTeachers = teachers.filter((t) => !t.is_archived);
+  const archivedTeachers = teachers.filter((t) => t.is_archived);
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
+      <button
+        onClick={() => setShowSection(!showSection)}
+        className="w-full flex items-center justify-between text-left hover:brightness-[0.97] transition" style={CARD_PAD_TIGHT}
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium">
+            {activeTeachers.length} active teacher{activeTeachers.length !== 1 ? "s" : ""}
+          </span>
+          {archivedTeachers.length > 0 && (
+            <span className="text-[10px] text-stone-400">
+              {archivedTeachers.length} archived
+            </span>
+          )}
+        </div>
+        <span className="text-stone-300 text-[10px]">{showSection ? "Close" : "See teachers"}</span>
+      </button>
+
+      {showSection && (
+        <div className="border-t border-stone-200 p-3 space-y-2">
+          {activeTeachers.map((t) => (
+            <TeacherProfileRow key={t.id} teacher={t} />
+          ))}
+          {archivedTeachers.length > 0 && (
+            <>
+              <div className="text-[10px] text-stone-300 uppercase tracking-wider pt-3 pb-1 px-2">
+                Archived ({archivedTeachers.length})
+              </div>
+              {archivedTeachers.map((t) => (
+                <TeacherProfileRow key={t.id} teacher={t} />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeacherProfileRow({
+  teacher: t,
+}: {
+  teacher: TeacherRow;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const activeClasses = t.classes.filter((c) => !c.is_archived);
+  const archivedClasses = t.classes.filter((c) => c.is_archived);
+  const name = t.display_name || t.username || "Unnamed";
+
+  return (
+    <div className={`rounded-lg border overflow-hidden ${t.is_archived ? "border-stone-100 opacity-60" : "border-stone-200"}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-stone-50 transition text-xs"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium truncate">{name}</span>
+          {t.is_admin && (
+            <span className="text-[8px] px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">admin</span>
+          )}
+          <span className="text-stone-400 flex-shrink-0">
+            {activeClasses.length} class{activeClasses.length !== 1 ? "es" : ""}
+          </span>
+          {archivedClasses.length > 0 && (
+            <span className="text-[10px] text-stone-300 flex-shrink-0">
+              + {archivedClasses.length} archived
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {t.rotation && <StatusBadge status={t.rotation.status} />}
+          {t.starters.length > 0 && (
+            <span className="text-[9px] px-2.5 py-0.5 rounded border border-stone-200 bg-stone-50 text-stone-400">
+              {t.starters.filter((s) => s.is_active).length} photo{t.starters.filter((s) => s.is_active).length !== 1 ? "s" : ""}
+            </span>
+          )}
+          <span className="text-stone-300 text-[10px]">{open ? "▾" : "▸"}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-stone-200 px-4 py-3">
+          <p className="text-[10px] text-stone-300 italic">Profile info coming soon</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Current Classes section — collapsible
 // ═════════════════════════════════════════════════════════════════════════
 function CurrentClassesSection({
   activeClasses,
-  archivedClasses,
   teachers,
 }: {
   activeClasses: ClassRow[];
-  archivedClasses: ClassRow[];
   teachers: TeacherRow[];
 }) {
   const [showSection, setShowSection] = useState(false);
@@ -711,10 +916,10 @@ function CurrentClassesSection({
     teacherStartersMap.set(name, t.starters);
   });
 
-  if (activeClasses.length === 0 && archivedClasses.length === 0) {
+  if (activeClasses.length === 0) {
     return (
       <div className="rounded-xl p-6 text-center text-stone-300 text-xs" style={CARD_STYLE}>
-        No classes yet
+        No active classes
       </div>
     );
   }
@@ -729,11 +934,6 @@ function CurrentClassesSection({
           <span className="text-xs font-medium">
             {activeClasses.length} active class{activeClasses.length !== 1 ? "es" : ""}
           </span>
-          {archivedClasses.length > 0 && (
-            <span className="text-[10px] text-stone-400">
-              {archivedClasses.length} archived
-            </span>
-          )}
         </div>
         <span className="text-stone-300 text-[10px]">{showSection ? "Close classes" : "See classes"}</span>
       </button>
@@ -748,21 +948,91 @@ function CurrentClassesSection({
               isArchived={false}
             />
           ))}
-          {archivedClasses.length > 0 && (
-            <>
-              <div className="text-[10px] text-stone-300 uppercase tracking-wider pt-3 pb-1 px-2">
-                Archived ({archivedClasses.length})
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Archived Classes — separate section, grouped by teacher
+// ═════════════════════════════════════════════════════════════════════════
+function ArchivedClassesSection({
+  archivedClasses,
+  teachers,
+}: {
+  archivedClasses: ClassRow[];
+  teachers: TeacherRow[];
+}) {
+  const [showSection, setShowSection] = useState(false);
+  const [openTeacher, setOpenTeacher] = useState<string | null>(null);
+
+  const teacherStartersMap = new Map<string, StarterRow[]>();
+  teachers.forEach((t) => {
+    const name = t.display_name || t.username || "Unnamed";
+    teacherStartersMap.set(name, t.starters);
+  });
+
+  // Group archived classes by teacher name
+  const byTeacher = new Map<string, ClassRow[]>();
+  for (const c of archivedClasses) {
+    const list = byTeacher.get(c.teacher_name) || [];
+    list.push(c);
+    byTeacher.set(c.teacher_name, list);
+  }
+  const teacherNames = [...byTeacher.keys()].sort();
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
+      <button
+        onClick={() => setShowSection(!showSection)}
+        className="w-full flex items-center justify-between text-left hover:brightness-[0.97] transition" style={CARD_PAD_TIGHT}
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium">
+            {archivedClasses.length} archived class{archivedClasses.length !== 1 ? "es" : ""}
+          </span>
+          <span className="text-[10px] text-stone-400">
+            {teacherNames.length} teacher{teacherNames.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <span className="text-stone-300 text-[10px]">{showSection ? "Close" : "See archived"}</span>
+      </button>
+
+      {showSection && (
+        <div className="border-t border-stone-200 p-3 space-y-1">
+          {teacherNames.map((tName) => {
+            const classes = byTeacher.get(tName) || [];
+            const isOpen = openTeacher === tName;
+            return (
+              <div key={tName} className="rounded-lg border border-stone-200 overflow-hidden">
+                <button
+                  onClick={() => setOpenTeacher(isOpen ? null : tName)}
+                  className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-stone-50 transition text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-stone-600">{tName}</span>
+                    <span className="text-stone-300">
+                      {classes.length} class{classes.length !== 1 ? "es" : ""}
+                    </span>
+                  </div>
+                  <span className="text-stone-300 text-[10px]">{isOpen ? "▾" : "▸"}</span>
+                </button>
+                {isOpen && (
+                  <div className="border-t border-stone-100 p-2 space-y-2">
+                    {classes.map((c) => (
+                      <ClassCard
+                        key={c.id}
+                        cls={c}
+                        starters={teacherStartersMap.get(c.teacher_name) || []}
+                        isArchived={true}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
-              {archivedClasses.map((c) => (
-                <ClassCard
-                  key={c.id}
-                  cls={c}
-                  starters={teacherStartersMap.get(c.teacher_name) || []}
-                  isArchived={true}
-                />
-              ))}
-            </>
-          )}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1363,17 +1633,6 @@ function AddTopicInput() {
 
 // ═════════════════════════════════════════════════════════════════════════
 // Game schedule section — Session 91 redesign
-//
-// Teacher picks:
-//   "Round time" — total duration of one round (e.g. 1 day)
-//   "Review time" — portion of round reserved for teacher review
-// App computes:
-//   "Play time" — Round time minus Review time
-//
-// Data mapping:
-//   round_duration_hours = total round time (what teacher picks)
-//   review_phase_hours   = review time (what teacher picks)
-//   game_phase_hours     = round_duration_hours - review_phase_hours (computed)
 // ═════════════════════════════════════════════════════════════════════════
 
 const ROUND_TIME_OPTIONS: { value: string; label: string }[] = [
@@ -1412,8 +1671,6 @@ function GameScheduleSection({
 
   const [totalRounds, setTotalRounds] = useState(schedule.game_total_rounds ?? 3);
 
-  // Session 91: Round time = total round duration.
-  // Fall back to sum of phases, then to old round_duration_hours.
   const [roundTimeHours, setRoundTimeHours] = useState(() => {
     if (schedule.game_phase_hours != null && schedule.review_phase_hours != null) {
       return String(schedule.game_phase_hours + schedule.review_phase_hours);
@@ -1465,21 +1722,14 @@ function GameScheduleSection({
     ),
   );
 
-  // Compute play time = round time - review time
   const roundTimeNum = parseFloat(roundTimeHours);
   const reviewNum = parseFloat(reviewPhaseHours);
   const playTimeHours = roundTimeNum - reviewNum;
   const playTimeValid = playTimeHours > 0;
 
-  // Filter review options to only show values less than round time
   const filteredReviewOptions = REVIEW_TIME_OPTIONS.filter(
     (opt) => parseFloat(opt.value) < roundTimeNum
   );
-
-  // If current review selection is now invalid, reset it
-  if (reviewNum >= roundTimeNum && filteredReviewOptions.length > 0) {
-    // Will handle in effect — for now just flag
-  }
 
   function handleSave() {
     if (!playTimeValid) {
@@ -1514,7 +1764,6 @@ function GameScheduleSection({
           Saving pushes to every active class.
         </p>
 
-        {/* 4 columns — Rounds, Round time, Review time, Starts at */}
         <div style={{ display: "grid", gridTemplateColumns: "0.8fr 1fr 1fr 1.5fr", gap: 12, marginBottom: 8 }}>
           <div>
             <label className="text-[10px] text-stone-500 font-medium block mb-1">Rounds</label>
@@ -1533,7 +1782,6 @@ function GameScheduleSection({
               value={roundTimeHours}
               onChange={(e) => {
                 setRoundTimeHours(e.target.value);
-                // Auto-fix review if it would exceed new round time
                 const newRound = parseFloat(e.target.value);
                 if (parseFloat(reviewPhaseHours) >= newRound) {
                   setReviewPhaseHours("0");
@@ -1569,7 +1817,6 @@ function GameScheduleSection({
           </div>
         </div>
 
-        {/* Computed play time + total round duration */}
         <p className="text-[10px] text-stone-600 mb-4">
           Total round duration: {formatDuration(roundTimeNum) || `${roundTimeNum}h`}
           {reviewNum > 0 && playTimeValid && (
@@ -1653,7 +1900,6 @@ function GameScheduleSection({
 
 // ═════════════════════════════════════════════════════════════════════════
 // Schedule coordination thread — Chunk J
-// Session 91: "1 message" badge is now clickable to toggle thread.
 // ═════════════════════════════════════════════════════════════════════════
 function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
   const [showThread, setShowThread] = useState(false);
@@ -1803,73 +2049,34 @@ function formatThreadDate(iso: string): string {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// App mode selector — M2
+// Business tab placeholder
 // ═════════════════════════════════════════════════════════════════════════
-function AppModeSelector({ currentMode }: { currentMode: "standard" | "multi" }) {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [confirmStandard, setConfirmStandard] = useState(false);
-
-  function handleChange(val: string) {
-    if (val === currentMode) return;
-    if (val === "standard") {
-      setConfirmStandard(true);
-      return;
-    }
-    setError(null);
-    startTransition(async () => {
-      const res = await updateAppMode(val as "standard" | "multi");
-      if (!res.ok) setError(res.error);
-    });
-  }
-
-  function handleConfirmStandard() {
-    setError(null);
-    setConfirmStandard(false);
-    startTransition(async () => {
-      const res = await updateAppMode("standard");
-      if (!res.ok) setError(res.error);
-    });
-  }
-
+function BusinessPlaceholder() {
   return (
-    <div className={`rounded-xl overflow-hidden ${pending ? "opacity-60 pointer-events-none" : ""}`} style={CARD_STYLE}>
+    <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
       <div style={CARD_PAD}>
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wider text-stone-400">App mode</span>
-          <select
-            value={currentMode}
-            onChange={(e) => handleChange(e.target.value)}
-            className="border border-stone-300 rounded-md px-2 py-1 text-xs text-stone-800" style={{ backgroundColor: '#f3efe8' }}
-          >
-            <option value="multi" className="bg-white">Multi (marketplace)</option>
-            <option value="standard" className="bg-white">Standard (organizational)</option>
-          </select>
-          <span className="text-[10px] text-stone-400">
-            {currentMode === "multi"
-              ? "Full admin dashboard, rotation queue, warmup matchmaking"
-              : "Solo game only, teacher creates classes directly"}
-          </span>
-        </div>
-        {confirmStandard && (
-          <div className="mt-3 p-4 rounded-lg border border-amber-200 bg-amber-50">
-            <p className="text-[11px] text-amber-700 mb-2">
-              Switching to Standard mode will redirect /admin to the teacher dashboard.
-              To switch back, you&apos;ll need to update the database directly.
-            </p>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button
-                onClick={handleConfirmStandard}
-                className="text-[10px] font-medium px-4 py-1.5 rounded border border-amber-200 bg-amber-100 text-amber-700 hover:bg-amber-200 transition"
-              >Switch to Standard</button>
-              <button
-                onClick={() => setConfirmStandard(false)}
-                className="text-[10px] font-medium px-4 py-1.5 rounded border border-stone-200 bg-stone-50 text-stone-500 hover:bg-stone-100 transition"
-              >Cancel</button>
-            </div>
+        <p className="text-xs text-stone-500 mb-3">
+          This tab will manage the business side of the online platform — subscriptions,
+          teacher onboarding, payment tiers, and revenue tracking.
+        </p>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
+            <div className="text-[10px] text-stone-400 mb-0.5">Subscriptions</div>
+            <div className="text-sm font-bold text-stone-300">Coming soon</div>
           </div>
-        )}
-        {error && <div className="text-xs text-red-500 mt-2">{error}</div>}
+          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
+            <div className="text-[10px] text-stone-400 mb-0.5">Revenue</div>
+            <div className="text-sm font-bold text-stone-300">Coming soon</div>
+          </div>
+          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
+            <div className="text-[10px] text-stone-400 mb-0.5">Onboarding</div>
+            <div className="text-sm font-bold text-stone-300">Coming soon</div>
+          </div>
+        </div>
+        <p className="text-[10px] text-stone-400">
+          Stripe integration, feature gating by tier, and tenant isolation will be built
+          after the core game experience is demo-ready.
+        </p>
       </div>
     </div>
   );
