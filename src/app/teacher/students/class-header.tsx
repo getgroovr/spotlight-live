@@ -1,25 +1,14 @@
-"use client";
-
 // ─────────────────────────────────────────────────────────────────────────
-// DESTINATION: src/app/teacher/students/class-header.tsx   (REPLACES previous)
+// DESTINATION: src/app/teacher/students/class-header.tsx   (REPLACES)
 //
-// Session 78: Added per-round topic selector.
-// Session 80: readOnly prop for multi-teacher mode.
-// Session 81: currentRound prop — topic locking for past rounds.
-// Session 84: Chunk D1 — Split round_duration_hours into game_phase_hours
-//   + review_phase_hours.
-// Session 86: Chunk M1 —
-//   - isStandardMode prop. In standard mode:
-//     - "Add a topic" replaces "Suggest a topic to the admin".
-//     - Delete button (✕) next to each topic in the dropdown presets.
-//     - readOnly is always false (teacher owns their own schedule).
-//   - topicOptions now carry id + text for deletion support.
-// Session 90: Chunk H —
-//   - BUG FIX: Added hidden total_rounds input to the form. In readOnly
-//     mode (multi-teacher), the visible total_rounds input didn't exist,
-//     so the form submitted with total_rounds="" → NaN → validation error
-//     "Rounds must be a whole number between 1 and 100." on every save.
+// Session 94:
+//   - Round titles section more prominent (bigger toggle button)
+//   - Round 0 (warmup) included in titles and prompts
+//   - Per-round prompts section under a toggle (replaces single prompt)
+//   - round_prompts JSONB parallel to round_topics
+//   - Warmup title is free-text; game round titles use topic dropdown
 // ─────────────────────────────────────────────────────────────────────────
+"use client";
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -38,9 +27,9 @@ const C = {
   text: "#3A2A18",
   textDim: "#6E5536",
   textFaint: "#9A815E",
+  success: "#2B8A3E",
 };
 
-// D1: separate option lists for game time and review time
 const GAME_TIME_OPTIONS: { value: string; label: string }[] = [
   { value: "0.25", label: "15 min" },
   { value: "0.5", label: "30 min" },
@@ -78,7 +67,6 @@ function durationLabel(hours: number | null): string {
   return labels[String(hours)] || `${hours}h`;
 }
 
-// M1: topic options now carry id for deletion
 export type TopicOption = { id: string; text: string };
 
 type Props = {
@@ -87,40 +75,32 @@ type Props = {
     id: string;
     name: string;
     total_rounds: number;
-    game_phase_hours: number;       // D1
-    review_phase_hours: number;     // D1
+    game_phase_hours: number;
+    review_phase_hours: number;
     game_starts_at: string | null;
     round_topics: Record<string, string | null> | null;
-    teacher_prompt: string | null;  // session 89
+    teacher_prompt: string | null;
+    round_prompts?: Record<string, string | null> | null; // Session 94
   };
   statusLine: string;
-  topicOptions: string[];           // kept for backward compat (multi mode)
-  topicOptionsWithId?: TopicOption[]; // M1: standard mode topics with ids
-  readOnly?: boolean;
-  currentRound?: number; // session 81: rounds < this are locked
-  currentPhase?: "game" | "review"; // D1: which phase the current round is in
-  isStandardMode?: boolean; // M1
+  topicOptionsWithId: TopicOption[];
+  currentRound?: number;
+  currentPhase?: "game" | "review";
 };
 
 export function ClassHeader({
   classes,
   selectedClass,
   statusLine,
-  topicOptions,
   topicOptionsWithId,
-  readOnly = false,
   currentRound = 0,
   currentPhase,
-  isStandardMode = false,
 }: Props) {
   const router = useRouter();
   const [state, formAction, pending] = useActionState<
     SaveClassSettingsResult | null,
     FormData
   >(saveClassSettings, null);
-
-  // In standard mode, teacher always has full edit access
-  const effectiveReadOnly = isStandardMode ? false : readOnly;
 
   // datetime-local wants "YYYY-MM-DDTHH:MM" in the BROWSER's local TZ.
   const [startLocal, setStartLocal] = useState("");
@@ -138,32 +118,36 @@ export function ClassHeader({
     );
   }, [selectedClass.game_starts_at]);
 
-  // ── CONTROLLED total_rounds (session 78) ──────────────────────────────
+  // ── CONTROLLED total_rounds ───────────────────────────────────────────
   const [totalRounds, setTotalRounds] = useState(selectedClass.total_rounds);
 
-  // ── D1: game/review phase durations ───────────────────────────────────
+  // ── Game/review phase durations ───────────────────────────────────────
   const [gamePhaseHours, setGamePhaseHours] = useState(
     String(selectedClass.game_phase_hours),
   );
   const [reviewPhaseHours, setReviewPhaseHours] = useState(
     String(selectedClass.review_phase_hours),
   );
-
-  // Computed total for hidden field + display
   const totalDurationHours = parseFloat(gamePhaseHours) + parseFloat(reviewPhaseHours);
 
-  // ── Session 89: teacher guidance prompt state ──────────────────────────
-  const [teacherPrompt, setTeacherPrompt] = useState(
-    selectedClass.teacher_prompt || "",
-  );
-
-  // ── Per-round topics state ────────────────────────────────────────────
+  // ── Per-round topics state (includes round 0 = warmup) ────────────────
   const [roundTopics, setRoundTopics] = useState<Record<string, string>>(() => {
     const rt: Record<string, string> = {};
+    rt["0"] = selectedClass.round_topics?.["0"] || "";
     for (let r = 1; r <= selectedClass.total_rounds; r++) {
       rt[String(r)] = selectedClass.round_topics?.[String(r)] || "";
     }
     return rt;
+  });
+
+  // ── Per-round prompts state (includes round 0 = warmup) ───────────────
+  const [roundPrompts, setRoundPrompts] = useState<Record<string, string>>(() => {
+    const rp: Record<string, string> = {};
+    rp["0"] = selectedClass.round_prompts?.["0"] || "";
+    for (let r = 1; r <= selectedClass.total_rounds; r++) {
+      rp[String(r)] = selectedClass.round_prompts?.[String(r)] || "";
+    }
+    return rp;
   });
 
   const handleRoundsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -177,11 +161,26 @@ export function ClassHeader({
       }
       return next;
     });
+    setRoundPrompts((prev) => {
+      const next = { ...prev };
+      for (let r = 1; r <= clamped; r++) {
+        if (!(String(r) in next)) next[String(r)] = "";
+      }
+      return next;
+    });
   };
 
   const handleTopicChange = (round: number, value: string) => {
     setRoundTopics((prev) => ({ ...prev, [String(round)]: value }));
   };
+
+  const handlePromptChange = (round: number, value: string) => {
+    setRoundPrompts((prev) => ({ ...prev, [String(round)]: value }));
+  };
+
+  // ── Collapsible sections ──────────────────────────────────────────────
+  const [topicsOpen, setTopicsOpen] = useState(false);
+  const [promptsOpen, setPromptsOpen] = useState(false);
 
   // ── Add/suggest topic state ───────────────────────────────────────────
   const [showSuggest, setShowSuggest] = useState(false);
@@ -195,25 +194,16 @@ export function ClassHeader({
     startSuggestTransition(async () => {
       const result = await (await import("./actions")).suggestTopic(text);
       if (result.ok) {
-        setSuggestMsg({
-          ok: true,
-          text: isStandardMode ? "Topic added!" : "Sent to admin for approval!",
-        });
+        setSuggestMsg({ ok: true, text: "Topic added!" });
         setSuggestText("");
-        setTimeout(() => {
-          setShowSuggest(false);
-          setSuggestMsg(null);
-        }, 2500);
+        setTimeout(() => { setShowSuggest(false); setSuggestMsg(null); }, 2500);
       } else {
         setSuggestMsg({ ok: false, text: result.error });
       }
     });
   };
 
-  // ── Session 88: collapsible topic section ──────────────────────────────
-  const [topicsOpen, setTopicsOpen] = useState(false);
-
-  // ── M1: Delete topic (standard mode) ──────────────────────────────────
+  // ── Delete topic ──────────────────────────────────────────────────────
   const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
   const [, startDeleteTransition] = useTransition();
 
@@ -231,16 +221,35 @@ export function ClassHeader({
     router.push(`/teacher/students?class=${encodeURIComponent(id)}`);
   };
 
-  // Build the round_topics JSON for the hidden form field.
+  // ── Build JSON for hidden fields ──────────────────────────────────────
+  // Include round 0 (warmup) in both
   const roundTopicsJson = JSON.stringify(
-    Object.fromEntries(
-      Array.from({ length: totalRounds }, (_, i) => {
+    Object.fromEntries([
+      ["0", roundTopics["0"]?.trim() || null],
+      ...Array.from({ length: totalRounds }, (_, i) => {
         const r = String(i + 1);
         const val = roundTopics[r]?.trim() || null;
         return [r, val];
       }),
-    ),
+    ]),
   );
+
+  const roundPromptsJson = JSON.stringify(
+    Object.fromEntries([
+      ["0", roundPrompts["0"]?.trim() || null],
+      ...Array.from({ length: totalRounds }, (_, i) => {
+        const r = String(i + 1);
+        const val = roundPrompts[r]?.trim() || null;
+        return [r, val];
+      }),
+    ]),
+  );
+
+  // Bridge: set teacher_prompt to warmup prompt for backward compat
+  const teacherPromptBridge = roundPrompts["0"]?.trim() || "";
+
+  const hasAnyTopic = Object.values(roundTopics).some((v) => v && v.trim());
+  const hasAnyPrompt = Object.values(roundPrompts).some((v) => v && v.trim());
 
   const banner = (() => {
     if (!state) return null;
@@ -250,19 +259,6 @@ export function ClassHeader({
     }
     return { kind: "success" as const, text: "Saved." };
   })();
-
-  const hasAnyTopic = Object.values(roundTopics).some((v) => v && v.trim());
-
-  // ── Add/suggest button label ──────────────────────────────────────────
-  const addTopicLabel = isStandardMode
-    ? "Add a topic →"
-    : effectiveReadOnly
-      ? "Suggest a topic to the admin →"
-      : "Don\u0027t see the right topic? Suggest one →";
-
-  const addTopicButtonLabel = isStandardMode
-    ? suggestPending ? "Adding…" : "Add"
-    : suggestPending ? "Sending…" : "Send";
 
   return (
     <section
@@ -278,18 +274,10 @@ export function ClassHeader({
       }}
     >
       {/* ── Row 1: class switcher ────────────────────────────────── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "wrap",
-        }}
-      >
-        <label
-          htmlFor="class-switcher"
-          style={{ fontSize: 13, color: C.textDim, fontWeight: 600 }}
-        >
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      }}>
+        <label htmlFor="class-switcher" style={{ fontSize: 13, color: C.textDim, fontWeight: 600 }}>
           Current class:
         </label>
         <select
@@ -299,33 +287,12 @@ export function ClassHeader({
           style={{ ...selectStyle(), flex: "1 1 240px", maxWidth: 380 }}
         >
           {classes.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
+            <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
-        <span
-          style={{
-            fontSize: 12,
-            color: C.textFaint,
-            marginLeft: "auto",
-          }}
-        >
+        <span style={{ fontSize: 12, color: C.textFaint, marginLeft: "auto" }}>
           {classes.length} {classes.length === 1 ? "class" : "classes"}
         </span>
-        <a
-          href={`/teacher/students/export?class=${encodeURIComponent(selectedClass.id)}`}
-          style={{
-            fontSize: 12,
-            color: C.light,
-            fontWeight: 600,
-            textDecoration: "none",
-            textAlign: "right",
-            lineHeight: 1.3,
-          }}
-        >
-          Download class<br />spreadsheet
-        </a>
       </div>
 
       <form
@@ -333,150 +300,199 @@ export function ClassHeader({
         style={{ display: "flex", flexDirection: "column", gap: 12 }}
       >
         <input type="hidden" name="class_id" value={selectedClass.id} />
-        {/* Session 90: total_rounds must always be present — readOnly mode
-            hides the visible input, but saveClassSettings still validates it */}
         <input type="hidden" name="total_rounds" value={String(totalRounds)} />
         <input type="hidden" name="round_topics" value={roundTopicsJson} />
-        {/* Session 89: teacher guidance prompt */}
-        <input type="hidden" name="teacher_prompt" value={teacherPrompt} />
-        {/* D1: hidden computed round_duration_hours for backward compat */}
+        <input type="hidden" name="round_prompts" value={roundPromptsJson} />
+        <input type="hidden" name="teacher_prompt" value={teacherPromptBridge} />
         <input type="hidden" name="round_duration_hours" value={String(totalDurationHours)} />
-        {/* D1: individual phase values for saveClassSettings */}
         <input type="hidden" name="game_phase_hours" value={gamePhaseHours} />
         <input type="hidden" name="review_phase_hours" value={reviewPhaseHours} />
 
-        {/* ── Row 2: name (with label) + status pill ─────────────── */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <label
-            style={{
-              flex: "1 1 280px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-              fontSize: 12,
-              color: C.textDim,
-              fontWeight: 600,
-              minWidth: 0,
-            }}
-          >
+        {/* ── Row 2: name + status pill ─────────────────────────── */}
+        <div style={{
+          display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap",
+        }}>
+          <label style={{
+            flex: "1 1 280px", display: "flex", flexDirection: "column",
+            gap: 4, fontSize: 12, color: C.textDim, fontWeight: 600, minWidth: 0,
+          }}>
             Class name
             <input
-              type="text"
-              name="name"
-              defaultValue={selectedClass.name}
-              required
-              minLength={1}
-              maxLength={100}
-              style={{
-                ...inputStyle(),
-                fontSize: 15,
-                fontWeight: 600,
-              }}
+              type="text" name="name" defaultValue={selectedClass.name}
+              required minLength={1} maxLength={100}
+              style={{ ...inputStyle(), fontSize: 15, fontWeight: 600 }}
             />
           </label>
-          <div
-            style={{
-              flex: "0 1 auto",
-              fontSize: 13,
-              color: C.textDim,
-              padding: "8px 12px",
-              background: C.bg,
-              borderRadius: 8,
-              border: `1px solid ${C.panelEdge}55`,
-              whiteSpace: "nowrap",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
+          <div style={{
+            flex: "0 1 auto", fontSize: 13, color: C.textDim,
+            padding: "8px 12px", background: C.bg, borderRadius: 8,
+            border: `1px solid ${C.panelEdge}55`, whiteSpace: "nowrap",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
             {statusLine}
-            {/* D1: phase badge */}
             {currentPhase && currentRound > 0 && (
-              <span
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  padding: "2px 8px",
-                  borderRadius: 12,
-                  background: currentPhase === "game" ? "#2a7a4a22" : "#D98A2B22",
-                  color: currentPhase === "game" ? "#2a7a4a" : "#B06B1A",
-                  border: `1px solid ${currentPhase === "game" ? "#2a7a4a44" : "#D98A2B44"}`,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.5,
-                }}
-              >
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 8px",
+                borderRadius: 12,
+                background: currentPhase === "game" ? "#2a7a4a22" : "#D98A2B22",
+                color: currentPhase === "game" ? "#2a7a4a" : "#B06B1A",
+                border: `1px solid ${currentPhase === "game" ? "#2a7a4a44" : "#D98A2B44"}`,
+                textTransform: "uppercase", letterSpacing: 0.5,
+              }}>
                 {currentPhase === "game" ? "Game phase" : "Review phase"}
               </span>
             )}
           </div>
         </div>
 
-        {effectiveReadOnly ? (
-          /* ── Read-only game settings (multi-teacher mode) ── */
-          <>
-            <div
-              style={{
-                background: C.bg,
-                border: `1px solid ${C.panelEdge}55`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                fontSize: 12,
-                color: C.textDim,
-                lineHeight: 1.5,
-              }}
-            >
-              <strong style={{ color: C.text }}>Game schedule is set by the admin.</strong>{" "}
-              {selectedClass.total_rounds} rounds · {durationLabel(selectedClass.game_phase_hours)} game
-              {selectedClass.review_phase_hours > 0 && (
-                <> + {durationLabel(selectedClass.review_phase_hours)} review</>
-              )}
-              {selectedClass.game_starts_at && (
-                <> · starts {new Date(selectedClass.game_starts_at).toLocaleString()}</>
-              )}
-            </div>
+        {/* ── Row 3: settings grid ──────────────────────────────── */}
+        <div style={{
+          display: "grid", gridTemplateColumns: "0.7fr 1fr 1fr 1.3fr", gap: 12,
+        }}>
+          <Field label="Rounds">
+            <input
+              type="number" name="total_rounds"
+              value={totalRounds} onChange={handleRoundsChange}
+              required min={1} max={100} step={1}
+              style={inputStyle()}
+            />
+          </Field>
+          <Field label="Game time">
+            <select value={gamePhaseHours} onChange={(e) => setGamePhaseHours(e.target.value)} style={selectStyle()}>
+              {GAME_TIME_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Review time">
+            <select value={reviewPhaseHours} onChange={(e) => setReviewPhaseHours(e.target.value)} style={selectStyle()}>
+              {REVIEW_TIME_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Starts at">
+            <input
+              type="datetime-local" name="game_starts_at"
+              value={startLocal} onChange={(e) => setStartLocal(e.target.value)}
+              style={inputStyle()}
+            />
+          </Field>
+        </div>
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: -4 }}>
+          Total round: {durationLabel(totalDurationHours) || `${totalDurationHours}h`}
+        </div>
 
-            {/* Show assigned topics as read-only pills */}
+        {/* ── Row 4: Round titles (prominent toggle) ────────────── */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setTopicsOpen(!topicsOpen)}
+            style={{
+              background: hasAnyTopic ? C.light + "15" : C.bg,
+              border: `1px solid ${hasAnyTopic ? C.light + "44" : C.panelEdge}`,
+              borderRadius: 10,
+              padding: "10px 14px",
+              fontSize: 14,
+              fontWeight: 700,
+              color: hasAnyTopic ? C.light : C.textDim,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              fontFamily: "inherit",
+              boxSizing: "border-box",
+            }}
+          >
+            <span style={{ fontSize: 12 }}>{topicsOpen ? "▾" : "▸"}</span>
+            Round titles
             {hasAnyTopic && (
-              <div>
-                <div style={{ fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 6 }}>
-                  Round topics
-                </div>
-                <div style={{
-                  display: "grid",
-                  gridTemplateColumns: totalRounds <= 3
-                    ? `repeat(${totalRounds}, 1fr)`
-                    : totalRounds <= 6 ? "repeat(3, 1fr)" : "repeat(4, 1fr)",
-                  gap: 8,
-                }}>
-                  {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => (
-                    <div key={r}>
-                      <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 2 }}>Round {r}</div>
-                      <div style={{
-                        background: "#fff",
-                        border: `1px solid ${C.panelEdge}`,
-                        borderRadius: 8,
-                        padding: "7px 10px",
-                        fontSize: 13,
-                        color: roundTopics[String(r)] ? C.text : C.textFaint,
-                        fontStyle: roundTopics[String(r)] ? "normal" : "italic",
-                      }}>
-                        {roundTopics[String(r)] || "No topic"}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <span style={{ fontWeight: 400, fontSize: 11, color: C.success, marginLeft: "auto" }}>
+                configured ✓
+              </span>
             )}
+          </button>
 
-            {/* Suggest a topic — still available in readOnly mode */}
-            <div>
+          {topicsOpen && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns:
+                  totalRounds <= 2 ? `repeat(${totalRounds + 1}, 1fr)` :
+                  totalRounds <= 5 ? "repeat(3, 1fr)" :
+                  "repeat(4, 1fr)",
+                gap: 8,
+              }}>
+                {/* Warmup (round 0) — free text input */}
+                <Field label="Warmup">
+                  <input
+                    type="text"
+                    value={roundTopics["0"] || ""}
+                    onChange={(e) => handleTopicChange(0, e.target.value)}
+                    placeholder="Warmup title…"
+                    maxLength={200}
+                    style={{ ...inputStyle(), fontSize: 13 }}
+                  />
+                </Field>
+
+                {/* Game rounds 1–N — topic dropdown */}
+                {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
+                  const locked = r < currentRound;
+                  return (
+                    <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
+                      <select
+                        value={roundTopics[String(r)] || ""}
+                        onChange={(e) => handleTopicChange(r, e.target.value)}
+                        disabled={locked}
+                        style={{
+                          ...selectStyle(),
+                          fontSize: 13,
+                          ...(locked ? { opacity: 0.55, cursor: "not-allowed", background: "#EDE5D4" } : {}),
+                        }}
+                      >
+                        <option value="">(No topic)</option>
+                        {topicOptionsWithId.map((t) => (
+                          <option key={t.id} value={t.text}>{t.text}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  );
+                })}
+              </div>
+
+              {/* Topic management */}
+              {topicOptionsWithId.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4 }}>
+                    Your topics
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {topicOptionsWithId.map((t) => (
+                      <span key={t.id} style={{
+                        display: "inline-flex", alignItems: "center", gap: 4,
+                        background: C.bg, border: `1px solid ${C.panelEdge}`,
+                        borderRadius: 20, padding: "3px 10px", fontSize: 12,
+                        color: C.text, opacity: deletingTopicId === t.id ? 0.4 : 1,
+                      }}>
+                        {t.text}
+                        <button
+                          type="button" onClick={() => handleDeleteTopic(t.id)}
+                          disabled={deletingTopicId === t.id}
+                          style={{
+                            background: "none", border: "none", color: C.textFaint,
+                            fontSize: 13, cursor: "pointer", padding: "0 0 0 2px",
+                            lineHeight: 1, fontFamily: "inherit",
+                          }}
+                          title="Delete topic"
+                        >✕</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Add topic */}
               {!showSuggest ? (
                 <button
                   type="button"
@@ -484,436 +500,179 @@ export function ClassHeader({
                   style={{
                     background: "none", border: "none", color: C.light,
                     fontSize: 12, fontWeight: 600, cursor: "pointer",
-                    padding: "4px 0", fontFamily: "inherit",
+                    padding: "4px 0", marginTop: 4, fontFamily: "inherit",
                   }}
                 >
-                  Suggest a topic to the admin →
+                  Add a topic →
                 </button>
               ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  marginTop: 6, flexWrap: "wrap",
+                }}>
                   <input
-                    type="text"
-                    value={suggestText}
+                    type="text" value={suggestText}
                     onChange={(e) => setSuggestText(e.target.value)}
-                    placeholder="Your topic idea…"
-                    maxLength={80}
+                    placeholder="New topic…" maxLength={80}
                     style={{ ...inputStyle(), flex: "1 1 180px", fontSize: 13 }}
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSuggest(); } }}
                   />
-                  <button type="button" onClick={handleSuggest} disabled={suggestPending || !suggestText.trim()}
-                    style={{ background: C.light, color: "#fff", border: "none", borderRadius: 8,
-                      padding: "7px 14px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                  <button
+                    type="button" onClick={handleSuggest}
+                    disabled={suggestPending || !suggestText.trim()}
+                    style={{
+                      background: C.light, color: "#fff", border: "none",
+                      borderRadius: 8, padding: "7px 14px", fontSize: 12,
+                      fontWeight: 700, fontFamily: "inherit",
                       cursor: suggestPending || !suggestText.trim() ? "default" : "pointer",
-                      opacity: suggestPending || !suggestText.trim() ? 0.5 : 1 }}>
-                    {suggestPending ? "Sending…" : "Send"}
+                      opacity: suggestPending || !suggestText.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    {suggestPending ? "Adding…" : "Add"}
                   </button>
-                  <button type="button" onClick={() => { setShowSuggest(false); setSuggestMsg(null); }}
-                    style={{ background: "none", border: "none", color: C.textFaint, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setShowSuggest(false); setSuggestMsg(null); }}
+                    style={{
+                      background: "none", border: "none", color: C.textFaint,
+                      fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+                    }}
+                  >
                     Cancel
                   </button>
                   {suggestMsg && (
-                    <span style={{ fontSize: 12, color: suggestMsg.ok ? "#2a7a4a" : "#8A2A22", flex: "1 0 100%" }}>
+                    <span style={{
+                      fontSize: 12,
+                      color: suggestMsg.ok ? "#2a7a4a" : "#8A2A22",
+                      flex: "1 0 100%",
+                    }}>
                       {suggestMsg.text}
                     </span>
                   )}
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            {/* Save button — only saves class name in readOnly mode */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button type="submit" disabled={pending}
-                style={{ background: C.light, color: "#fff", border: "none", borderRadius: 999,
-                  padding: "8px 22px", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-                  cursor: pending ? "default" : "pointer", opacity: pending ? 0.6 : 1 }}>
-                {pending ? "Saving…" : "Save class name"}
-              </button>
-              {banner?.kind === "success" && (
-                <span style={{ fontSize: 13, color: "#2a7a4a" }}>{banner.text}</span>
-              )}
-            </div>
-          </>
-        ) : (
-          /* ── Standard editable game settings (solo-teacher mode) ── */
-          <>
-            {/* ── Row 3: four settings side-by-side (D1: game/review split) ── */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "0.7fr 1fr 1fr 1.3fr",
-                gap: 12,
-              }}
-            >
-              <Field label="Rounds">
-                <input
-                  type="number"
-                  name="total_rounds"
-                  value={totalRounds}
-                  onChange={handleRoundsChange}
-                  required
-                  min={1}
-                  max={100}
-                  step={1}
-                  style={inputStyle()}
-                />
-              </Field>
-
-              <Field label="Game time">
-                <select
-                  value={gamePhaseHours}
-                  onChange={(e) => setGamePhaseHours(e.target.value)}
-                  style={selectStyle()}
-                >
-                  {GAME_TIME_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Review time">
-                <select
-                  value={reviewPhaseHours}
-                  onChange={(e) => setReviewPhaseHours(e.target.value)}
-                  style={selectStyle()}
-                >
-                  {REVIEW_TIME_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Starts at">
-                <input
-                  type="datetime-local"
-                  name="game_starts_at"
-                  value={startLocal}
-                  onChange={(e) => setStartLocal(e.target.value)}
-                  style={inputStyle()}
-                />
-              </Field>
-            </div>
-
-            {/* D1: total duration hint */}
-            <div style={{ fontSize: 11, color: C.textFaint, marginTop: -4 }}>
-              Total round: {durationLabel(totalDurationHours) || `${totalDurationHours}h`}
-            </div>
-
-            {/* ── Row 3.4: Teacher guidance prompt (session 89) ───── */}
-            <div>
-              <label
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 4,
-                  fontSize: 12,
-                  color: C.textDim,
-                  fontWeight: 600,
-                  minWidth: 0,
-                }}
-              >
-                Prompt for students
-                <span style={{ fontWeight: 400, color: C.textFaint, fontSize: 11 }}>
-                  Shown in the comment box while students play — encouragement, guidance, or a fun challenge.
-                </span>
-                <textarea
-                  value={teacherPrompt}
-                  onChange={(e) => setTeacherPrompt(e.target.value)}
-                  placeholder="e.g. Tell them what caught your eye first!"
-                  rows={2}
-                  maxLength={200}
-                  style={{
-                    ...inputStyle(),
-                    resize: "vertical",
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                  }}
-                />
-              </label>
-              {teacherPrompt.trim() && (
-                <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2 }}>
-                  {teacherPrompt.trim().length}/200
-                </div>
-              )}
-            </div>
-
-            {/* ── Row 3.5: Collapsible topic section (session 88) ──── */}
-            <div>
-              <button
-                type="button"
-                onClick={() => setTopicsOpen(!topicsOpen)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: C.textDim,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  padding: "4px 0",
-                  fontFamily: "inherit",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <span style={{ fontSize: 10, lineHeight: 1 }}>
-                  {topicsOpen ? "▾" : "▸"}
-                </span>
-                Round topics{" "}
-                <span style={{ fontWeight: 400, color: C.textFaint }}>
-                  (optional)
-                </span>
-              </button>
-
-              {topicsOpen && (
-                <div style={{ marginTop: 8 }}>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: totalRounds <= 3
-                        ? `repeat(${totalRounds}, 1fr)`
-                        : totalRounds <= 6
-                          ? "repeat(3, 1fr)"
-                          : "repeat(4, 1fr)",
-                      gap: 8,
-                    }}
-                  >
-                    {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
-                      const locked = r < currentRound;
-                      return (
-                        <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
-                          <select
-                            value={roundTopics[String(r)] || ""}
-                            onChange={(e) => handleTopicChange(r, e.target.value)}
-                            disabled={locked}
-                            style={{
-                              ...selectStyle(),
-                              ...(locked ? { opacity: 0.55, cursor: "not-allowed", background: "#EDE5D4" } : {}),
-                            }}
-                          >
-                            <option value="">(No topic)</option>
-                            {topicOptions.map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                          </select>
-                        </Field>
-                      );
-                    })}
-                  </div>
-
-                  {/* ── M1: Topic management (standard mode: add + delete) ── */}
-                  {isStandardMode && topicOptionsWithId && topicOptionsWithId.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4 }}>
-                        Your topics
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {topicOptionsWithId.map((t) => (
-                          <span
-                            key={t.id}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              background: C.bg,
-                              border: `1px solid ${C.panelEdge}`,
-                              borderRadius: 20,
-                              padding: "3px 10px",
-                              fontSize: 12,
-                              color: C.text,
-                              opacity: deletingTopicId === t.id ? 0.4 : 1,
-                            }}
-                          >
-                            {t.text}
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteTopic(t.id)}
-                              disabled={deletingTopicId === t.id}
-                              style={{
-                                background: "none",
-                                border: "none",
-                                color: C.textFaint,
-                                fontSize: 13,
-                                cursor: "pointer",
-                                padding: "0 0 0 2px",
-                                lineHeight: 1,
-                                fontFamily: "inherit",
-                              }}
-                              title="Delete topic"
-                            >
-                              ✕
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ── Add / suggest a topic ─────────────────────────────── */}
-                  {!showSuggest ? (
-                    <button
-                      type="button"
-                      onClick={() => { setShowSuggest(true); setSuggestMsg(null); }}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: C.light,
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        padding: "4px 0",
-                        marginTop: 4,
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      {addTopicLabel}
-                    </button>
-                  ) : (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        marginTop: 6,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <input
-                        type="text"
-                        value={suggestText}
-                        onChange={(e) => setSuggestText(e.target.value)}
-                        placeholder={isStandardMode ? "New topic…" : "Your topic idea…"}
-                        maxLength={80}
-                        style={{ ...inputStyle(), flex: "1 1 180px", fontSize: 13 }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            handleSuggest();
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={handleSuggest}
-                        disabled={suggestPending || !suggestText.trim()}
-                        style={{
-                          background: C.light,
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: 8,
-                          padding: "7px 14px",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          fontFamily: "inherit",
-                          cursor:
-                            suggestPending || !suggestText.trim()
-                              ? "default"
-                              : "pointer",
-                          opacity: suggestPending || !suggestText.trim() ? 0.5 : 1,
-                        }}
-                      >
-                        {addTopicButtonLabel}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setShowSuggest(false); setSuggestMsg(null); }}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          color: C.textFaint,
-                          fontSize: 12,
-                          cursor: "pointer",
-                          fontFamily: "inherit",
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      {suggestMsg && (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: suggestMsg.ok ? "#2a7a4a" : "#8A2A22",
-                            flex: "1 0 100%",
-                          }}
-                        >
-                          {suggestMsg.text}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* ── Row 4: save + inline success ──────────────────────── */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-              }}
-            >
-              <button
-                type="submit"
-                disabled={pending}
-                style={{
-                  background: C.light,
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 999,
-                  padding: "8px 22px",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  fontFamily: "inherit",
-                  cursor: pending ? "default" : "pointer",
-                  opacity: pending ? 0.6 : 1,
-                }}
-              >
-                {pending ? "Saving…" : "Save"}
-              </button>
-
-              {banner?.kind === "success" && (
-                <span style={{ fontSize: 13, color: "#2a7a4a" }}>{banner.text}</span>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* ── Row 5: warning / error bands ──────────────────────── */}
-        {banner?.kind === "warning" && (
-          <div
+        {/* ── Row 5: Round prompts (under a toggle) ─────────────── */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setPromptsOpen(!promptsOpen)}
             style={{
-              background: "#F8D87A55",
-              border: "1px solid #C9A248",
+              background: hasAnyPrompt ? C.light + "10" : "transparent",
+              border: `1px solid ${C.panelEdge}`,
               borderRadius: 10,
-              padding: "10px 12px",
+              padding: "10px 14px",
               fontSize: 13,
-              color: "#6B4A12",
-              lineHeight: 1.45,
+              fontWeight: 600,
+              color: C.textDim,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              fontFamily: "inherit",
+              boxSizing: "border-box",
             }}
           >
+            <span style={{ fontSize: 12 }}>{promptsOpen ? "▾" : "▸"}</span>
+            Round prompts
+            <span style={{ fontWeight: 400, color: C.textFaint, fontSize: 11 }}>
+              — shown in comment box while students play
+            </span>
+            {hasAnyPrompt && (
+              <span style={{ fontWeight: 400, fontSize: 11, color: C.success, marginLeft: "auto" }}>
+                configured ✓
+              </span>
+            )}
+          </button>
+
+          {promptsOpen && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns:
+                  totalRounds <= 2 ? `repeat(${totalRounds + 1}, 1fr)` :
+                  totalRounds <= 5 ? "repeat(3, 1fr)" :
+                  "repeat(4, 1fr)",
+                gap: 8,
+              }}>
+                {/* Warmup prompt (round 0) */}
+                <Field label="Warmup">
+                  <input
+                    type="text"
+                    value={roundPrompts["0"] || ""}
+                    onChange={(e) => handlePromptChange(0, e.target.value)}
+                    placeholder="Warmup prompt…"
+                    maxLength={200}
+                    style={{ ...inputStyle(), fontSize: 13 }}
+                  />
+                </Field>
+
+                {/* Game round prompts 1–N */}
+                {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
+                  const locked = r < currentRound;
+                  return (
+                    <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
+                      <input
+                        type="text"
+                        value={roundPrompts[String(r)] || ""}
+                        onChange={(e) => handlePromptChange(r, e.target.value)}
+                        disabled={locked}
+                        placeholder={`Round ${r} prompt…`}
+                        maxLength={200}
+                        style={{
+                          ...inputStyle(),
+                          fontSize: 13,
+                          ...(locked ? { opacity: 0.55, cursor: "not-allowed", background: "#EDE5D4" } : {}),
+                        }}
+                      />
+                    </Field>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Row 6: save + inline success ──────────────────────── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button
+            type="submit" disabled={pending}
+            style={{
+              background: C.light, color: "#fff", border: "none",
+              borderRadius: 999, padding: "8px 22px", fontSize: 14,
+              fontWeight: 700, fontFamily: "inherit",
+              cursor: pending ? "default" : "pointer",
+              opacity: pending ? 0.6 : 1,
+            }}
+          >
+            {pending ? "Saving…" : "Save"}
+          </button>
+          {banner?.kind === "success" && (
+            <span style={{ fontSize: 13, color: "#2a7a4a" }}>{banner.text}</span>
+          )}
+        </div>
+
+        {/* ── Row 7: warning / error bands ──────────────────────── */}
+        {banner?.kind === "warning" && (
+          <div style={{
+            background: "#F8D87A55", border: "1px solid #C9A248",
+            borderRadius: 10, padding: "10px 12px", fontSize: 13,
+            color: "#6B4A12", lineHeight: 1.45,
+          }}>
             <strong style={{ fontWeight: 700 }}>Heads up: </strong>
             {banner.text}
           </div>
         )}
-
         {banner?.kind === "error" && (
-          <div
-            style={{
-              background: "#E2554A22",
-              border: "1px solid #C04A3F",
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontSize: 13,
-              color: "#8A2A22",
-              lineHeight: 1.45,
-            }}
-          >
+          <div style={{
+            background: "#E2554A22", border: "1px solid #C04A3F",
+            borderRadius: 10, padding: "10px 12px", fontSize: 13,
+            color: "#8A2A22", lineHeight: 1.45,
+          }}>
             {banner.text}
           </div>
         )}
@@ -932,17 +691,10 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        fontSize: 12,
-        color: C.textDim,
-        fontWeight: 600,
-        minWidth: 0,
-      }}
-    >
+    <label style={{
+      display: "flex", flexDirection: "column", gap: 4,
+      fontSize: 12, color: C.textDim, fontWeight: 600, minWidth: 0,
+    }}>
       {label}
       {children}
     </label>

@@ -15,18 +15,14 @@
 // Session 78: saveClassSettings now reads round_topics from formData.
 // Session 79: suggestTopic inserts with status='approved'.
 // Session 84: Chunk D1 —
-//   - saveClassSettings now reads game_phase_hours + review_phase_hours,
-//     computes round_duration_hours as the sum.
-//   - ALLOWED_DURATION_HOURS expanded for new preset values.
-//   - approveEntry + approveFavoriteComment include auto-advance trigger:
-//     after approving, if no pending items remain for that class's current
-//     round, update games.current_round_phase to 'game' (advance).
+//   - saveClassSettings reads game_phase_hours + review_phase_hours.
+//   - approveEntry + approveFavoriteComment include auto-advance trigger.
 // Session 86: Chunk M1 —
-//   - createClassDirect: standard mode, teacher creates class directly
-//     (no request→admin flow). Inserts into classes + creates a game row.
-//   - deleteGameTopic: standard mode, teacher deletes a topic directly.
-//   - suggestTopic: label updated but behavior unchanged (already inserts
-//     as approved). In standard mode this is "Add a topic".
+//   - createClassDirect, deleteGameTopic, suggestTopic updates.
+// Session 94:
+//   - createClassDirect accepts level parameter (beginner/intermediate/advanced)
+//   - saveClassSettings reads + saves round_prompts (per-round prompts)
+//   - round_topics parsing allows key "0" (warmup title)
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -37,7 +33,6 @@ import type { ActionResult } from "@/app/play/actions";
 
 // ── saveClassSettings ─────────────────────────────────────────────────────
 
-// D1: expanded to cover all preset values in the game/review dropdowns
 const ALLOWED_DURATION_HOURS = [0, 0.25, 0.5, 1, 1.5, 2, 5, 22, 24, 46, 48, 144, 168] as const;
 const MIN_ROUNDS = 1;
 const MAX_ROUNDS = 100;
@@ -83,9 +78,12 @@ export async function saveClassSettings(
   const gamePhaseRaw = String(formData.get("game_phase_hours") || "").trim();
   const reviewPhaseRaw = String(formData.get("review_phase_hours") || "").trim();
 
-  // Session 89: teacher guidance prompt
+  // Session 89: teacher guidance prompt (backward compat bridge)
   const teacherPromptRaw = formData.get("teacher_prompt");
   const teacherPrompt = teacherPromptRaw != null ? String(teacherPromptRaw).trim() || null : undefined;
+
+  // Session 94: per-round prompts
+  const roundPromptsRaw = String(formData.get("round_prompts") || "").trim();
 
   if (!classId) {
     return { ok: false, error: "Missing class id." };
@@ -149,7 +147,7 @@ export async function saveClassSettings(
     startInPast = parsed.getTime() < Date.now();
   }
 
-  // ── Parse round_topics (session 78) ───────────────────────────────────
+  // ── Parse round_topics (session 78, session 94: allow key "0") ────────
   let roundTopics: Record<string, string | null> | null = null;
   if (roundTopicsRaw) {
     try {
@@ -158,7 +156,8 @@ export async function saveClassSettings(
         roundTopics = {};
         for (const [key, val] of Object.entries(parsed)) {
           const roundNum = parseInt(key, 10);
-          if (Number.isFinite(roundNum) && roundNum >= 1 && roundNum <= totalRounds) {
+          // Session 94: allow key "0" for warmup title
+          if (Number.isFinite(roundNum) && roundNum >= 0 && roundNum <= totalRounds) {
             roundTopics[key] = typeof val === "string" && val.trim() ? val.trim() : null;
           }
         }
@@ -168,8 +167,26 @@ export async function saveClassSettings(
     }
   }
 
-  // Session 89: build update payload — only include teacher_prompt if it
-  // was present in the form (so read-only mode doesn't accidentally null it)
+  // ── Parse round_prompts (session 94) ──────────────────────────────────
+  let roundPrompts: Record<string, string | null> | null = null;
+  if (roundPromptsRaw) {
+    try {
+      const parsed = JSON.parse(roundPromptsRaw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        roundPrompts = {};
+        for (const [key, val] of Object.entries(parsed)) {
+          const roundNum = parseInt(key, 10);
+          if (Number.isFinite(roundNum) && roundNum >= 0 && roundNum <= totalRounds) {
+            roundPrompts[key] = typeof val === "string" && val.trim() ? val.trim() : null;
+          }
+        }
+      }
+    } catch {
+      // Malformed JSON — ignore
+    }
+  }
+
+  // Build update payload
   const updatePayload: Record<string, unknown> = {
     name,
     total_rounds: totalRounds,
@@ -181,6 +198,10 @@ export async function saveClassSettings(
   };
   if (teacherPrompt !== undefined) {
     updatePayload.teacher_prompt = teacherPrompt;
+  }
+  // Session 94: include round_prompts if present
+  if (roundPrompts !== null) {
+    updatePayload.round_prompts = roundPrompts;
   }
 
   const { data: updated, error: updErr } = await supabase
@@ -201,6 +222,7 @@ export async function saveClassSettings(
   }
 
   revalidatePath("/teacher/students");
+  revalidatePath("/teacher/deck");
 
   if (startInPast) {
     return {
@@ -213,8 +235,6 @@ export async function saveClassSettings(
 }
 
 // ── suggestTopic (session 78, updated session 79) ─────────────────────────
-// In standard mode this is called "Add a topic" (UI label only — behavior
-// is the same: inserts with status='approved').
 
 export async function suggestTopic(
   topicText: string,
@@ -241,7 +261,6 @@ export async function suggestTopic(
     return { ok: false, error: "Topic must be 2–80 characters." };
   }
 
-  // Use service client to bypass RLS for the insert
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) {
@@ -264,7 +283,7 @@ export async function suggestTopic(
     return { ok: false, error: `Could not save: ${insErr.message}` };
   }
 
-  // ── Notify admin(s) (only in multi mode — harmless in standard) ─────
+  // Notify admin(s) (harmless in standard mode)
   const teacherName = profile.display_name || profile.username || "A teacher";
   const { data: admins } = await admin
     .from("profiles")
@@ -294,7 +313,6 @@ export async function deleteGameTopic(
 
   if (!topicId) return { ok: false, error: "Missing topic id." };
 
-  // Verify topic exists
   const { data: topic } = await auth.admin
     .from("game_topics")
     .select("id, suggested_by")
@@ -303,7 +321,6 @@ export async function deleteGameTopic(
 
   if (!topic) return { ok: false, error: "Topic not found." };
 
-  // Delete the topic
   const { error: delErr } = await auth.admin
     .from("game_topics")
     .delete()
@@ -318,14 +335,15 @@ export async function deleteGameTopic(
 }
 
 // ── M1: createClassDirect (standard mode) ─────────────────────────────────
-// In standard mode the teacher creates a class directly — no request→admin
-// approval flow. Inserts into `classes` and creates a `games` row.
+// Session 94: Accepts level parameter.
 
 const ALLOWED_CAPACITIES = [9, 16, 25] as const;
+const VALID_LEVELS = new Set(["beginner", "intermediate", "advanced"]);
 
 export async function createClassDirect(
   className: string,
   capacity: number,
+  level: string = "beginner",
 ): Promise<ActionResult> {
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
@@ -339,6 +357,9 @@ export async function createClassDirect(
     return { ok: false, error: "Invalid class size." };
   }
 
+  // Session 94: validate level
+  const validLevel = VALID_LEVELS.has(level) ? level : "beginner";
+
   // Insert the class
   const { data: newClass, error: clsErr } = await auth.admin
     .from("classes")
@@ -346,6 +367,7 @@ export async function createClassDirect(
       teacher_id: auth.userId,
       name,
       capacity,
+      level: validLevel,
       is_archived: false,
     })
     .select("id")
@@ -367,10 +389,10 @@ export async function createClassDirect(
 
   if (gameErr) {
     console.error(`[createClassDirect] Could not create game row: ${gameErr.message}`);
-    // Non-fatal — class is created, game can be created later
   }
 
   revalidatePath("/teacher/students");
+  revalidatePath("/teacher/deck");
   return { ok: true };
 }
 
@@ -513,14 +535,6 @@ async function upsertTeacherComment(
 
 // ─────────────────────────────────────────────────────────────────────────
 // D1: Auto-advance helper
-//
-// After approving an entry or favorite comment, check if there are any
-// remaining pending items for this class in the given round. If none
-// remain, update games.current_round_phase to 'game' — signaling that
-// the review is complete and the next round can begin.
-//
-// For the FINAL round (round === total_rounds), this signals that the
-// awards ceremony is ready instead.
 // ─────────────────────────────────────────────────────────────────────────
 
 async function checkAutoAdvance(
@@ -528,7 +542,6 @@ async function checkAutoAdvance(
   classId: string,
   roundNumber: number,
 ): Promise<void> {
-  // Count remaining pending entries for this class + round
   const { count: pendingEntries } = await adminClient
     .from("entries")
     .select("id", { count: "exact", head: true })
@@ -537,7 +550,6 @@ async function checkAutoAdvance(
     .eq("status", "pending")
     .eq("is_starter", false);
 
-  // Count remaining pending favorite comments for this class + round
   const { count: pendingComments } = await adminClient
     .from("game_sessions")
     .select("id", { count: "exact", head: true })
@@ -548,8 +560,6 @@ async function checkAutoAdvance(
   const totalPending = (pendingEntries ?? 0) + (pendingComments ?? 0);
 
   if (totalPending === 0) {
-    // All items approved for this round — advance.
-    // Find the game for this class.
     const { data: game } = await adminClient
       .from("games")
       .select("id, class_id, status")
@@ -558,7 +568,6 @@ async function checkAutoAdvance(
       .maybeSingle();
 
     if (game) {
-      // Set phase back to 'game' — signals next round is open
       await adminClient
         .from("games")
         .update({ current_round_phase: "game" })
@@ -584,7 +593,6 @@ export async function approveEntry(
   const ownership = await verifyEntryOwnership(auth.admin, entryId, auth.userId);
   if (!ownership.ok) return ownership;
 
-  // #35 T1: archive any prior live entry for this student + class + round.
   const { error: archiveErr } = await auth.admin
     .from("entries")
     .update({
@@ -602,7 +610,6 @@ export async function approveEntry(
     return { ok: false, error: `Could not archive prior entry: ${archiveErr.message}` };
   }
 
-  // Flip this entry to live.
   const { error: updErr } = await auth.admin
     .from("entries")
     .update({
@@ -616,7 +623,6 @@ export async function approveEntry(
     return { ok: false, error: `Could not approve: ${updErr.message}` };
   }
 
-  // #35 T2: write optional teacher comment to teacher_comments.
   if (comment && comment.trim().length > 0) {
     const studentsId = await resolveStudentsId(auth.admin, ownership.studentId);
     if (studentsId) {
@@ -635,7 +641,6 @@ export async function approveEntry(
     }
   }
 
-  // D1: check auto-advance after approving
   await checkAutoAdvance(auth.admin, ownership.entryClassId, ownership.roundNumber);
 
   revalidatePath("/teacher/students");
@@ -736,7 +741,6 @@ export async function approveFavoriteComment(
     return { ok: false, error: `Could not approve: ${updErr.message}` };
   }
 
-  // D1: check auto-advance after approving
   await checkAutoAdvance(auth.admin, session.class_id, session.round);
 
   revalidatePath("/teacher/students");
@@ -854,9 +858,6 @@ export async function unarchiveClass(
 }
 
 // ── deleteArchivedClass (session 88) ────────────────────────────────────
-// Only archived classes with zero enrollments can be deleted. This is a
-// cleanup tool for typo-classes or empty tests — not for classes that
-// had real student data.
 
 export async function deleteArchivedClass(
   classId: string,
@@ -864,7 +865,6 @@ export async function deleteArchivedClass(
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
 
-  // Verify teacher owns this class AND it's archived
   const { data: cls } = await auth.admin
     .from("classes")
     .select("id, is_archived")
@@ -875,7 +875,6 @@ export async function deleteArchivedClass(
   if (!cls) return { ok: false, error: "Class not found or you don't own it." };
   if (!cls.is_archived) return { ok: false, error: "Only archived classes can be deleted." };
 
-  // Check for enrollments — refuse if any student ever joined
   const { count: enrollmentCount } = await auth.admin
     .from("enrollments")
     .select("id", { count: "exact", head: true })
@@ -885,7 +884,6 @@ export async function deleteArchivedClass(
     return { ok: false, error: "This class has student data and cannot be deleted. Unarchive it instead." };
   }
 
-  // Safe to delete — no student data. Delete associated game row first.
   await auth.admin
     .from("games")
     .delete()
@@ -904,15 +902,11 @@ export async function deleteArchivedClass(
 }
 
 // ── switchToMultiMode (session 89) ──────────────────────────────────────
-// Admin-only action available from the teacher page in standard mode.
-// Switches app_mode back to 'multi' so the admin dashboard is accessible
-// again without needing to hit the SQL editor.
 
 export async function switchToMultiMode(): Promise<ActionResult> {
   const auth = await getTeacherAdmin();
   if (!auth.ok) return auth;
 
-  // Verify the user is actually an admin
   const { data: profile } = await auth.admin
     .from("profiles")
     .select("is_admin")

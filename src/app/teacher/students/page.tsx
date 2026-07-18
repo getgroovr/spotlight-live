@@ -1,73 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/students/page.tsx   (REPLACES existing file)
 //
-// Teacher students page. Three-section layout:
-//   1. Class settings header (ClassHeader component)
-//   2. Pending queue (PendingQueue component)
-//      - Pending photo submissions (entries with status = 'pending')
-//      - Pending favorite comments (game_sessions with
-//        favorite_comment_status = 'pending')  — NEW #38
-//   3. Student profile grid
-//
-// Auth pattern: SSR cookie client for auth.uid(), service client for
-// joins and admin auth (resolving student emails). All queries scoped
-// to classes this teacher owns.
-//
-// #34 FIX: Pending queue thumbnails were broken — used "teacher-deck"
-// bucket with getPublicUrl, but student entries upload to "media" bucket
-// and need createSignedUrl (same as student-archive.ts). Fixed below.
-//
-// #38: Added favorite comment moderation query. game_sessions rows with
-//      favorite_comment_status = 'pending' are fetched, student name
-//      and favorited-pic thumbnail resolved, and passed to PendingQueue
-//      as the favoriteComments prop.
-//
-// Session 76 — P9: Warmup round (round=0) favorite comments were leaking
-//      into the student-round pending queue. Added .gt("round", 0) filter
-//      so only student game rounds show in the teacher's approval queue.
-//      Warmup comments don't require moderation (they're about the
-//      teacher's own starter photos).
-//
-// C4: Added "Request new class" button. Checks class_requests table for
-//     pending requests and profiles.max_classes to decide visibility.
-//
-// Session 77 — C5: Messaging. MessagePanel button in header. Teacher can
-//     message individual students, all students, or admin.
-//
-// Session 78: Game topics. Queries game_topics for approved topic presets
-//     and classes.round_topics for per-round assignments. Passes both to
-//     ClassHeader for the topic dropdown UI.
-//
-// Session 80: Auto-archive. In getPageData(), after fetching classes,
-//     any active class whose game is over (isGameOver) is automatically
-//     set to is_archived = true + archived_at = now. Piggybacks on the
-//     existing round-timing logic — no separate trigger needed.
-//
-// Session 80: Multi-teacher read-only mode. Queries admin_settings for
-//     warmup_teacher_count. When > 1, passes readOnly=true to ClassHeader
-//     so game settings (rounds, duration, start, topics) are display-only.
-//     Teachers can still edit class name and suggest topics.
-//
-// Session 81: Topic locking. Computes currentRound for the selected class
-//     and passes it to ClassHeader. Rounds that have already been played
-//     have their topic dropdown disabled so past topics can't be changed.
-//     Also fixed class dropdown to always include the selected class even
-//     if it was auto-archived.
-//
-// Session 84: Chunk D1 — game_phase_hours + review_phase_hours on ClassRow.
-//     Computes currentPhase (game/review) via computeCurrentPhase() and
-//     passes it to ClassHeader for the phase badge. ClassHeader props
-//     updated to use game_phase_hours + review_phase_hours instead of
-//     round_duration_hours.
-//
-// Session 86: Chunk M1 — Standard/Multi mode.
-//     Queries admin_settings.app_mode. Derives isStandardMode boolean.
-//     In standard mode:
-//       - isMultiTeacher forced to false (teacher owns their own schedule)
-//       - RequestClassSection gets isStandardMode (create vs request)
-//       - ClassHeader gets isStandardMode + topicOptionsWithId (for delete)
-//       - Zero-class state says "Create" not "Request"
-//     In multi mode: behavior unchanged from session 84.
+// Session 94:
+//   - ClassRow gains level and round_prompts fields
+//   - round_prompts passed to ClassHeader
+//   - Students grouped by class under collapsible cards with level badges
+//   - Enrollment counts fetched for all active classes
+//   - Selected class expanded with students; others show compact summary
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -89,7 +28,7 @@ import { RequestClassSection } from "./request-class";
 import MessagePanel, { type MessageRow, type Recipient } from "@/components/MessagePanel";
 import { ArchiveClassButton } from "./archive-class-button";
 import { DeleteClassButton } from "./delete-class-button";
-import { SwitchToMultiFooter } from "./switch-mode-footer";
+
 
 const MEDIA_BUCKET = "media";
 
@@ -111,13 +50,15 @@ type ClassRow = {
   name: string;
   total_rounds: number | null;
   round_duration_hours: number | string | null;
-  game_phase_hours: number | string | null;      // D1
-  review_phase_hours: number | string | null;     // D1
+  game_phase_hours: number | string | null;
+  review_phase_hours: number | string | null;
   game_starts_at: string | null;
   created_at: string | null;
-  round_topics: Record<string, string | null> | null; // session 78
-  is_archived: boolean; // session 79
-  teacher_prompt: string | null; // session 89
+  round_topics: Record<string, string | null> | null;
+  is_archived: boolean;
+  teacher_prompt: string | null;
+  level: string | null;                                    // Session 94
+  round_prompts: Record<string, string | null> | null;     // Session 94
 };
 
 type StudentCard = {
@@ -136,9 +77,6 @@ type PageData =
   | {
       zeroClasses: true;
       hasPendingRequest: boolean;
-      willingTrio: boolean;
-      willingNine: boolean;
-      isStandardMode: boolean; // M1
       msgMessages: MessageRow[];
       msgRecipients: Recipient[];
       msgUnreadCount: number;
@@ -152,21 +90,17 @@ type PageData =
       pendingEntries: PendingEntryData[];
       pendingFavoriteComments: PendingFavoriteCommentData[];
       hasPendingRequest: boolean;
-      topicOptions: string[]; // session 78
-      topicOptionsWithId: TopicOption[]; // M1: topics with ids for deletion
-      isMultiTeacher: boolean; // session 80
-      isStandardMode: boolean; // M1
-      currentRound: number; // session 81: for locking past-round topics
-      currentPhase: "game" | "review" | null; // D1: current round phase
-      willingTrio: boolean; // session 81
-      willingNine: boolean; // session 81
+      topicOptions: string[];
+      topicOptionsWithId: TopicOption[];
+      currentRound: number;
+      currentPhase: "game" | "review" | null;
       msgMessages: MessageRow[];
       msgRecipients: Recipient[];
       msgUnreadCount: number;
       msgUserId: string;
       msgClassId: string;
-      archivedEnrollmentCounts: Record<string, number>; // session 88
-      isAdmin: boolean; // session 89
+      archivedEnrollmentCounts: Record<string, number>;
+      activeClassCounts: Record<string, number>;            // Session 94
     };
 
 async function getPageData(classParam: string | undefined): Promise<PageData> {
@@ -186,58 +120,26 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
   const { data: classRows } = await admin
     .from("classes")
     .select(
-      "id, name, total_rounds, round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, created_at, round_topics, is_archived, teacher_prompt",
+      "id, name, total_rounds, round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, created_at, round_topics, is_archived, teacher_prompt, level, round_prompts",
     )
     .eq("teacher_id", user.id)
     .order("created_at", { ascending: false });
 
-  // ── Session 78: fetch approved game topics for the topic dropdown ────
+  // ── Session 78: fetch approved game topics ────────────────────────────
   const { data: topicRows } = await admin
     .from("game_topics")
     .select("id, topic_text")
     .eq("status", "approved")
     .order("topic_text", { ascending: true });
   const topicOptions = (topicRows || []).map((r: { id: string; topic_text: string }) => r.topic_text);
-  // M1: topics with IDs for standard mode deletion
   const topicOptionsWithId: TopicOption[] = (topicRows || []).map(
     (r: { id: string; topic_text: string }) => ({ id: r.id, text: r.topic_text }),
   );
 
-  // ── Session 80 + M1: check mode + multi-teacher ──────────────────────
-  const { data: adminSettings } = await admin
-    .from("admin_settings")
-    .select("warmup_teacher_count, app_mode")
-    .eq("id", 1)
-    .maybeSingle();
-  const appMode = adminSettings?.app_mode ?? "standard";
-  const isStandardMode = appMode === "standard";
-  // In standard mode, teacher always has full edit access (not read-only)
-  const isMultiTeacher = isStandardMode
-    ? false
-    : (adminSettings?.warmup_teacher_count ?? 1) > 1;
-
-  // Session 89: check if current user is admin (for mode-switch link)
-  const { data: currentProfile } = await admin
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", user.id)
-    .maybeSingle();
-  const isAdmin = currentProfile?.is_admin ?? false;
-
   const classes = (classRows || []) as ClassRow[];
 
-  // ── Session 81: fetch teacher mode preferences ─────────────────────
-  const { data: rotationRow } = await admin
-    .from("teacher_rotation")
-    .select("willing_trio, willing_nine")
-    .eq("teacher_id", user.id)
-    .maybeSingle();
-  const willingTrio = rotationRow?.willing_trio ?? false;
-  const willingNine = rotationRow?.willing_nine ?? false;
-
-  // ── Session 81: zero-class teacher → show request/create form ─────────
+  // ── Zero-class teacher → show create form ─────────────────────────────
   if (classes.length === 0) {
-    // Still need hasPendingRequest + messaging for zero-class state
     const { data: pendingReqs } = await admin
       .from("class_requests")
       .select("id")
@@ -246,7 +148,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       .limit(1);
     const hasPendingRequest = (pendingReqs?.length || 0) > 0;
 
-    // Messaging: teacher can message admins even without a class
     const { data: adminRows } = await admin
       .from("profiles")
       .select("id, display_name, username, role, is_admin")
@@ -293,9 +194,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     return {
       zeroClasses: true,
       hasPendingRequest,
-      willingTrio,
-      willingNine,
-      isStandardMode,
       msgMessages,
       msgRecipients,
       msgUnreadCount,
@@ -303,10 +201,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     };
   }
 
-  // ── Session 80: Auto-archive completed games ──────────────────────
-  // On every page load, check each active class: if the game is over
-  // (all rounds elapsed), silently flip it to archived so it moves
-  // into the "Archived classes" section without teacher action.
+  // ── Auto-archive completed games ──────────────────────────────────────
   const now = new Date();
   for (const cls of classes) {
     if (cls.is_archived) continue;
@@ -328,19 +223,12 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
   }
 
-  // Session 88: Fix archive bug — when a class is archived, the URL still
-  // has ?class=<archived_id>. Without this fix, the archived class stays
-  // in the dropdown (via session 81's "always show selected" logic) until
-  // a *different* class is archived. Fix: prefer active classes. Only fall
-  // back to an archived class if there are no active ones left.
   const activeAfterArchive = classes.filter((c) => !c.is_archived);
 
   let selectedClass = activeAfterArchive[0] || classes[0];
   if (classParam) {
     const match = classes.find((c) => c.id === classParam);
     if (match) {
-      // If the URL points to an archived class but active ones exist,
-      // ignore the stale param and pick the first active class.
       if (match.is_archived && activeAfterArchive.length > 0) {
         selectedClass = activeAfterArchive[0];
       } else {
@@ -349,7 +237,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
   }
 
-  // ── Session 81: compute current round for topic locking ─────────────
+  // ── Compute current round for topic locking ───────────────────────────
   let currentRound = 0;
   if (selectedClass.game_starts_at) {
     const start = new Date(selectedClass.game_starts_at);
@@ -370,7 +258,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
   }
 
-  // ── D1: compute current phase (game / review) ──────────────────────
+  // ── Compute current phase (game / review) ─────────────────────────────
   let currentPhase: "game" | "review" | null = null;
   if (selectedClass.game_starts_at && currentRound > 0) {
     const phaseTiming: ClassTiming = {
@@ -392,7 +280,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     currentPhase = computeCurrentPhase(phaseTiming, now);
   }
 
-  // ── Enrollments + students (existing logic) ─────────────────────────
+  // ── Enrollments + students for selected class ─────────────────────────
   const { data: enrollments } = await admin
     .from("enrollments")
     .select(
@@ -401,8 +289,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     .eq("class_id", selectedClass.id)
     .order("enrolled_at", { ascending: false });
 
-  // Build email → display name lookup from enrollment data.
-  // Used below to resolve student names for pending entries.
   const emailToName = new Map<string, string>();
   for (const e of enrollments || []) {
     const s = e.students as any;
@@ -436,7 +322,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
 
       let photoUrl: string | null = null;
       if (s.photo_url) {
-        // Full URL → passthrough (seed data, external photo, etc.)
         if ((s.photo_url as string).startsWith("http://") || (s.photo_url as string).startsWith("https://")) {
           photoUrl = s.photo_url as string;
         } else {
@@ -465,7 +350,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }),
   );
 
-  // ── Pending entries ─────────────────────────────────────────────────
+  // ── Pending entries ───────────────────────────────────────────────────
   const { data: pendingRows } = await admin
     .from("entries")
     .select(
@@ -477,14 +362,10 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     .order("round_number", { ascending: true })
     .order("uploaded_at", { ascending: true });
 
-  // Resolve auth user emails → student display names.
-  // entries.student_id is auth.users.id (= profiles.id). We need the
-  // email to bridge to the students table (which has screen_name/name).
   const uidEmailCache = new Map<string, string>();
   const pendingEntries: PendingEntryData[] = [];
 
   for (const pe of pendingRows || []) {
-    // Get auth email (cached per uid)
     let email = uidEmailCache.get(pe.student_id);
     if (email === undefined) {
       try {
@@ -498,9 +379,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       uidEmailCache.set(pe.student_id, email);
     }
 
-    // ── FIX: use "media" bucket + createSignedUrl (not "teacher-deck" + getPublicUrl) ──
-    // B62: Full URLs pass through (seed data, external images). Storage
-    // paths get signed. Error logging so silent failures are visible.
     let thumbnailUrl: string | null = null;
     if (pe.media_url) {
       if (pe.media_url.startsWith("http://") || pe.media_url.startsWith("https://")) {
@@ -527,9 +405,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     });
   }
 
-  // ── Pending favorite comments (NEW #38) ─────────────────────────────
-  // game_sessions where favorite_comment_status = 'pending' for this
-  // class. game_sessions.student_id = students.id (no bridge needed).
+  // ── Pending favorite comments ─────────────────────────────────────────
   const { data: pendingFcRows } = await admin
     .from("game_sessions")
     .select(
@@ -542,7 +418,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
   const pendingFavoriteComments: PendingFavoriteCommentData[] = [];
 
   for (const gs of pendingFcRows || []) {
-    // Resolve student name directly from students table.
     const { data: studentRow } = await admin
       .from("students")
       .select("screen_name, name, email")
@@ -554,18 +429,11 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       studentRow?.email ||
       "Unknown student";
 
-    // Parse favorites + comments JSON to find the favorited pic and
-    // the comment the student left on it.
     const favorites = (gs.favorites || {}) as Record<string, boolean>;
     const comments = (gs.comments || {}) as Record<string, string>;
     const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
     const commentOnPic = favEntryId ? comments[favEntryId] || "" : "";
 
-    // Get a thumbnail of the favorited pic.
-    // Starter entries (teacher's warm-up deck) are in the PUBLIC
-    // "teacher-deck" bucket → getPublicUrl.  Student entries are in
-    // the PRIVATE "media" bucket → createSignedUrl.
-    // B62: Full URLs pass through (seed data, external images).
     let favThumbnailUrl: string | null = null;
     if (favEntryId) {
       const { data: favEntry } = await admin
@@ -605,7 +473,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     });
   }
 
-  // ── Class request status ─────────────────────────────────────────────
+  // ── Class request status ──────────────────────────────────────────────
   const { data: pendingReqs } = await admin
     .from("class_requests")
     .select("id")
@@ -614,16 +482,13 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     .limit(1);
   const hasPendingRequest = (pendingReqs?.length || 0) > 0;
 
-  // (Session 81: atClassLimit removed — request button always visible)
-
-  // ── MESSAGE DATA (session 77) ──────────────────────────────────────
+  // ── MESSAGE DATA ──────────────────────────────────────────────────────
   let msgMessages: MessageRow[] = [];
   let msgRecipients: Recipient[] = [];
   let msgUnreadCount = 0;
   const msgUserId = user.id;
   const msgClassId = selectedClass.id;
 
-  // Fetch messages (inbox + sent)
   const { data: rawMsgs } = await admin
     .from("messages")
     .select("id, sender_id, recipient_id, body, is_read, created_at")
@@ -635,24 +500,20 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     (m) => m.recipient_id === user.id && !m.is_read,
   ).length;
 
-  // Collect profile IDs for name resolution
   const msgPids = new Set<string>();
   for (const m of rawMsgs || []) {
     msgPids.add(m.sender_id);
     msgPids.add(m.recipient_id);
   }
 
-  // Get admins for recipient list
   const { data: adminRows } = await admin
     .from("profiles")
     .select("id, display_name")
     .eq("is_admin", true);
   for (const a of adminRows || []) msgPids.add(a.id);
 
-  // Add enrolled students to pids
   for (const s of students) msgPids.add(s.id);
 
-  // Resolve names
   const nameMap = new Map<string, { name: string; role: string; isAdmin: boolean }>();
   if (msgPids.size > 0) {
     const { data: profs } = await admin
@@ -668,8 +529,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     }
   }
 
-  // For students, prefer the display name from the students array (screen_name)
-  // since profiles.display_name may not be set for students.
   for (const s of students) {
     const existing = nameMap.get(s.id);
     if (!existing || existing.name === "Unknown") {
@@ -688,7 +547,6 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     createdAt: m.created_at,
   }));
 
-  // Recipient list: admins + students in this class
   for (const a of adminRows || []) {
     if (a.id !== user.id) {
       msgRecipients.push({
@@ -702,8 +560,7 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     msgRecipients.push({ id: s.id, name: s.displayName, role: "student" });
   }
 
-  // ── Session 88: enrollment counts for archived classes ─────────────────
-  // Used to decide whether an archived class can be deleted (only if 0).
+  // ── Archived enrollment counts ────────────────────────────────────────
   const archivedIds = classes.filter((c) => c.is_archived).map((c) => c.id);
   const archivedEnrollmentCounts: Record<string, number> = {};
   for (const aId of archivedIds) {
@@ -712,6 +569,20 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
       .select("id", { count: "exact", head: true })
       .eq("class_id", aId);
     archivedEnrollmentCounts[aId] = count ?? 0;
+  }
+
+  // ── Session 94: active class enrollment counts ────────────────────────
+  const activeClassCounts: Record<string, number> = {};
+  for (const cls of activeAfterArchive) {
+    if (cls.id === selectedClass.id) {
+      activeClassCounts[cls.id] = students.length;
+    } else {
+      const { count } = await admin
+        .from("enrollments")
+        .select("id", { count: "exact", head: true })
+        .eq("class_id", cls.id);
+      activeClassCounts[cls.id] = count ?? 0;
+    }
   }
 
   return {
@@ -723,19 +594,15 @@ async function getPageData(classParam: string | undefined): Promise<PageData> {
     hasPendingRequest,
     topicOptions,
     topicOptionsWithId,
-    isMultiTeacher,
-    isStandardMode,
     currentRound,
     currentPhase,
-    willingTrio,
-    willingNine,
     msgMessages,
     msgRecipients,
     msgUnreadCount,
     msgUserId,
     msgClassId,
     archivedEnrollmentCounts,
-    isAdmin,
+    activeClassCounts,
   };
 }
 
@@ -777,7 +644,12 @@ function buildStatusLine(cls: ClassRow): string {
   return `Game started ${ago} — round ${current} of ${cls.total_rounds ?? "?"}`;
 }
 
-// ── Top nav strip ─────────────────────────────────────────────────────────
+const LEVEL_LABELS: Record<string, string> = {
+  beginner: "Beginning",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+};
+
 function TopNav() {
   return (
     <nav
@@ -852,7 +724,7 @@ export default async function TeacherStudents({
     );
   }
 
-  // ── Session 81 + M1: zero-class teacher → show create/request form ────
+  // ── Zero-class teacher → show create form ─────────────────────────────
   if ("zeroClasses" in data && data.zeroClasses) {
     return (
       <div
@@ -894,10 +766,7 @@ export default async function TeacherStudents({
           </div>
           <RequestClassSection
             hasPending={data.hasPendingRequest}
-            willingTrio={data.willingTrio}
-            willingNine={data.willingNine}
             isProminent
-            isStandardMode={data.isStandardMode}
           />
         </div>
       </div>
@@ -911,30 +780,22 @@ export default async function TeacherStudents({
     pendingEntries,
     pendingFavoriteComments,
     hasPendingRequest,
-    topicOptions,
     topicOptionsWithId,
-    isMultiTeacher,
-    isStandardMode,
     currentRound,
     currentPhase,
-    willingTrio,
-    willingNine,
     msgMessages,
     msgRecipients,
     msgUnreadCount,
     msgUserId,
     msgClassId,
     archivedEnrollmentCounts,
-    isAdmin,
+    activeClassCounts,
   } = data;
   const statusLine = buildStatusLine(selectedClass);
 
-  // Session 79: split active vs archived classes
   const activeClasses = classes.filter((c) => !c.is_archived);
   const archivedClasses = classes.filter((c) => c.is_archived);
 
-  // Session 81: ensure selected class always appears in the dropdown
-  // (covers edge case where auto-archive ran but we're still viewing it)
   const dropdownClasses = activeClasses.some((c) => c.id === selectedClass.id)
     ? activeClasses
     : [selectedClass, ...activeClasses];
@@ -970,26 +831,6 @@ export default async function TeacherStudents({
             Your classes
           </h1>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {isAdmin && !isStandardMode && (
-              <Link
-                href="/admin"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "8px 14px",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: C.text,
-                  background: C.panel,
-                  border: `1px solid ${C.panelEdge}`,
-                  borderRadius: 20,
-                  textDecoration: "none",
-                  letterSpacing: 0.3,
-                }}
-              >
-                Admin
-              </Link>
-            )}
             <MessagePanel
               messages={msgMessages}
               recipients={msgRecipients}
@@ -1002,9 +843,6 @@ export default async function TeacherStudents({
             />
             <RequestClassSection
               hasPending={hasPendingRequest}
-              willingTrio={willingTrio}
-              willingNine={willingNine}
-              isStandardMode={isStandardMode}
             />
           </div>
         </div>
@@ -1030,17 +868,15 @@ export default async function TeacherStudents({
             game_starts_at: selectedClass.game_starts_at,
             round_topics: (selectedClass.round_topics as Record<string, string | null>) ?? null,
             teacher_prompt: selectedClass.teacher_prompt ?? null,
+            round_prompts: (selectedClass.round_prompts as Record<string, string | null>) ?? null,
           }}
           statusLine={statusLine}
-          topicOptions={topicOptions}
           topicOptionsWithId={topicOptionsWithId}
-          readOnly={isMultiTeacher}
           currentRound={currentRound}
           currentPhase={currentPhase ?? undefined}
-          isStandardMode={isStandardMode}
         />
 
-        {/* Session 79: Archive button — shown when viewing a non-archived class */}
+        {/* Archive / export bar */}
         {!selectedClass.is_archived && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 8 }}>
             <a
@@ -1056,9 +892,7 @@ export default async function TeacherStudents({
           </div>
         )}
 
-        {/* ── SECTION 2: Pending queue (submissions + favorite comments) ──
-            Sits between settings and the student grid.
-            Renders nothing if there's nothing pending. */}
+        {/* ── SECTION 2: Pending queue ── */}
         <div style={{ marginTop: 20 }}>
           <PendingQueue
             entries={pendingEntries}
@@ -1066,181 +900,244 @@ export default async function TeacherStudents({
           />
         </div>
 
-        {/* ── SECTION 3: Student grid ── */}
-        <p
-          style={{
-            fontSize: 14,
-            color: C.textDim,
-            margin: "0 0 16px",
-          }}
-        >
-          {students.length}{" "}
-          {students.length === 1 ? "student has" : "students have"} joined{" "}
-          <span style={{ color: C.text, fontWeight: 600 }}>
-            {selectedClass.name}
-          </span>
-          .
-        </p>
+        {/* ── SECTION 3: Classes with students (grouped by class) ── */}
+        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 10 }}>
+          {activeClasses.map((cls) => {
+            const isSelected = cls.id === selectedClass.id;
+            const count = activeClassCounts[cls.id] ?? 0;
+            const levelLabel = LEVEL_LABELS[cls.level || "beginner"] || "Beginning";
+            const clsStatus = buildStatusLine(cls);
 
-        {students.length === 0 ? (
-          <div
-            style={{
-              background: C.panel,
-              border: `1px dashed ${C.panelEdge}`,
-              borderRadius: 16,
-              padding: "32px 24px",
-              textAlign: "center",
-              color: C.textDim,
-              fontSize: 14,
-              lineHeight: 1.6,
-            }}
-          >
-            No students yet. When someone plays the game and joins, they'll
-            appear here.
-          </div>
-        ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 14,
-            }}
-          >
-            {students.map((s) => (
-              <Link
-                key={s.id}
-                href={`/teacher/students/${s.id}`}
-                style={{ textDecoration: "none", color: "inherit" }}
+            return (
+              <div
+                key={cls.id}
+                style={{
+                  border: `1px solid ${isSelected ? C.light + "66" : C.panelEdge}`,
+                  borderRadius: 14,
+                  overflow: "hidden",
+                  background: isSelected ? "#fff" : C.panel,
+                  transition: "all 0.15s ease",
+                }}
               >
-                <div
-                  style={{
-                    background: C.panel,
-                    border: `1px solid ${C.panelEdge}`,
-                    borderRadius: 16,
-                    padding: 16,
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 12,
-                    transition: "transform 0.15s ease",
-                  }}
-                >
+                {/* ── Class summary bar ── */}
+                {isSelected ? (
                   <div
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "12px 16px",
                     }}
                   >
-                    {s.photoUrl ? (
-                      <img
-                        src={s.photoUrl}
-                        alt=""
+                    <span style={{ fontSize: 12, color: C.light, lineHeight: 1, flexShrink: 0 }}>▾</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
+                      {cls.name}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                      background: C.light + "18", color: C.light,
+                    }}>
+                      {levelLabel}
+                    </span>
+                    <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
+                      {count} student{count !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                ) : (
+                  <a
+                    href={`/teacher/students?class=${cls.id}`}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "12px 16px",
+                      textDecoration: "none", color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: C.textDim, lineHeight: 1, flexShrink: 0 }}>▸</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
+                      {cls.name}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                      background: C.panelEdge + "33", color: C.textDim,
+                    }}>
+                      {levelLabel}
+                    </span>
+                    <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
+                      {count} student{count !== 1 ? "s" : ""} · {clsStatus}
+                    </span>
+                  </a>
+                )}
+
+                {/* ── Expanded: student grid (selected class only) ── */}
+                {isSelected && (
+                  <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.panelEdge}44` }}>
+                    {students.length === 0 ? (
+                      <div
                         style={{
-                          width: 52,
-                          height: 52,
-                          borderRadius: "50%",
-                          objectFit: "cover",
-                          border: `2px solid ${C.light}`,
+                          background: C.panel,
+                          border: `1px dashed ${C.panelEdge}`,
+                          borderRadius: 16,
+                          padding: "32px 24px",
+                          textAlign: "center",
+                          color: C.textDim,
+                          fontSize: 14,
+                          lineHeight: 1.6,
+                          marginTop: 14,
                         }}
-                      />
+                      >
+                        No students yet. When someone plays the game and joins, they&apos;ll
+                        appear here.
+                      </div>
                     ) : (
                       <div
                         style={{
-                          width: 52,
-                          height: 52,
-                          borderRadius: "50%",
-                          background: C.panelEdge,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: 22,
-                          color: "#fff",
-                          flexShrink: 0,
+                          display: "grid",
+                          gridTemplateColumns: "repeat(3, 1fr)",
+                          gap: 14,
+                          paddingTop: 14,
                         }}
                       >
-                        {s.displayName[0]?.toUpperCase()}
+                        {students.map((s) => (
+                          <Link
+                            key={s.id}
+                            href={`/teacher/students/${s.id}`}
+                            style={{ textDecoration: "none", color: "inherit" }}
+                          >
+                            <div
+                              style={{
+                                background: C.panel,
+                                border: `1px solid ${C.panelEdge}`,
+                                borderRadius: 16,
+                                padding: 16,
+                                height: "100%",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 12,
+                                transition: "transform 0.15s ease",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                }}
+                              >
+                                {s.photoUrl ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    src={s.photoUrl}
+                                    alt=""
+                                    style={{
+                                      width: 52,
+                                      height: 52,
+                                      borderRadius: "50%",
+                                      objectFit: "cover",
+                                      border: `2px solid ${C.light}`,
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: 52,
+                                      height: 52,
+                                      borderRadius: "50%",
+                                      background: C.panelEdge,
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      fontSize: 22,
+                                      color: "#fff",
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    {s.displayName[0]?.toUpperCase()}
+                                  </div>
+                                )}
+                                <div style={{ minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontSize: 16,
+                                      fontWeight: 700,
+                                      whiteSpace: "nowrap",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {s.displayName}
+                                  </div>
+                                  {s.realName && s.realName !== s.displayName && (
+                                    <div
+                                      style={{
+                                        fontSize: 12,
+                                        color: C.textFaint,
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                      }}
+                                    >
+                                      {s.realName}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  flexWrap: "wrap",
+                                  fontSize: 12,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    background: C.light + "22",
+                                    color: C.text,
+                                    borderRadius: 20,
+                                    padding: "3px 10px",
+                                  }}
+                                >
+                                  {s.commentCount} comments
+                                </span>
+                                {!s.profileComplete && (
+                                  <span
+                                    style={{
+                                      background: "#E2554A22",
+                                      color: "#A23",
+                                      borderRadius: 20,
+                                      padding: "3px 10px",
+                                    }}
+                                  >
+                                    profile not finished
+                                  </span>
+                                )}
+                              </div>
+
+                              {s.completedAt && (
+                                <div
+                                  style={{
+                                    fontSize: 11,
+                                    color: C.textFaint,
+                                    marginTop: "auto",
+                                  }}
+                                >
+                                  {s.round === 0 ? "Warm-up" : `Round ${s.round}`} ·{" "}
+                                  {new Date(s.completedAt).toLocaleDateString()}
+                                </div>
+                              )}
+                            </div>
+                          </Link>
+                        ))}
                       </div>
                     )}
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 16,
-                          fontWeight: 700,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {s.displayName}
-                      </div>
-                      {s.realName && s.realName !== s.displayName && (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: C.textFaint,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {s.realName}
-                        </div>
-                      )}
-                    </div>
                   </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      flexWrap: "wrap",
-                      fontSize: 12,
-                    }}
-                  >
-                    <span
-                      style={{
-                        background: C.light + "22",
-                        color: C.text,
-                        borderRadius: 20,
-                        padding: "3px 10px",
-                      }}
-                    >
-                      {s.commentCount} comments
-                    </span>
-                    {!s.profileComplete && (
-                      <span
-                        style={{
-                          background: "#E2554A22",
-                          color: "#A23",
-                          borderRadius: 20,
-                          padding: "3px 10px",
-                        }}
-                      >
-                        profile not finished
-                      </span>
-                    )}
-                  </div>
-
-                  {s.completedAt && (
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: C.textFaint,
-                        marginTop: "auto",
-                      }}
-                    >
-                      {s.round === 0 ? "Warm-up" : `Round ${s.round}`} ·{" "}
-                      {new Date(s.completedAt).toLocaleDateString()}
-                    </div>
-                  )}
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-
-        {/* ── Session 79: ARCHIVED CLASSES ── */}
+        {/* ── ARCHIVED CLASSES ── */}
         {archivedClasses.length > 0 && (
           <details style={{ marginTop: 32 }}>
             <summary style={{
@@ -1282,10 +1179,7 @@ export default async function TeacherStudents({
             </div>
           </details>
         )}
-        {/* Session 89: Admin mode-switch footer (standard mode only) */}
-        {isStandardMode && isAdmin && (
-          <SwitchToMultiFooter />
-        )}
+
       </div>
     </div>
   );
