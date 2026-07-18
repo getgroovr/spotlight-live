@@ -1,50 +1,28 @@
-// /play — the playable Spotlight game route.
+// /play — landing page (future browse/search page).
 //
-// SLICE 1A: the route reads the generic deck from the DB. The game itself
-// (the shuffle-stop engine) is unchanged in behavior — it just receives the
-// deck via a prop instead of importing it from a static file. Anonymous
-// visitors can play; logged-in visitors can play too. Auth-gating the front
-// door comes later (and may never come — see BUILD_PLAN).
+// DESTINATION: src/app/play/page.tsx   (REPLACES existing file)
 //
-// Three states this page renders:
-//   1. Supabase configured AND public class has ≥ 3 live starters: the game.
-//   2. Supabase configured but pool is < 3: a "deck being prepared" page.
-//   3. Supabase not configured (local dev with no .env): falls back to the
-//      static STUDENTS array via the engine's default prop, so /play stays
-//      playable without a backend.
+// Session 93: With the move to /play/[teacherId], the bare /play route
+// no longer loads a deck. It's a placeholder that will eventually become
+// the "find a teacher" browse page (Front Door, Priority 2).
 //
-// REDIRECT-IF-ENROLLED (added in slice 1 engine-adaptation pass):
-//   Visitors who have already enrolled don't belong on /play — their real
-//   home is /student/dashboard, and re-entering the visitor flow would offer
-//   them a stale "Resume" from a game they enrolled out of. Before loading
-//   the deck, we check the session; if there's a logged-in user AND a row
-//   in `students` for their email, we 307 over to /student/dashboard. The
-//   `students` lookup is the truth for "is this person actually enrolled"
-//   (sessions can exist without enrollment, e.g. mid-magic-link flow).
+// For now it shows a simple holding page. If a visitor lands here without
+// a teacher ID, they need a teacher's warmup link to proceed.
 //
-//   This pairs with two changes in spotlight.jsx: per-route saveKey() (so
-//   /play and /student/play don't share localStorage) and clearProgress()
-//   on successful enrollment (so the visitor key is wiped at the moment
-//   they transition away). All three together kill the resume-stuck-on-
-//   old-game bug.
+// REDIRECT-IF-ENROLLED: kept from the previous version. If someone is
+// already enrolled, send them to their dashboard regardless of route.
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
-import GameShell from "@/game/shell";
-import { loadGenericDeck } from "@/lib/deck";
 
 export const metadata = {
-  title: "Spotlight — Play",
+  title: "Spotlight — Find a Teacher",
 };
 
-// Always render on each request — the deck shuffles per visit (pool > 3
-// rotates), and signed URLs would otherwise get baked into a static prerender.
 export const dynamic = "force-dynamic";
 
-export default async function PlayPage() {
-  // Step 1: if this visitor is actually an enrolled student, send them to
-  // their dashboard. Safe to run on every /play visit — two cheap reads
-  // when there's a session, zero when there isn't.
+export default async function PlayLandingPage() {
+  // If this visitor is already enrolled, send them to their dashboard.
   const ssr = await createClient();
   if (ssr) {
     const { data: { user } } = await ssr.auth.getUser();
@@ -65,27 +43,6 @@ export default async function PlayPage() {
     }
   }
 
-  // Step 2: anonymous or not-yet-enrolled — render the visitor deck as before.
-  const deck = await loadGenericDeck();
-
-  if (deck.ok) {
-    return <GameShell initialStudents={deck.students} />;
-  }
-
-  // Local dev with no Supabase env yet: render the engine with no deck
-  // override, so it falls back to the in-file STUDENTS sample data and
-  // /play stays usable without a backend.
-  if (deck.reason === "no-supabase") {
-    return <GameShell />;
-  }
-
-  // Supabase IS configured but the front-door deck isn't ready yet — either
-  // no public class exists, or the pool isn't yet at nine. Show a small
-  // holding page rather than rendering a malformed grid.
-  return <DeckBeingPrepared have={deck.have} />;
-}
-
-function DeckBeingPrepared({ have }: { have: number }) {
   return (
     <div
       style={{
@@ -102,15 +59,14 @@ function DeckBeingPrepared({ have }: { have: number }) {
     >
       <div style={{ maxWidth: 460, textAlign: "center" }}>
         <h1 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 12px" }}>
-          The deck is being prepared
+          Spotlight
         </h1>
-        <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 4px" }}>
-          Spotlight needs three photos before the front door opens.
+        <p style={{ fontSize: 15, lineHeight: 1.6, margin: "0 0 16px" }}>
+          To play a warmup game, you need a link from a teacher.
+          Ask your teacher for their Spotlight warmup link to get started.
         </p>
-        <p style={{ fontSize: 13, color: "#6a4f33", margin: 0 }}>
-          {have === 0
-            ? "None have been added yet."
-            : `${have} of 3 added so far.`}
+        <p style={{ fontSize: 13, color: "#6a4f33", lineHeight: 1.6, margin: 0 }}>
+          A teacher browse page is coming soon.
         </p>
       </div>
     </div>
