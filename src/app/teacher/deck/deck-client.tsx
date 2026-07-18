@@ -1,97 +1,350 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/deck/deck-client.tsx  (REPLACES existing)
 //
-// Session 70 rebuild: multi-mode photo selection.
-// Session 75: Added approval status indicators on each photo card.
-//   is_active=false → "Pending admin approval" amber banner
-//   is_active=true  → "Approved" green badge
-//   Mode selection works regardless of approval status, but photos
-//   only appear in-game once the admin has approved (is_active=true).
-//
-// All multi-column layouts use inline styles (Tailwind grid-cols broken).
+// Session 94: Per-class deck with level sections.
+//   - Level sections: Beginning, Intermediate, Advanced
+//   - Each level: "+ Add class" button, list of class cards
+//   - Each class card: collapsible, shows recruiting toggle, warmup
+//     title/prompt, upload form, photo grid
+//   - Photos are per-class (not per-level)
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
-import { useEffect, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   uploadStarter,
   deleteStarter,
   updateStarterDescription,
-  toggleModeSelection,
+  toggleInWarmup,
+  toggleRecruiting,
   saveDisplayName,
+  saveWarmupTitle,
+  saveWarmupPrompt,
+  createClassWithLevel,
   type UploadResult,
 } from "./actions";
 
-type Starter = {
+export type Starter = {
   id: string;
   media_url: string;
   description_text: string;
   is_active: boolean;
-  selected_solo: boolean;
-  selected_trio: boolean;
-  selected_full: boolean;
   signed_url: string | null;
   uploaded_at: string;
 };
 
-type Mode = "solo" | "trio" | "full";
-
-const MODE_LIMITS: Record<Mode, number> = { solo: 9, trio: 3, full: 1 };
-const MODE_LABELS: Record<Mode, string> = { solo: "Solo", trio: "Trio", full: "Full" };
-const MODE_DESCRIPTIONS: Record<Mode, string> = {
-  solo: "1 teacher · 9 photos",
-  trio: "3 teachers · 3 photos each",
-  full: "9 teachers · 1 photo each",
+export type ClassData = {
+  id: string;
+  name: string;
+  level: string;
+  is_recruiting: boolean;
+  warmup_title: string;
+  warmup_prompt: string;
+  photos: Starter[];
 };
 
+type Level = "beginner" | "intermediate" | "advanced";
+const LEVELS: { key: Level; label: string }[] = [
+  { key: "beginner", label: "Beginning" },
+  { key: "intermediate", label: "Intermediate" },
+  { key: "advanced", label: "Advanced" },
+];
+
+const C = {
+  bg: "#FBF6EC",
+  panel: "#F3E4C4",
+  panelEdge: "#C9A877",
+  light: "#D98A2B",
+  text: "#3A2A18",
+  textDim: "#6E5536",
+  textFaint: "#9A815E",
+  success: "#2B8A3E",
+  error: "#C53030",
+  recruit: "#2563EB",
+};
+
+const CAPACITY_OPTIONS = [
+  { value: 9, label: "9 students" },
+  { value: 16, label: "16 students" },
+  { value: 25, label: "25 students" },
+];
+
+// ─────────────────────────────────────────────────────────────────────────
+// DeckClient — top-level
+// ─────────────────────────────────────────────────────────────────────────
 export function DeckClient({
-  starters,
+  classes,
   initialDisplayName,
-  canUpload,
-  activeMode,
 }: {
-  starters: Starter[];
+  classes: ClassData[];
   initialDisplayName: string;
-  canUpload: boolean;
-  activeMode: string;
 }) {
   const [pending, startTransition] = useTransition();
-  const [result, setResult] = useState<UploadResult | null>(null);
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
 
-  const [optimisticStarters, removeOptimistic] = useOptimistic(
-    starters,
-    (current: Starter[], deletedId: string) =>
-      current.filter((s) => s.id !== deletedId),
-  );
-
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
-  // Count selections per mode
-  const counts: Record<Mode, number> = {
-    solo: optimisticStarters.filter((s) => s.selected_solo).length,
-    trio: optimisticStarters.filter((s) => s.selected_trio).length,
-    full: optimisticStarters.filter((s) => s.selected_full).length,
+  const onDelete = (id: string) => {
+    if (!confirm("Remove this photo from the deck?")) return;
+    setDeletedIds((prev) => new Set([...prev, id]));
+    startTransition(async () => {
+      await deleteStarter(id);
+      setDeletedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    });
   };
 
-  const pendingCount = optimisticStarters.filter((s) => !s.is_active).length;
+  return (
+    <>
+      <DisplayNameField
+        initialName={initialDisplayName}
+        pending={pending}
+        startTransition={startTransition}
+      />
+
+      {LEVELS.map(({ key, label }) => {
+        const levelClasses = classes
+          .filter((c) => c.level === key)
+          .map((c) => ({
+            ...c,
+            photos: c.photos.filter((p) => !deletedIds.has(p.id)),
+          }));
+        return (
+          <LevelSection
+            key={key}
+            levelKey={key}
+            levelLabel={label}
+            classes={levelClasses}
+            pending={pending}
+            startTransition={startTransition}
+            onDelete={onDelete}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LevelSection — one section per level
+// ─────────────────────────────────────────────────────────────────────────
+function LevelSection({
+  levelKey,
+  levelLabel,
+  classes,
+  pending,
+  startTransition,
+  onDelete,
+}: {
+  levelKey: Level;
+  levelLabel: string;
+  classes: ClassData[];
+  pending: boolean;
+  startTransition: (cb: () => void) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createCapacity, setCreateCapacity] = useState(9);
+  const [createResult, setCreateResult] = useState<UploadResult | null>(null);
+
+  const handleCreate = () => {
+    const name = createName.trim();
+    if (!name) { setCreateResult({ ok: false, error: "Enter a class name." }); return; }
+    setCreateResult(null);
+    startTransition(async () => {
+      const r = await createClassWithLevel(name, createCapacity, levelKey);
+      setCreateResult(r);
+      if (r.ok) {
+        setCreateName("");
+        setCreateCapacity(9);
+        setShowCreate(false);
+      }
+    });
+  };
+
+  const totalPhotos = classes.reduce((sum, c) => sum + c.photos.length, 0);
+
+  return (
+    <section style={{ marginBottom: 28 }}>
+      {/* ── Level header ───────────────────────────────────────────── */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "10px 0", borderBottom: `2px solid ${C.light}44`, marginBottom: 12,
+      }}>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: C.text }}>
+            {levelLabel}
+          </h2>
+          <span style={{ fontSize: 12, color: C.textFaint }}>
+            {classes.length} {classes.length === 1 ? "class" : "classes"} · {totalPhotos} photo{totalPhotos !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          style={{
+            fontSize: 13, fontWeight: 600, color: C.light,
+            background: C.light + "15", border: `1px solid ${C.light}44`,
+            borderRadius: 8, padding: "6px 14px",
+            cursor: "pointer", fontFamily: "inherit",
+          }}
+        >
+          {showCreate ? "Cancel" : "+ Add class"}
+        </button>
+      </div>
+
+      {/* ── Inline create class form ───────────────────────────────── */}
+      {showCreate && (
+        <div style={{
+          background: C.panel, border: `1px solid ${C.panelEdge}`,
+          borderRadius: 12, padding: "12px 14px", marginBottom: 14,
+          display: "flex", flexDirection: "column", gap: 8,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+            New {levelLabel.toLowerCase()} class
+          </div>
+          <input
+            type="text" value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            placeholder="Class name"
+            maxLength={100}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleCreate(); } }}
+            style={{
+              background: "#fff", border: `1px solid ${C.panelEdge}`,
+              borderRadius: 8, padding: "7px 10px", fontSize: 13,
+              color: C.text, fontFamily: "inherit", outline: "none",
+              width: "100%", boxSizing: "border-box",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: C.textDim, fontWeight: 600 }}>Size</span>
+            <select
+              value={createCapacity}
+              onChange={(e) => setCreateCapacity(Number(e.target.value))}
+              style={{
+                background: "#fff", border: `1px solid ${C.panelEdge}`,
+                borderRadius: 8, padding: "5px 8px", fontSize: 12,
+                color: C.text, fontFamily: "inherit", outline: "none", cursor: "pointer",
+              }}
+            >
+              {CAPACITY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={handleCreate}
+              disabled={pending || !createName.trim()}
+              style={{
+                background: C.light, color: "#fff", border: "none",
+                borderRadius: 8, padding: "6px 14px", fontSize: 12,
+                fontWeight: 700, fontFamily: "inherit",
+                cursor: pending || !createName.trim() ? "default" : "pointer",
+                opacity: pending || !createName.trim() ? 0.5 : 1,
+              }}
+            >
+              {pending ? "Creating…" : "Create"}
+            </button>
+            {createResult && !createResult.ok && (
+              <span style={{ fontSize: 11, color: C.error }}>{createResult.error}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Class cards ────────────────────────────────────────────── */}
+      {classes.length === 0 ? (
+        <p style={{
+          fontSize: 13, color: C.textDim, textAlign: "center",
+          padding: "20px 0", fontStyle: "italic",
+        }}>
+          No classes at this level yet.
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {classes.map((cls) => (
+            <ClassCard
+              key={cls.id}
+              classData={cls}
+              pending={pending}
+              startTransition={startTransition}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ClassCard — one collapsible card per class
+// ─────────────────────────────────────────────────────────────────────────
+function ClassCard({
+  classData,
+  pending,
+  startTransition,
+  onDelete,
+}: {
+  classData: ClassData;
+  pending: boolean;
+  startTransition: (cb: () => void) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [result, setResult] = useState<UploadResult | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  // Warmup title state
+  const [warmupTitle, setWarmupTitle] = useState(classData.warmup_title);
+  const [savedTitle, setSavedTitle] = useState(classData.warmup_title);
+
+  // Warmup prompt state
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [warmupPrompt, setWarmupPrompt] = useState(classData.warmup_prompt);
+  const [savedPrompt, setSavedPrompt] = useState(classData.warmup_prompt);
+
+  useEffect(() => {
+    return () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
+  }, [previewUrl]);
+
+  const activeCount = classData.photos.filter((p) => p.is_active).length;
+  const photoCount = classData.photos.length;
+
+  const doSaveTitle = () => {
+    const trimmed = warmupTitle.trim();
+    if (trimmed === savedTitle.trim()) return;
+    startTransition(async () => {
+      const r = await saveWarmupTitle(classData.id, trimmed);
+      if (r.ok) setSavedTitle(trimmed);
+    });
+  };
+
+  const doSavePrompt = () => {
+    const trimmed = warmupPrompt.trim();
+    if (trimmed === savedPrompt.trim()) return;
+    startTransition(async () => {
+      const r = await saveWarmupPrompt(classData.id, trimmed);
+      if (r.ok) setSavedPrompt(trimmed);
+    });
+  };
+
+  const onToggleRecruiting = () => {
+    startTransition(async () => {
+      await toggleRecruiting(classData.id, !classData.is_recruiting);
+    });
+  };
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (previewUrl) URL.revokeObjectURL(previewUrl);
-    if (f && f.type.startsWith("image/")) {
-      setPreviewUrl(URL.createObjectURL(f));
-    } else {
-      setPreviewUrl(null);
-    }
+    setPreviewUrl(f && f.type.startsWith("image/") ? URL.createObjectURL(f) : null);
   };
 
-  const onSubmit = async (formData: FormData) => {
+  const onSubmitUpload = async (formData: FormData) => {
+    formData.set("class_id", classData.id);
     const f = formData.get("photo");
     if (f instanceof File && f.size > 8 * 1024 * 1024) {
       setResult({ ok: false, error: "Photo must be 8 MB or smaller." });
@@ -108,225 +361,239 @@ export function DeckClient({
     });
   };
 
-  const onDelete = (id: string) => {
-    if (!confirm("Remove this photo from the deck?")) return;
-    setResult(null);
-    startTransition(async () => {
-      removeOptimistic(id);
-      const r = await deleteStarter(id);
-      setResult(r);
-    });
-  };
-
   return (
-    <>
-      {/* ── Mode selection status ────────────────────────────────────── */}
-      <ModeStatusPanel counts={counts} activeMode={activeMode} />
-
-      {/* ── Display name field ───────────────────────────────────────── */}
-      <DisplayNameField
-        initialName={initialDisplayName}
-        pending={pending}
-        startTransition={startTransition}
-      />
-
-      {/* ── Upload form ──────────────────────────────────────────────── */}
-      {canUpload ? (
-        <section className="mb-8 rounded-xl border border-white/10 bg-white/5 p-5">
-          <h2 className="text-lg font-semibold mb-3">Add a photo</h2>
-          <form action={onSubmit} className="space-y-3">
-            <div>
-              <label className="mb-1 block text-sm text-white/80">
-                Photo (JPEG / PNG / WebP, ≤ 8 MB)
-              </label>
-              <input
-                type="file"
-                name="photo"
-                required
-                accept="image/jpeg,image/png,image/webp"
-                onChange={onFileChange}
-                className="w-full text-sm text-white/90 file:mr-3 file:rounded-md file:border-0 file:bg-fuchsia-500/80 file:px-3 file:py-2 file:text-white"
-              />
-            </div>
-
-            {previewUrl && (
-              <div className="rounded-lg border border-white/10 bg-black/30 p-2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={previewUrl}
-                  alt="Selected photo preview"
-                  className="mx-auto block max-h-72 w-auto rounded"
-                />
-                <p className="mt-2 text-center text-xs text-white/50">
-                  Preview — write a description below before adding.
-                </p>
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1 block text-sm text-white/80">
-                Description (shown to students alongside the photo)
-              </label>
-              <textarea
-                name="description"
-                required
-                minLength={10}
-                maxLength={1000}
-                rows={3}
-                placeholder="What is happening in the photo? Use natural English the students will read while writing their own comments."
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white outline-none focus:border-fuchsia-400"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={pending}
-              className="rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 px-6 py-2 font-semibold text-white disabled:opacity-50"
-            >
-              {pending ? "Uploading..." : "Add to deck"}
-            </button>
-
-            {result && !result.ok && (
-              <p className="text-sm text-red-400">{result.error}</p>
-            )}
-            {result && result.ok && (
-              <p className="text-sm text-amber-300">
-                Uploaded — awaiting admin approval before it appears in the game.
-              </p>
-            )}
-          </form>
-        </section>
-      ) : (
-        <section className="mb-8 rounded-xl border border-amber-400/30 bg-amber-400/5 p-5">
-          <p className="text-sm text-amber-200">
-            You need a class before you can upload photos. Ask the admin to create one for you.
-          </p>
-        </section>
-      )}
-
-      {/* ── Photo pool ───────────────────────────────────────────────── */}
-      <section>
-        <h2 className="text-lg font-semibold mb-1">Your photos</h2>
-        <p className="text-xs text-white/50 mb-4">
-          Use the Solo / Trio / Full chips to select which modes each photo appears in.
-          {pendingCount > 0 && (
-            <span className="text-amber-300">
-              {" "}· {pendingCount} photo{pendingCount !== 1 ? "s" : ""} awaiting admin approval.
-            </span>
-          )}
-        </p>
-        {optimisticStarters.length === 0 ? (
-          <p className="text-sm text-white/60">No photos yet.</p>
-        ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-              gap: "16px",
-            }}
-          >
-            {optimisticStarters.map((s) => (
-              <StarterCard
-                key={s.id}
-                starter={s}
-                pending={pending}
-                counts={counts}
-                onDelete={() => onDelete(s.id)}
-                onSaveResult={setResult}
-                startTransition={startTransition}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-    </>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// ModeStatusPanel — shows counts for all three modes
-// ─────────────────────────────────────────────────────────────────────────
-function ModeStatusPanel({
-  counts,
-  activeMode,
-}: {
-  counts: Record<Mode, number>;
-  activeMode: string;
-}) {
-  const modes: Mode[] = ["solo", "trio", "full"];
-
-  return (
-    <div className="mb-6 rounded-xl border border-white/10 bg-white/5 p-4">
-      <div
+    <div style={{
+      background: expanded ? "#fff" : C.panel,
+      border: `1px solid ${expanded ? C.light + "66" : C.panelEdge}`,
+      borderRadius: 14, overflow: "hidden",
+      transition: "all 0.15s ease",
+    }}>
+      {/* ── Summary bar (click to expand) ────────────────────────── */}
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
         style={{
-          display: "flex",
-          gap: "12px",
-          flexWrap: "wrap",
+          width: "100%", display: "flex", alignItems: "center",
+          gap: 10, padding: "12px 16px",
+          background: "transparent", border: "none",
+          cursor: "pointer", fontFamily: "inherit", textAlign: "left",
         }}
       >
-        {modes.map((mode) => {
-          const count = counts[mode];
-          const limit = MODE_LIMITS[mode];
-          const ready = count >= limit;
-          const isActive = activeMode === mode;
+        <span style={{ fontSize: 12, color: C.textDim, lineHeight: 1, flexShrink: 0 }}>
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
+          {classData.name}
+        </span>
+        <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
+          {photoCount} photo{photoCount !== 1 ? "s" : ""}
+          {activeCount > 0 && ` · ${activeCount} in warmup`}
+          {activeCount >= 3 && activeCount < 9 &&
+            ` · ${9 - activeCount} filler${9 - activeCount !== 1 ? "s" : ""}`}
+          {activeCount >= 9 && " · Full grid ✓"}
+        </span>
+        {classData.is_recruiting && (
+          <span style={{
+            fontSize: 10, fontWeight: 700, color: C.recruit,
+            background: C.recruit + "18", padding: "2px 8px",
+            borderRadius: 999, textTransform: "uppercase" as const, letterSpacing: 0.5,
+          }}>
+            Recruiting
+          </span>
+        )}
+      </button>
 
-          return (
-            <div
-              key={mode}
+      {/* ── Expanded content ──────────────────────────────────────── */}
+      {expanded && (
+        <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.panelEdge}44` }}>
+
+          {/* ── Recruiting toggle ─────────────────────────────────── */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "12px 0", gap: 10,
+          }}>
+            <span style={{ fontSize: 13, color: C.textDim }}>
+              {activeCount < 3
+                ? `Need ${3 - activeCount} more photo${3 - activeCount !== 1 ? "s" : ""} to open warmup`
+                : `${activeCount} of ${photoCount} in warmup`}
+            </span>
+            <button
+              type="button" onClick={onToggleRecruiting} disabled={pending}
               style={{
-                flex: "1 1 0",
-                minWidth: "140px",
-                padding: "10px 12px",
-                borderRadius: "10px",
-                border: isActive
-                  ? "2px solid rgba(168, 85, 247, 0.5)"
-                  : "1px solid rgba(255,255,255,0.08)",
-                background: isActive
-                  ? "rgba(168, 85, 247, 0.1)"
-                  : "rgba(255,255,255,0.03)",
+                fontSize: 13, fontWeight: 700, padding: "6px 16px", borderRadius: 999,
+                border: classData.is_recruiting ? `2px solid ${C.recruit}` : `1px solid ${C.panelEdge}`,
+                background: classData.is_recruiting ? C.recruit + "15" : "transparent",
+                color: classData.is_recruiting ? C.recruit : C.textFaint,
+                cursor: pending ? "default" : "pointer",
+                opacity: pending ? 0.5 : 1, fontFamily: "inherit",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                <span style={{
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  textTransform: "uppercase" as const,
-                  letterSpacing: "1px",
-                  color: ready ? "#34d399" : isActive ? "#c084fc" : "rgba(255,255,255,0.5)",
-                }}>
-                  {MODE_LABELS[mode]}
+              {classData.is_recruiting ? "Recruiting ✓" : "Not recruiting"}
+            </button>
+          </div>
+
+          {/* ── Warmup title ──────────────────────────────────────── */}
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
+              Warmup title
+              <span style={{ fontWeight: 400, color: C.textFaint, marginLeft: 6 }}>
+                (shown to students at the start)
+              </span>
+            </label>
+            <input
+              type="text" value={warmupTitle}
+              onChange={(e) => setWarmupTitle(e.target.value)}
+              onBlur={doSaveTitle}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); doSaveTitle(); } }}
+              placeholder="e.g. Mountain landscapes of the American Southwest"
+              maxLength={200} disabled={pending}
+              style={{
+                width: "100%", boxSizing: "border-box", background: C.panel,
+                border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+                padding: "7px 10px", fontSize: 13, color: C.text,
+                fontFamily: "inherit", outline: "none",
+                opacity: pending ? 0.6 : 1,
+              }}
+            />
+          </div>
+
+          {/* ── Warmup prompt (under a button) ────────────────────── */}
+          <div style={{ marginBottom: 14 }}>
+            <button
+              type="button"
+              onClick={() => setShowPrompt(!showPrompt)}
+              style={{
+                background: "none", border: "none",
+                color: C.textDim, fontSize: 12, fontWeight: 600,
+                cursor: "pointer", padding: "4px 0", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 10, lineHeight: 1 }}>{showPrompt ? "▾" : "▸"}</span>
+              Warmup prompt
+              {warmupPrompt.trim() && (
+                <span style={{ fontWeight: 400, color: C.success, fontSize: 11 }}>set ✓</span>
+              )}
+            </button>
+            {showPrompt && (
+              <div style={{ marginTop: 6 }}>
+                <span style={{ fontSize: 11, color: C.textFaint, display: "block", marginBottom: 4 }}>
+                  Shown in the comment box while students play — encouragement, guidance, or a fun challenge.
                 </span>
-                {isActive && (
-                  <span style={{
-                    fontSize: "9px",
-                    fontWeight: 700,
-                    background: "rgba(168,85,247,0.3)",
-                    color: "#c084fc",
-                    padding: "1px 6px",
-                    borderRadius: "999px",
-                    textTransform: "uppercase" as const,
-                    letterSpacing: "0.5px",
-                  }}>
-                    Active
-                  </span>
-                )}
+                <textarea
+                  value={warmupPrompt}
+                  onChange={(e) => setWarmupPrompt(e.target.value)}
+                  onBlur={doSavePrompt}
+                  placeholder="e.g. What do you notice first about this photo? Tell me in 2-3 sentences."
+                  rows={2} maxLength={300} disabled={pending}
+                  style={{
+                    width: "100%", boxSizing: "border-box", background: C.panel,
+                    border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+                    padding: "7px 10px", fontSize: 13, color: C.text,
+                    fontFamily: "inherit", outline: "none", resize: "vertical",
+                    opacity: pending ? 0.6 : 1,
+                  }}
+                />
               </div>
-              <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)" }}>
-                <strong>{count}</strong> / {limit} selected
-                {ready ? " ✓" : ""}
+            )}
+          </div>
+
+          {/* ── Upload form ───────────────────────────────────────── */}
+          <section style={{
+            background: C.panel, border: `1px solid ${C.panelEdge}`,
+            borderRadius: 12, padding: "14px 16px", marginBottom: 14,
+          }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 10px", color: C.text }}>
+              Add a photo
+            </h3>
+            <form action={onSubmitUpload}>
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
+                  Photo (JPEG / PNG / WebP, ≤ 8 MB)
+                </label>
+                <input
+                  type="file" name="photo" required
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={onFileChange}
+                  style={{ fontSize: 13, color: C.text }}
+                />
               </div>
-              <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.35)", marginTop: "2px" }}>
-                {MODE_DESCRIPTIONS[mode]}
+              {previewUrl && (
+                <div style={{
+                  borderRadius: 8, border: `1px solid ${C.panelEdge}`,
+                  background: "#fff", padding: 6, marginBottom: 10, textAlign: "center",
+                }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={previewUrl} alt="Preview" style={{ maxHeight: 160, borderRadius: 6, display: "inline-block" }} />
+                </div>
+              )}
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
+                  Description (shown to students alongside the photo)
+                </label>
+                <textarea
+                  name="description" required minLength={10} maxLength={1000} rows={3}
+                  placeholder="What is happening in the photo? Use natural English the students will read while writing their own comments."
+                  style={{
+                    width: "100%", boxSizing: "border-box", background: "#fff",
+                    border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+                    padding: "7px 10px", fontSize: 13, color: C.text,
+                    fontFamily: "inherit", outline: "none", resize: "vertical",
+                  }}
+                />
               </div>
+              <button
+                type="submit" disabled={pending}
+                style={{
+                  background: C.light, color: "#fff", border: "none",
+                  borderRadius: 999, padding: "7px 18px", fontSize: 13,
+                  fontWeight: 700, fontFamily: "inherit",
+                  cursor: pending ? "default" : "pointer",
+                  opacity: pending ? 0.6 : 1,
+                }}
+              >
+                {pending ? "Uploading…" : "Add to deck"}
+              </button>
+              {result && !result.ok && (
+                <p style={{ fontSize: 13, color: C.error, marginTop: 8 }}>{result.error}</p>
+              )}
+              {result && result.ok && (
+                <p style={{ fontSize: 13, color: C.success, marginTop: 8 }}>Photo added.</p>
+              )}
+            </form>
+          </section>
+
+          {/* ── Photo grid ────────────────────────────────────────── */}
+          {classData.photos.length === 0 ? (
+            <p style={{ fontSize: 13, color: C.textDim, textAlign: "center", padding: "16px 0" }}>
+              No photos yet. Upload some above.
+            </p>
+          ) : (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+              gap: 14,
+            }}>
+              {classData.photos.map((s) => (
+                <StarterCard
+                  key={s.id}
+                  starter={s}
+                  pending={pending}
+                  onDelete={() => onDelete(s.id)}
+                  onSaveResult={setResult}
+                  startTransition={startTransition}
+                />
+              ))}
             </div>
-          );
-        })}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// DisplayNameField
+// DisplayNameField (unchanged from session 93)
 // ─────────────────────────────────────────────────────────────────────────
 function DisplayNameField({
   initialName,
@@ -343,8 +610,7 @@ function DisplayNameField({
 
   const doSave = () => {
     const trimmed = name.trim();
-    if (trimmed === savedName.trim()) return;
-    if (trimmed.length === 0) return;
+    if (trimmed === savedName.trim() || !trimmed) return;
     startTransition(async () => {
       const r = await saveDisplayName(trimmed);
       setNameResult(r);
@@ -353,143 +619,61 @@ function DisplayNameField({
     });
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      doSave();
-    }
-  };
-
   return (
-    <section className="mb-6 rounded-xl border border-white/10 bg-white/5 p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <label className="mb-1 block text-xs text-white/50">Your name</label>
+    <section style={{
+      background: C.panel, border: `1px solid ${C.panelEdge}`,
+      borderRadius: 12, padding: "12px 18px", marginBottom: 20,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
+            Your name
+          </label>
           <input
-            type="text"
-            value={name}
+            type="text" value={name}
             onChange={(e) => setName(e.target.value)}
             onBlur={doSave}
-            onKeyDown={onKeyDown}
-            maxLength={100}
-            placeholder="Enter your name"
-            disabled={pending}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white outline-none focus:border-fuchsia-400 disabled:opacity-50"
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); doSave(); } }}
+            maxLength={100} placeholder="Enter your name" disabled={pending}
+            style={{
+              width: "100%", boxSizing: "border-box", background: "#fff",
+              border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+              padding: "7px 10px", fontSize: 14, color: C.text,
+              fontFamily: "inherit", outline: "none", opacity: pending ? 0.6 : 1,
+            }}
           />
         </div>
-        {nameResult && !nameResult.ok && (
-          <p className="text-xs text-red-400 self-end pb-1">{nameResult.error}</p>
-        )}
-        {nameResult && nameResult.ok && (
-          <p className="text-xs text-emerald-400 self-end pb-1">Saved.</p>
-        )}
+        {nameResult && !nameResult.ok && <p style={{ fontSize: 12, color: C.error }}>{nameResult.error}</p>}
+        {nameResult && nameResult.ok && <p style={{ fontSize: 12, color: C.success }}>Saved.</p>}
       </div>
     </section>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// ModeChip — toggle chip for a single mode on a single photo
-// ─────────────────────────────────────────────────────────────────────────
-function ModeChip({
-  mode,
-  selected,
-  atLimit,
-  pending,
-  onToggle,
-}: {
-  mode: Mode;
-  selected: boolean;
-  atLimit: boolean;
-  pending: boolean;
-  onToggle: () => void;
-}) {
-  const canSelect = selected || !atLimit;
-  const colors: Record<Mode, { on: string; onBg: string }> = {
-    solo: { on: "#fbbf24", onBg: "rgba(251,191,36,0.2)" },
-    trio: { on: "#34d399", onBg: "rgba(52,211,153,0.2)" },
-    full: { on: "#60a5fa", onBg: "rgba(96,165,250,0.2)" },
-  };
-  const c = colors[mode];
-
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={pending || !canSelect}
-      style={{
-        fontSize: "11px",
-        fontWeight: 700,
-        padding: "3px 10px",
-        borderRadius: "999px",
-        border: selected ? `1.5px solid ${c.on}` : "1px solid rgba(255,255,255,0.12)",
-        background: selected ? c.onBg : "transparent",
-        color: selected ? c.on : !canSelect ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.45)",
-        cursor: canSelect && !pending ? "pointer" : "default",
-        transition: "all 0.15s ease",
-        opacity: pending ? 0.5 : 1,
-        letterSpacing: "0.5px",
-        textTransform: "uppercase" as const,
-      }}
-    >
-      {MODE_LABELS[mode]}
-      {selected ? " ✓" : ""}
-    </button>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// StarterCard — one entry in the photo pool grid
-//
-// Session 75: Shows approval status.
-//   is_active=false → amber "PENDING" banner at top of card
-//   is_active=true  → green "APPROVED" badge on thumbnail
+// StarterCard (mostly unchanged from session 93)
 // ─────────────────────────────────────────────────────────────────────────
 function StarterCard({
   starter,
   pending,
-  counts,
   onDelete,
   onSaveResult,
   startTransition,
 }: {
   starter: Starter;
   pending: boolean;
-  counts: Record<Mode, number>;
   onDelete: () => void;
   onSaveResult: (r: UploadResult) => void;
   startTransition: (cb: () => void) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(starter.description_text);
-
-  const isSelectedAnywhere = starter.selected_solo || starter.selected_trio || starter.selected_full;
-  const isApproved = starter.is_active;
-
-  const startEdit = () => {
-    setDraft(starter.description_text);
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    setDraft(starter.description_text);
-    setEditing(false);
-  };
+  const inWarmup = starter.is_active;
 
   const saveEdit = () => {
     const trimmed = draft.trim();
-    if (trimmed.length < 10) {
-      onSaveResult({ ok: false, error: "Description must be at least 10 characters." });
-      return;
-    }
-    if (trimmed.length > 1000) {
-      onSaveResult({ ok: false, error: "Description is too long (1000 chars max)." });
-      return;
-    }
-    if (trimmed === starter.description_text.trim()) {
-      setEditing(false);
-      return;
-    }
+    if (trimmed.length < 10) { onSaveResult({ ok: false, error: "Description must be at least 10 characters." }); return; }
+    if (trimmed === starter.description_text.trim()) { setEditing(false); return; }
     startTransition(async () => {
       const r = await updateStarterDescription(starter.id, trimmed);
       onSaveResult(r);
@@ -497,216 +681,85 @@ function StarterCard({
     });
   };
 
-  const onModeToggle = (mode: Mode) => {
-    const currentlySelected =
-      mode === "solo" ? starter.selected_solo
-      : mode === "trio" ? starter.selected_trio
-      : starter.selected_full;
-    const newValue = !currentlySelected;
-
-    // Client-side limit check
-    if (newValue && counts[mode] >= MODE_LIMITS[mode]) return;
-
+  const onToggleWarmup = () => {
     startTransition(async () => {
-      const r = await toggleModeSelection(starter.id, mode, newValue);
+      const r = await toggleInWarmup(starter.id, !inWarmup);
       onSaveResult(r);
     });
   };
 
   return (
-    <div
-      style={{
-        borderRadius: "12px",
-        overflow: "hidden",
-        border: isApproved
-          ? isSelectedAnywhere
-            ? "2px solid rgba(168, 85, 247, 0.4)"
-            : "2px solid rgba(16, 185, 129, 0.3)"
-          : "2px solid rgba(245, 158, 11, 0.3)",
-        background: isApproved
-          ? isSelectedAnywhere
-            ? "rgba(168, 85, 247, 0.06)"
-            : "rgba(255,255,255,0.02)"
-          : "rgba(245, 158, 11, 0.04)",
-        opacity: isApproved ? 1 : 0.85,
-        transition: "all 0.2s ease",
-      }}
-    >
-      {/* ── Approval status banner ── */}
-      {!isApproved && (
-        <div style={{
-          background: "rgba(245, 158, 11, 0.15)",
-          padding: "4px 10px",
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-          borderBottom: "1px solid rgba(245, 158, 11, 0.2)",
-        }}>
-          <span style={{ fontSize: "10px", color: "#f59e0b" }}>⏳</span>
-          <span style={{
-            fontSize: "10px",
-            fontWeight: 600,
-            color: "#f59e0b",
-            letterSpacing: "0.5px",
-            textTransform: "uppercase" as const,
-          }}>
-            Pending admin approval
-          </span>
+    <div style={{
+      borderRadius: 12, overflow: "hidden",
+      border: `1px solid ${inWarmup ? C.light + "66" : C.panelEdge}`,
+      background: inWarmup ? "#fff" : C.panel,
+      opacity: inWarmup ? 1 : 0.75,
+      transition: "all 0.2s ease",
+    }}>
+      {starter.signed_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={starter.signed_url} alt="" style={{ display: "block", aspectRatio: "4/3", width: "100%", objectFit: "cover" }} />
+      ) : (
+        <div style={{ aspectRatio: "4/3", width: "100%", background: C.panelEdge + "44", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: C.textFaint }}>
+          (image unavailable)
         </div>
       )}
 
-      {/* Photo */}
-      <div style={{ position: "relative" }}>
-        {starter.signed_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={starter.signed_url}
-            alt=""
-            style={{
-              display: "block",
-              aspectRatio: "4/3",
-              width: "100%",
-              objectFit: "cover",
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              aspectRatio: "4/3",
-              width: "100%",
-              background: "rgba(255,255,255,0.1)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "12px",
-              color: "rgba(255,255,255,0.4)",
-            }}
-          >
-            (image unavailable)
-          </div>
-        )}
-        {/* Approved badge on thumbnail */}
-        {isApproved && (
-          <div style={{
-            position: "absolute",
-            top: 6,
-            right: 6,
-            background: "rgba(16, 185, 129, 0.85)",
-            color: "#fff",
-            fontSize: "9px",
-            fontWeight: 700,
-            padding: "2px 7px",
-            borderRadius: "999px",
-            letterSpacing: "0.5px",
-            textTransform: "uppercase" as const,
-          }}>
-            ✓ Approved
-          </div>
-        )}
+      <div style={{ padding: "6px 10px", borderTop: `1px solid ${C.panelEdge}44`, display: "flex", justifyContent: "center" }}>
+        <button
+          type="button" onClick={onToggleWarmup} disabled={pending}
+          style={{
+            fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 999,
+            border: inWarmup ? `2px solid ${C.light}` : `1px solid ${C.panelEdge}`,
+            background: inWarmup ? C.light + "22" : "transparent",
+            color: inWarmup ? C.light : C.textFaint,
+            cursor: pending ? "default" : "pointer",
+            opacity: pending ? 0.5 : 1,
+            fontFamily: "inherit", transition: "all 0.15s ease",
+          }}
+        >
+          {inWarmup ? "In warmup ✓" : "Not in warmup"}
+        </button>
       </div>
 
-      {/* Mode selection chips */}
-      <div
-        style={{
-          display: "flex",
-          gap: "6px",
-          padding: "8px 10px",
-          background: isSelectedAnywhere
-            ? "rgba(168, 85, 247, 0.08)"
-            : "rgba(255,255,255,0.03)",
-          borderTop: "1px solid rgba(255,255,255,0.06)",
-          justifyContent: "center",
-        }}
-      >
-        {(["solo", "trio", "full"] as Mode[]).map((mode) => {
-          const isSelected =
-            mode === "solo" ? starter.selected_solo
-            : mode === "trio" ? starter.selected_trio
-            : starter.selected_full;
-          return (
-            <ModeChip
-              key={mode}
-              mode={mode}
-              selected={isSelected}
-              atLimit={counts[mode] >= MODE_LIMITS[mode]}
-              pending={pending}
-              onToggle={() => onModeToggle(mode)}
-            />
-          );
-        })}
-      </div>
-
-      {/* Description + controls */}
-      <div style={{ padding: "10px 12px" }}>
+      <div style={{ padding: "6px 10px 10px" }}>
         {editing ? (
           <>
             <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              rows={3}
-              minLength={10}
-              maxLength={1000}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-white outline-none focus:border-fuchsia-400"
-            />
-            <div
+              value={draft} onChange={(e) => setDraft(e.target.value)}
+              rows={3} minLength={10} maxLength={1000}
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-                gap: "8px",
-                marginTop: "6px",
+                width: "100%", boxSizing: "border-box", background: "#fff",
+                border: `1px solid ${C.panelEdge}`, borderRadius: 8,
+                padding: "5px 7px", fontSize: 12, color: C.text,
+                fontFamily: "inherit", outline: "none", resize: "vertical",
               }}
-            >
-              <button
-                type="button"
-                onClick={cancelEdit}
-                disabled={pending}
-                className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70 hover:bg-white/10 disabled:opacity-50"
-              >
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
+              <button type="button" onClick={() => { setDraft(starter.description_text); setEditing(false); }}
+                disabled={pending} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, border: `1px solid ${C.panelEdge}`, background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit" }}>
                 Cancel
               </button>
-              <button
-                type="button"
-                onClick={saveEdit}
-                disabled={pending}
-                className="rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                {pending ? "Saving..." : "Save"}
+              <button type="button" onClick={saveEdit} disabled={pending}
+                style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, border: "none", background: C.light, color: "#fff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: pending ? 0.5 : 1 }}>
+                {pending ? "Saving…" : "Save"}
               </button>
             </div>
           </>
         ) : (
           <>
-            <p style={{ fontSize: "13px", lineHeight: "1.4", marginBottom: "6px" }}>
+            <p style={{ fontSize: 12, lineHeight: 1.4, margin: "0 0 4px", color: C.text }}>
               {starter.description_text}
             </p>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                fontSize: "12px",
-                color: "rgba(255,255,255,0.4)",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, color: C.textFaint }}>
               <span>{starter.uploaded_at?.slice(0, 10)}</span>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button
-                  type="button"
-                  onClick={startEdit}
-                  disabled={pending}
-                  className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:bg-white/10 disabled:opacity-50"
-                  style={{ fontSize: "12px" }}
-                >
+              <div style={{ display: "flex", gap: 4 }}>
+                <button type="button" onClick={() => { setDraft(starter.description_text); setEditing(true); }}
+                  disabled={pending} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: `1px solid ${C.panelEdge}`, background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit" }}>
                   Edit
                 </button>
-                <button
-                  type="button"
-                  onClick={onDelete}
-                  disabled={pending}
-                  className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:bg-white/10 disabled:opacity-50"
-                  style={{ fontSize: "12px" }}
-                >
+                <button type="button" onClick={onDelete} disabled={pending}
+                  style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: `1px solid ${C.panelEdge}`, background: "transparent", color: C.textDim, cursor: "pointer", fontFamily: "inherit" }}>
                   Remove
                 </button>
               </div>
