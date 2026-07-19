@@ -1,23 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/admin/page.tsx   (REPLACES existing file)
 //
-// Session 69 layout (v4).
-// Session 74: C4 — class request workflow.
-// Session 75: Starter photo approval.
-// Session 77: C5 — Messaging.
-// Session 79: Chunk 3 — Game topics + round_topics.
-// Session 80: Game schedule.
-// Session 81: Chunk 1.5 + Chunk 2 overhaul.
-// Session 82: Chunk C — ClassRequestRow adds requested_capacity.
-//             Chunk E — query fetches requested_capacity for class requests.
-// Session 84: Chunk D1 — game_phase_hours + review_phase_hours on
-//             admin_settings, classes, and GameSchedule type.
-// Session 86: Chunk M2 — Mode routing. Queries app_mode from admin_settings.
-//             Color scheme: tan/white to match other dashboards.
-// Session 89: Standard mode now shows a landing page at /admin instead
-//             of redirecting, with a "Switch to Multi" button + explanation.
-// Session 90: Chunk J — schedule thread query (thread_context='schedule').
-//             Chunk K — main messages exclude archived + schedule thread.
+// Session 96: Cleanup — removed WarmupConfig, GameSchedule types and
+//   props. Simplified admin_settings query. Teachers control their own
+//   schedules; admin dashboard no longer pushes centralized schedule.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
@@ -79,23 +65,8 @@ export type TeacherRow = {
     status: "recruiting" | "waiting" | "paused";
     sort_order: number;
   } | null;
-  willing_trio: boolean;
-  willing_nine: boolean;
   classes: ClassRow[];
   starters: StarterRow[];
-};
-
-export type WarmupConfig = {
-  warmup_teacher_count: 1 | 3 | 9;
-};
-
-export type GameSchedule = {
-  game_total_rounds: number | null;
-  game_round_duration_hours: number | null;
-  game_phase_hours: number | null;       // D1
-  review_phase_hours: number | null;     // D1
-  game_starts_at: string | null;
-  game_round_topics: Record<string, string | null> | null;
 };
 
 // Session 82 Chunk C: added requested_capacity
@@ -175,10 +146,10 @@ export default async function AdminPage() {
     .eq("role", "teacher")
     .order("display_name", { ascending: true });
 
-  // ── Fetch rotation rows (now includes mode prefs) ─────────────────
+  // ── Fetch rotation rows ────────────────────────────────────────────────
   const { data: rotationRows } = await supabase
     .from("teacher_rotation")
-    .select("teacher_id, status, sort_order, willing_trio, willing_nine")
+    .select("teacher_id, status, sort_order")
     .order("sort_order", { ascending: true });
 
   // ── Fetch all classes (D1: added game_phase_hours, review_phase_hours) ──
@@ -250,10 +221,10 @@ export default async function AdminPage() {
     }),
   );
 
-  // ── Fetch admin settings (D1: added game_phase_hours, review_phase_hours) ──
+  // ── Fetch admin settings (just need app_mode) ──────────────────────────
   const { data: settings } = await supabase
     .from("admin_settings")
-    .select("warmup_teacher_count, game_total_rounds, game_round_duration_hours, game_phase_hours, review_phase_hours, game_starts_at, game_round_topics, app_mode")
+    .select("app_mode")
     .eq("id", 1)
     .single();
 
@@ -268,19 +239,6 @@ export default async function AdminPage() {
       </Frame>
     );
   }
-
-  const warmupConfig: WarmupConfig = {
-    warmup_teacher_count: (settings?.warmup_teacher_count as 1 | 3 | 9) || 1,
-  };
-
-  const gameSchedule: GameSchedule = {
-    game_total_rounds: settings?.game_total_rounds ?? null,
-    game_round_duration_hours: settings?.game_round_duration_hours != null ? Number(settings.game_round_duration_hours) : null,
-    game_phase_hours: settings?.game_phase_hours != null ? Number(settings.game_phase_hours) : null,
-    review_phase_hours: settings?.review_phase_hours != null ? Number(settings.review_phase_hours) : null,
-    game_starts_at: settings?.game_starts_at ?? null,
-    game_round_topics: settings?.game_round_topics as Record<string, string | null> | null ?? null,
-  };
 
   // ── Fetch class requests (now includes requested_capacity) ────────
   const { data: classRequests } = await supabase
@@ -321,14 +279,12 @@ export default async function AdminPage() {
   // ── Build lookup maps ─────────────────────────────────────────────
   const rotationMap = new Map<
     string,
-    { status: "recruiting" | "waiting" | "paused"; sort_order: number; willing_trio: boolean; willing_nine: boolean }
+    { status: "recruiting" | "waiting" | "paused"; sort_order: number }
   >();
   (rotationRows || []).forEach((r) => {
     rotationMap.set(r.teacher_id, {
       status: r.status as "recruiting" | "waiting" | "paused",
       sort_order: r.sort_order,
-      willing_trio: r.willing_trio ?? false,
-      willing_nine: r.willing_nine ?? false,
     });
   });
 
@@ -541,23 +497,15 @@ export default async function AdminPage() {
       rotation: rot
         ? { status: rot.status, sort_order: rot.sort_order }
         : null,
-      willing_trio: rot?.willing_trio ?? false,
-      willing_nine: rot?.willing_nine ?? false,
       classes: teacherClasses,
       starters: startersByTeacher.get(t.id) || [],
     };
   });
 
-  // ── Mode preference tallies ───────────────────────────────────────
-  const willingTrioCount = teacherRows.filter((t) => t.willing_trio).length;
-  const willingNineCount = teacherRows.filter((t) => t.willing_nine).length;
-
   return (
     <Frame>
       <AdminClient
         teachers={teacherRows}
-        warmupConfig={warmupConfig}
-        gameSchedule={gameSchedule}
         topicOptions={(topicRows || []).filter((t) => t.status === "approved").map((t) => t.topic_text)}
         classRequests={(classRequests || []) as ClassRequestRow[]}
         topics={topicRows}
@@ -566,8 +514,6 @@ export default async function AdminPage() {
         msgUnreadCount={msgUnreadCount}
         msgUserId={user.id}
         isTeacherAdmin={profile.role === "teacher"}
-        willingTrioCount={willingTrioCount}
-        willingNineCount={willingNineCount}
         appMode={appMode}
         scheduleThread={scheduleThread}
       />

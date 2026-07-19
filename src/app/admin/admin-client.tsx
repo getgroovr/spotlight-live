@@ -1,29 +1,22 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/admin/admin-client.tsx   (REPLACES existing file)
 //
-// Session 92: Three-tab restructure + auto-recruiting display.
+// Session 96: Cleanup — removed warm-up mode controls, mode column,
+//   max-classes editing, and centralized game schedule. Teachers set
+//   their own schedules. The grid is flexible (no fixed mode).
 //
-//   RECRUITMENT tab — the recruiting game pipeline:
-//     • Warm-up control (live status, mode selector)
-//     • Teacher rotation queue (auto-recruiting based on mode slots)
-//     • Game schedule + teacher coordination thread
+//   RECRUITMENT tab — multi-teacher coordination:
+//     • Teacher rotation queue (simplified: #, Name, Active, Request, Actions)
+//     • Teacher coordination thread (standalone — moved from game schedule)
 //     • Game topics
 //
 //   OVERSIGHT tab — managing established teachers & classes:
 //     • Overview stats
-//     • Teacher profiles (new — all teachers with class/topic summaries)
+//     • Teacher profiles (all teachers with class/topic summaries)
 //     • Messages
 //     • Current classes (active + archived)
 //
-//   BUSINESS tab (placeholder) — subscriptions, payment tiers:
-//     • Coming-soon placeholder for the online platform admin
-//
-//   Bug fix: Teachers in the top N rotation positions (where N = warmup
-//   mode count) now auto-display as "recruiting" instead of "waiting".
-//   No more manual Recruit button — reorder to change who recruits,
-//   Pause to opt out, Resume to rejoin.
-//
-//   Removed: AppModeSelector (use SQL for mode switching during dev)
+//   BUSINESS tab (placeholder) — subscriptions, payment tiers
 //
 // NOTE: Tailwind grid-cols-N does NOT work in this project's build.
 // All multi-column layouts use inline styles.
@@ -31,17 +24,14 @@
 "use client";
 
 import React, { useState, useTransition } from "react";
-import type { TeacherRow, ClassRow, StarterRow, WarmupConfig, GameSchedule, ClassRequestRow, TopicRow, ScheduleThreadMessage } from "./page";
+import type { TeacherRow, ClassRow, StarterRow, ClassRequestRow, TopicRow, ScheduleThreadMessage } from "./page";
 import MessagePanel, { type MessageRow, type Recipient } from "@/components/MessagePanel";
 import {
-  updateMaxClasses,
   addToRotation,
   removeFromRotation,
   setRotationStatus,
   moveInRotation,
   togglePhotoActive,
-  updateWarmupMode,
-  saveGameSchedule,
   approveClassRequest,
   denyClassRequest,
   addTopic,
@@ -141,28 +131,10 @@ export function StandardModeLanding() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Helper: compute which teachers are actively recruiting based on warmup
-// mode. The top N non-paused teachers in rotation order are "recruiting";
-// others are "waiting" (in queue) or "paused" (opted out).
-// ═════════════════════════════════════════════════════════════════════════
-function computeActiveRecruitIds(
-  teachers: TeacherRow[],
-  warmupTeacherCount: number,
-): Set<string> {
-  const eligible = teachers
-    .filter((t) => t.rotation && t.rotation.status !== "paused")
-    .sort((a, b) => a.rotation!.sort_order - b.rotation!.sort_order);
-  const active = eligible.slice(0, warmupTeacherCount);
-  return new Set(active.map((t) => t.id));
-}
-
-// ═════════════════════════════════════════════════════════════════════════
 // Main component
 // ═════════════════════════════════════════════════════════════════════════
 export function AdminClient({
   teachers,
-  warmupConfig,
-  gameSchedule,
   topicOptions,
   classRequests,
   topics,
@@ -170,15 +142,11 @@ export function AdminClient({
   msgRecipients,
   msgUnreadCount,
   msgUserId,
-  willingTrioCount,
-  willingNineCount,
   appMode,
   scheduleThread,
   isTeacherAdmin,
 }: {
   teachers: TeacherRow[];
-  warmupConfig: WarmupConfig;
-  gameSchedule: GameSchedule;
   topicOptions: string[];
   classRequests: ClassRequestRow[];
   topics: TopicRow[];
@@ -186,14 +154,10 @@ export function AdminClient({
   msgRecipients: Recipient[];
   msgUnreadCount: number;
   msgUserId: string;
-  willingTrioCount: number;
-  willingNineCount: number;
   appMode: "standard" | "multi";
   scheduleThread: ScheduleThreadMessage[];
   isTeacherAdmin?: boolean;
 }) {
-  const modeLabels: Record<number, string> = { 1: "Solo", 3: "Trio", 9: "Full" };
-
   // Overview stats
   const activeTeachers = teachers.filter((t) => !t.is_archived).length;
   const inRotation = teachers.filter((t) => t.rotation !== null).length;
@@ -205,9 +169,6 @@ export function AdminClient({
   const allClasses = teachers.flatMap((t) => t.classes);
   const activeClasses = allClasses.filter((c) => !c.is_archived);
   const archivedClasses = allClasses.filter((c) => c.is_archived);
-
-  // Active recruit computation
-  const activeRecruitIds = computeActiveRecruitIds(teachers, warmupConfig.warmup_teacher_count);
 
   // Pending items for tab badges
   const pendingRequests = classRequests.filter((r) => r.status === "pending").length;
@@ -251,7 +212,7 @@ export function AdminClient({
           label="Recruitment"
           active={activeTab === "recruitment"}
           onClick={() => setActiveTab("recruitment")}
-          badge={activeRecruitIds.size > 0 ? `${activeRecruitIds.size} recruiting` : inRotation > 0 ? `${inRotation} in queue` : undefined}
+          badge={inRotation > 0 ? `${inRotation} in queue` : undefined}
         />
         <TabButton
           label="Oversight"
@@ -268,34 +229,24 @@ export function AdminClient({
 
       {/* ═══════════════════════════════════════════════════════════ */}
       {/* RECRUITMENT TAB                                           */}
-      {/* Warmup control, rotation queue, schedule, topics          */}
+      {/* Teacher queue, coordination thread, topics                */}
       {/* ═══════════════════════════════════════════════════════════ */}
       {activeTab === "recruitment" && (
         <>
-          {/* ─── WARM-UP CONTROL ─────────────────────────────────── */}
-          <SectionLabel text="Warm-up control" />
-          <WarmupBlock
-            config={warmupConfig}
-            teachers={teachers}
-            activeRecruitIds={activeRecruitIds}
-          />
-
           {/* ─── TEACHER ROTATION QUEUE ──────────────────────────── */}
           <SectionLabel text="Teacher rotation queue" />
           <TeacherSection
             teachers={teachers}
             classRequests={classRequests}
-            warmupConfig={warmupConfig}
-            activeRecruitIds={activeRecruitIds}
           />
 
-          {/* ─── GAME SCHEDULE ────────────────────────────────────── */}
-          <SectionLabel text="Game schedule" />
-          <GameScheduleSection
-            schedule={gameSchedule}
-            topicOptions={topicOptions}
-            scheduleThread={scheduleThread}
-          />
+          {/* ─── TEACHER COORDINATION ─────────────────────────────── */}
+          <SectionLabel text="Teacher coordination" />
+          <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
+            <div style={CARD_PAD}>
+              <ScheduleThread thread={scheduleThread} />
+            </div>
+          </div>
 
           {/* ─── GAME TOPICS ─────────────────────────────────────── */}
           <SectionLabel text="Game topics" />
@@ -313,7 +264,6 @@ export function AdminClient({
           <SectionLabel text="Overview" />
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             <StatItem label="Active teachers" value={activeTeachers} />
-            <StatItem label="Warmup mode" value={modeLabels[warmupConfig.warmup_teacher_count]} />
             <StatItem label="In rotation" value={inRotation} color="text-violet-600" />
             <StatItem label="Active classes" value={activeClasses.length} />
             {archivedClasses.length > 0 && (
@@ -449,96 +399,14 @@ function TabButton({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Warm-up block — updated for multi-recruiting display
-// ═════════════════════════════════════════════════════════════════════════
-function WarmupBlock({
-  config,
-  teachers,
-  activeRecruitIds,
-}: {
-  config: WarmupConfig;
-  teachers: TeacherRow[];
-  activeRecruitIds: Set<string>;
-}) {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-
-  const modeLabels: Record<number, string> = { 1: "Solo (1)", 3: "Trio (3)", 9: "Full (9)" };
-
-  // Build recruiting teacher list for display
-  const activeRecruits = teachers
-    .filter((t) => activeRecruitIds.has(t.id))
-    .sort((a, b) => (a.rotation?.sort_order ?? 99) - (b.rotation?.sort_order ?? 99));
-  const isLive = activeRecruits.length > 0;
-  const shortfall = config.warmup_teacher_count - activeRecruits.length;
-
-  // Banner text
-  let bannerText = "";
-  if (activeRecruits.length === 1) {
-    const name = activeRecruits[0].display_name || activeRecruits[0].username || "1 teacher";
-    bannerText = `${name} is recruiting`;
-  } else if (activeRecruits.length > 1) {
-    const names = activeRecruits.map((t) => t.display_name || t.username || "?").join(", ");
-    bannerText = `${activeRecruits.length} teachers recruiting`;
-    if (activeRecruits.length <= 4) bannerText += ` — ${names}`;
-  }
-
-  function handleModeChange(val: string) {
-    const count = parseInt(val, 10) as 1 | 3 | 9;
-    if (count === config.warmup_teacher_count) return;
-    setError(null);
-    startTransition(async () => {
-      const res = await updateWarmupMode(count);
-      if (!res.ok) setError(res.error);
-    });
-  }
-
-  return (
-    <div className={`rounded-xl overflow-hidden ${pending ? "opacity-60 pointer-events-none" : ""}`} style={CARD_STYLE}>
-      <div className="flex items-center gap-3" style={{ ...CARD_PAD_TIGHT, borderBottom: "1px solid rgba(120,113,108,0.2)" }}>
-        <span className={`w-2 h-2 rounded-full ${isLive ? "bg-emerald-500 animate-pulse" : "bg-stone-300"}`} />
-        <span className="text-xs font-medium">{isLive ? "Live" : "Off"}</span>
-        {bannerText && (
-          <span className="text-xs text-stone-400">{bannerText}</span>
-        )}
-        {shortfall > 0 && isLive && (
-          <span className="text-[9px] px-2 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200">
-            {shortfall} slot{shortfall !== 1 ? "s" : ""} unfilled
-          </span>
-        )}
-      </div>
-      <div style={CARD_PAD}>
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wider text-stone-400">Mode</span>
-          <select
-            value={config.warmup_teacher_count}
-            onChange={(e) => handleModeChange(e.target.value)}
-            className="border border-stone-300 rounded-md px-2 py-0.5 text-xs text-stone-800" style={{ backgroundColor: '#f3efe8' }}
-          >
-            {[1, 3, 9].map((n) => (
-              <option key={n} value={n} className="bg-white">{modeLabels[n]}</option>
-            ))}
-          </select>
-        </div>
-        {error && <div className="text-xs text-red-400 mt-2">{error}</div>}
-      </div>
-    </div>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
 // Teachers section — collapsible rotation queue
 // ═════════════════════════════════════════════════════════════════════════
 function TeacherSection({
   teachers,
   classRequests,
-  warmupConfig,
-  activeRecruitIds,
 }: {
   teachers: TeacherRow[];
   classRequests: ClassRequestRow[];
-  warmupConfig: WarmupConfig;
-  activeRecruitIds: Set<string>;
 }) {
   const [showSection, setShowSection] = useState(false);
 
@@ -571,8 +439,6 @@ function TeacherSection({
             teachers={sorted}
             classRequests={classRequests}
             inRotationCount={inRotation.length}
-            warmupConfig={warmupConfig}
-            activeRecruitIds={activeRecruitIds}
           />
         </div>
       )}
@@ -581,25 +447,19 @@ function TeacherSection({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Teacher table — auto-recruiting display based on mode slots
+// Teacher table — simplified: #, Name, Active classes, Request, Actions
 // ═════════════════════════════════════════════════════════════════════════
 function TeacherTable({
   teachers,
   classRequests,
   inRotationCount,
-  warmupConfig,
-  activeRecruitIds,
 }: {
   teachers: TeacherRow[];
   classRequests: ClassRequestRow[];
   inRotationCount: number;
-  warmupConfig: WarmupConfig;
-  activeRecruitIds: Set<string>;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [editingMaxId, setEditingMaxId] = useState<string | null>(null);
-  const [maxVal, setMaxVal] = useState("");
   const [capOverrides, setCapOverrides] = useState<Record<string, number>>({});
 
   function act(fn: () => Promise<any>) {
@@ -607,16 +467,6 @@ function TeacherTable({
     startTransition(async () => {
       const res = await fn();
       if (res && !res.ok) setError(res.error);
-    });
-  }
-
-  function handleSaveMax(teacherId: string) {
-    const n = parseInt(maxVal, 10);
-    if (isNaN(n) || n < 1) { setError("Must be at least 1."); return; }
-    act(async () => {
-      const res = await updateMaxClasses(teacherId, n);
-      if (res.ok) setEditingMaxId(null);
-      return res;
     });
   }
 
@@ -634,8 +484,7 @@ function TeacherTable({
           <tr className="border-b border-stone-200 text-stone-400">
             <th className="text-center font-medium py-2 px-2" style={{ width: 28 }}>#</th>
             <th className="text-left font-medium py-2 px-3">Name</th>
-            <th className="text-center font-medium py-2 px-2" title="Active classes / Max allowed">Active / Max</th>
-            <th className="text-center font-medium py-2 px-2">Mode</th>
+            <th className="text-center font-medium py-2 px-2">Active classes</th>
             <th className="text-center font-medium py-2 px-2">Request</th>
             <th className="text-center font-medium py-2 px-2">Actions</th>
           </tr>
@@ -645,10 +494,6 @@ function TeacherTable({
             const name = t.display_name || t.username || "Unnamed";
             const inQueue = t.rotation !== null;
             const isPaused = t.rotation?.status === "paused";
-            const isActiveRecruit = activeRecruitIds.has(t.id);
-
-            // Display status: computed from position, not DB status
-            const displayStatus = isPaused ? "paused" : isActiveRecruit ? "recruiting" : inQueue ? "waiting" : null;
 
             const teacherPending = pendingByTeacher.get(t.id) || [];
             const showSeparator = idx === inRotationCount && inRotationCount > 0;
@@ -658,7 +503,7 @@ function TeacherTable({
               <React.Fragment key={t.id}>
                 {showSeparator && (
                   <tr>
-                    <td colSpan={6} className="px-3 py-1">
+                    <td colSpan={5} className="px-3 py-1">
                       <div className="border-t border-stone-200 text-[9px] text-stone-300 uppercase tracking-wider pt-1">
                         Not in rotation
                       </div>
@@ -672,8 +517,7 @@ function TeacherTable({
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        isActiveRecruit ? "bg-emerald-500"
-                          : inQueue && !isPaused ? "bg-amber-500"
+                        inQueue && !isPaused ? "bg-emerald-500"
                           : "bg-stone-300"
                       }`} />
                       <span className="text-stone-700">{name}</span>
@@ -682,43 +526,12 @@ function TeacherTable({
                           admin
                         </span>
                       )}
-                      {displayStatus && <StatusBadge status={displayStatus} />}
+                      {isPaused && <StatusBadge status="paused" />}
                     </div>
                   </td>
-                  {/* Classes: active / max */}
+                  {/* Active classes */}
                   <td className="text-center py-1.5 px-2">
-                    {editingMaxId === t.id ? (
-                      <div style={{ display: "flex", gap: 3, alignItems: "center", justifyContent: "center" }}>
-                        <input
-                          type="number" min={1} max={50} value={maxVal}
-                          onChange={(e) => setMaxVal(e.target.value)}
-                          className="w-10 rounded bg-stone-100 border border-stone-300 px-1 py-0.5 text-xs text-stone-800 text-center"
-                          autoFocus
-                          onKeyDown={(e) => { if (e.key === "Enter") handleSaveMax(t.id); if (e.key === "Escape") setEditingMaxId(null); }}
-                        />
-                        <Pill onClick={() => handleSaveMax(t.id)} variant="green">✓</Pill>
-                        <Pill onClick={() => setEditingMaxId(null)} variant="default">✕</Pill>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setEditingMaxId(t.id); setMaxVal(String(t.max_classes)); }}
-                        className="text-stone-400 hover:text-stone-600 transition"
-                        title={`${activeClassCount} active class${activeClassCount !== 1 ? "es" : ""} / ${t.max_classes} max — click to edit max`}
-                      >
-                        {activeClassCount} / {t.max_classes}
-                      </button>
-                    )}
-                  </td>
-                  <td className="text-center py-1.5 px-2">
-                    <div style={{ display: "flex", gap: 3, justifyContent: "center", flexWrap: "wrap" }}>
-                      <span className="text-[9px] px-2 py-0.5 rounded bg-stone-50 text-stone-400 border border-stone-200">S</span>
-                      {t.willing_trio && (
-                        <span className="text-[9px] px-2 py-0.5 rounded bg-violet-100 text-violet-600 border border-violet-200">T</span>
-                      )}
-                      {t.willing_nine && (
-                        <span className="text-[9px] px-2 py-0.5 rounded bg-violet-100 text-violet-600 border border-violet-200">9</span>
-                      )}
-                    </div>
+                    <span className="text-stone-500">{activeClassCount}</span>
                   </td>
                   {/* Request */}
                   <td className="text-center py-1.5 px-2">
@@ -1632,274 +1445,7 @@ function AddTopicInput() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Game schedule section — Session 91 redesign
-// ═════════════════════════════════════════════════════════════════════════
-
-const ROUND_TIME_OPTIONS: { value: string; label: string }[] = [
-  { value: "0.5", label: "30 min" },
-  { value: "1", label: "1 hour" },
-  { value: "1.5", label: "90 min" },
-  { value: "2", label: "2 hours" },
-  { value: "5", label: "5 hours" },
-  { value: "24", label: "1 day" },
-  { value: "48", label: "2 days" },
-  { value: "168", label: "1 week" },
-];
-
-const REVIEW_TIME_OPTIONS: { value: string; label: string }[] = [
-  { value: "0", label: "None" },
-  { value: "0.25", label: "15 min" },
-  { value: "0.5", label: "30 min" },
-  { value: "1", label: "1 hour" },
-  { value: "2", label: "2 hours" },
-  { value: "5", label: "5 hours" },
-  { value: "24", label: "1 day" },
-  { value: "48", label: "2 days" },
-];
-
-function GameScheduleSection({
-  schedule,
-  topicOptions,
-  scheduleThread,
-}: {
-  schedule: GameSchedule;
-  topicOptions: string[];
-  scheduleThread: ScheduleThreadMessage[];
-}) {
-  const [pending, startTransition] = useTransition();
-  const [result, setResult] = useState<string | null>(null);
-
-  const [totalRounds, setTotalRounds] = useState(schedule.game_total_rounds ?? 3);
-
-  const [roundTimeHours, setRoundTimeHours] = useState(() => {
-    if (schedule.game_phase_hours != null && schedule.review_phase_hours != null) {
-      return String(schedule.game_phase_hours + schedule.review_phase_hours);
-    }
-    if (schedule.game_round_duration_hours != null) return String(schedule.game_round_duration_hours);
-    return "24";
-  });
-  const [reviewPhaseHours, setReviewPhaseHours] = useState(() => {
-    if (schedule.review_phase_hours != null) return String(schedule.review_phase_hours);
-    return "0";
-  });
-
-  const [startLocal, setStartLocal] = useState(() => {
-    if (!schedule.game_starts_at) return "";
-    const d = new Date(schedule.game_starts_at);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  });
-
-  const [roundTopics, setRoundTopics] = useState<Record<string, string>>(() => {
-    const rt: Record<string, string> = {};
-    const rounds = schedule.game_total_rounds ?? 3;
-    for (let r = 1; r <= rounds; r++) {
-      rt[String(r)] = schedule.game_round_topics?.[String(r)] || "";
-    }
-    return rt;
-  });
-
-  const handleRoundsChange = (val: string) => {
-    const n = parseInt(val, 10);
-    const clamped = Number.isFinite(n) ? Math.max(1, Math.min(100, n)) : 1;
-    setTotalRounds(clamped);
-    setRoundTopics((prev) => {
-      const next = { ...prev };
-      for (let r = 1; r <= clamped; r++) {
-        if (!(String(r) in next)) next[String(r)] = "";
-      }
-      return next;
-    });
-  };
-
-  const roundTopicsJson = JSON.stringify(
-    Object.fromEntries(
-      Array.from({ length: totalRounds }, (_, i) => {
-        const r = String(i + 1);
-        const val = roundTopics[r]?.trim() || null;
-        return [r, val];
-      }),
-    ),
-  );
-
-  const roundTimeNum = parseFloat(roundTimeHours);
-  const reviewNum = parseFloat(reviewPhaseHours);
-  const playTimeHours = roundTimeNum - reviewNum;
-  const playTimeValid = playTimeHours > 0;
-
-  const filteredReviewOptions = REVIEW_TIME_OPTIONS.filter(
-    (opt) => parseFloat(opt.value) < roundTimeNum
-  );
-
-  function handleSave() {
-    if (!playTimeValid) {
-      setResult("Review time must be less than round time.");
-      return;
-    }
-    setResult(null);
-    const fd = new FormData();
-    fd.set("total_rounds", String(totalRounds));
-    fd.set("round_duration_hours", roundTimeHours);
-    fd.set("review_phase_hours", reviewPhaseHours);
-    fd.set("game_starts_at", startLocal);
-    fd.set("round_topics", roundTopicsJson);
-    startTransition(async () => {
-      const res = await saveGameSchedule(fd);
-      if (res.ok) {
-        setResult("Saved and pushed to all classes.");
-        setTimeout(() => setResult(null), 4000);
-      } else {
-        setResult(res.error);
-      }
-    });
-  }
-
-  const isError = result && !result.startsWith("Saved");
-
-  return (
-    <div className={`rounded-xl overflow-hidden ${pending ? "opacity-60 pointer-events-none" : ""}`} style={CARD_STYLE}>
-      <div style={CARD_PAD}>
-        <p className="text-[10px] text-stone-500 mb-4">
-          These settings apply to all active classes in multi-teacher mode.
-          Saving pushes to every active class.
-        </p>
-
-        <div style={{ display: "grid", gridTemplateColumns: "0.8fr 1fr 1fr 1.5fr", gap: 12, marginBottom: 8 }}>
-          <div>
-            <label className="text-[10px] text-stone-500 font-medium block mb-1">Rounds</label>
-            <input
-              type="number"
-              value={totalRounds}
-              onChange={(e) => handleRoundsChange(e.target.value)}
-              min={1}
-              max={100}
-              className="w-full rounded bg-stone-100 border border-stone-300 px-2 py-1.5 text-xs text-stone-800 outline-none focus:border-amber-500"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-500 font-medium block mb-1">Round time</label>
-            <select
-              value={roundTimeHours}
-              onChange={(e) => {
-                setRoundTimeHours(e.target.value);
-                const newRound = parseFloat(e.target.value);
-                if (parseFloat(reviewPhaseHours) >= newRound) {
-                  setReviewPhaseHours("0");
-                }
-              }}
-              className="w-full rounded bg-stone-100 border border-stone-300 px-2 py-1.5 text-xs text-stone-800 outline-none focus:border-amber-500"
-            >
-              {ROUND_TIME_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value} className="bg-white">{opt.label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-500 font-medium block mb-1">Review time</label>
-            <select
-              value={reviewPhaseHours}
-              onChange={(e) => setReviewPhaseHours(e.target.value)}
-              className="w-full rounded bg-stone-100 border border-stone-300 px-2 py-1.5 text-xs text-stone-800 outline-none focus:border-amber-500"
-            >
-              {filteredReviewOptions.map((opt) => (
-                <option key={opt.value} value={opt.value} className="bg-white">{opt.label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-500 font-medium block mb-1">Starts at</label>
-            <input
-              type="datetime-local"
-              value={startLocal}
-              onChange={(e) => setStartLocal(e.target.value)}
-              className="w-full rounded bg-stone-100 border border-stone-300 px-2 py-1.5 text-xs text-stone-800 outline-none focus:border-amber-500"
-            />
-          </div>
-        </div>
-
-        <p className="text-[10px] text-stone-600 mb-4">
-          Total round duration: {formatDuration(roundTimeNum) || `${roundTimeNum}h`}
-          {reviewNum > 0 && playTimeValid && (
-            <span className="text-stone-500">
-              {" "}— play time: {formatDuration(playTimeHours) || `${playTimeHours}h`},
-              review: {formatDuration(reviewNum) || `${reviewNum}h`}
-            </span>
-          )}
-          {!playTimeValid && (
-            <span className="text-red-500 ml-2">
-              Review time must be less than round time.
-            </span>
-          )}
-        </p>
-
-        {topicOptions.length > 0 && (
-          <div style={{ marginBottom: 12 }}>
-            <label className="text-[10px] text-stone-500 font-medium block mb-1">
-              Round topics
-              <span className="text-stone-300 font-normal ml-1">(optional)</span>
-            </label>
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: totalRounds <= 3
-                ? `repeat(${totalRounds}, 1fr)`
-                : totalRounds <= 6
-                  ? "repeat(3, 1fr)"
-                  : "repeat(4, 1fr)",
-              gap: 6,
-            }}>
-              {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => (
-                <div key={r}>
-                  <span className="text-[9px] text-stone-300 block mb-0.5">R{r}</span>
-                  <select
-                    value={roundTopics[String(r)] || ""}
-                    onChange={(e) => setRoundTopics((prev) => ({ ...prev, [String(r)]: e.target.value }))}
-                    className="w-full rounded bg-stone-100 border border-stone-300 px-1.5 py-1 text-[11px] text-stone-800 outline-none focus:border-amber-500"
-                  >
-                    <option value="" className="bg-white">(No topic)</option>
-                    {topicOptions.map((t) => (
-                      <option key={t} value={t} className="bg-white">{t}</option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={pending || !playTimeValid}
-            className="transition disabled:opacity-40"
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              padding: "8px 20px",
-              borderRadius: 9999,
-              background: "#d97706",
-              color: "#ffffff",
-              border: "none",
-              cursor: pending || !playTimeValid ? "default" : "pointer",
-            }}
-          >
-            {pending ? "Saving…" : "Save & push to all classes"}
-          </button>
-          {result && (
-            <span className={`text-[11px] font-medium ${isError ? "text-red-400" : "text-emerald-600"}`}>
-              {result}
-            </span>
-          )}
-        </div>
-
-        {/* ── Schedule coordination thread ───────────────── */}
-        <ScheduleThread thread={scheduleThread} />
-      </div>
-    </div>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// Schedule coordination thread — Chunk J
+// Schedule coordination thread — standalone section
 // ═════════════════════════════════════════════════════════════════════════
 function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
   const [showThread, setShowThread] = useState(false);
@@ -1928,12 +1474,9 @@ function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
   const hasMessages = thread.length > 0;
 
   return (
-    <div style={{ borderTop: "1px solid rgba(120,113,108,0.15)", marginTop: 16, paddingTop: 12 }}>
+    <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">
-            Teacher coordination
-          </span>
           {hasMessages && (
             <button
               onClick={() => setShowThread(!showThread)}
@@ -2027,7 +1570,7 @@ function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
 
       {!hasMessages && !composing && (
         <p className="text-[10px] text-stone-400 mt-2">
-          No schedule messages yet. When you save a schedule, teachers are automatically notified.
+          No messages yet. Use this thread to coordinate with teachers in rotation.
         </p>
       )}
     </div>

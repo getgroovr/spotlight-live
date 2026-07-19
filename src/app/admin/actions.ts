@@ -1,30 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/admin/actions.ts   (REPLACES existing file)
 //
-// Session 67 rebuild. Every action checks is_admin boolean (not role).
-// RLS enforces at DB layer too via is_admin() function.
-//
-// Session 71: Added archiveTeacher and unarchiveTeacher.
-// Session 74: Added approveClassRequest and denyClassRequest (C4).
-// Session 75: togglePhotoActive now accepts optional note and inserts
-//   a notification row so the teacher sees approval/rejection feedback.
-// Session 79: Chunk 3 — addTopic, updateTopicText, deleteTopic for
-//   admin game-topic management.
-// Session 80: saveGameSchedule — admin sets game schedule (rounds,
-//   duration, start time, topics) and pushes to all active classes.
-//   Only meaningful when warmup_teacher_count > 1.
-// Session 82: Chunk C — approveClassRequest now uses requested class_name
-//   and requested_capacity. Admin can override capacity before approving.
-// Session 84: Chunk D1 — saveGameSchedule now handles game_phase_hours
-//   and review_phase_hours. round_duration_hours is computed as the sum.
-// Session 86: Chunk M2 — updateAppMode (standard ↔ multi).
-// Session 90: Chunk J — saveGameSchedule auto-posts schedule notification
-//   to all teachers in rotation. New postScheduleMessage action for admin
-//   thread replies (broadcast to all teachers in rotation).
-//   Chunk K — archiveClass now also archives messages with that class_id.
-// Session 91: saveGameSchedule redesign — teacher picks round_duration_hours
-//   (total round time) and review_phase_hours. game_phase_hours is computed
-//   as round_duration_hours minus review_phase_hours (play time).
+// Session 96: Cleanup — removed updateMaxClasses, updateWarmupMode,
+//   and saveGameSchedule. Teachers control their own class limits and
+//   schedules. The admin no longer pushes centralized settings.
 // ─────────────────────────────────────────────────────────────────────────
 "use server";
 
@@ -53,28 +32,6 @@ async function requireAdmin() {
   }
 
   return { error: null, supabase, userId: user.id };
-}
-
-// ── Update a teacher's max_classes limit ────────────────────────────────
-export async function updateMaxClasses(
-  teacherId: string,
-  maxClasses: number,
-): Promise<ActionResult> {
-  const { error, supabase } = await requireAdmin();
-  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
-
-  if (!Number.isInteger(maxClasses) || maxClasses < 1 || maxClasses > 50) {
-    return { ok: false, error: "Max classes must be between 1 and 50." };
-  }
-
-  const { error: updErr } = await supabase
-    .from("profiles")
-    .update({ max_classes: maxClasses })
-    .eq("id", teacherId);
-  if (updErr) return { ok: false, error: updErr.message };
-
-  revalidatePath("/admin");
-  return { ok: true };
 }
 
 // ── Add a teacher to the rotation queue ─────────────────────────────────
@@ -236,144 +193,6 @@ export async function togglePhotoActive(
   }
 
   revalidatePath("/admin");
-  return { ok: true };
-}
-
-// ── Update warmup mode (1 / 3 / 9 teachers) ────────────────────────────
-export async function updateWarmupMode(
-  count: number,
-): Promise<ActionResult> {
-  const { error, supabase } = await requireAdmin();
-  if (error || !supabase) return { ok: false, error: error || "Auth failed." };
-
-  if (![1, 3, 9].includes(count)) {
-    return { ok: false, error: "Warmup teacher count must be 1, 3, or 9." };
-  }
-
-  const { error: updErr } = await supabase
-    .from("admin_settings")
-    .update({ warmup_teacher_count: count, updated_at: new Date().toISOString() })
-    .eq("id", 1);
-  if (updErr) return { ok: false, error: updErr.message };
-
-  revalidatePath("/admin");
-  return { ok: true };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Session 91: Admin game schedule — redesigned
-//
-// Teacher picks:
-//   round_duration_hours — total time for one round (e.g. 24 = 1 day)
-//   review_phase_hours   — portion of round for teacher review
-//
-// App computes:
-//   game_phase_hours = round_duration_hours - review_phase_hours (play time)
-//
-// All three values are stored in admin_settings AND pushed to every
-// active (non-archived) class.
-// ─────────────────────────────────────────────────────────────────────────
-
-export async function saveGameSchedule(
-  fd: FormData,
-): Promise<ActionResult> {
-  const { error, supabase, userId } = await requireAdmin();
-  if (error || !supabase || !userId) return { ok: false, error: error || "Auth failed." };
-
-  const totalRounds = parseInt(fd.get("total_rounds") as string, 10);
-  if (!Number.isFinite(totalRounds) || totalRounds < 1 || totalRounds > 100) {
-    return { ok: false, error: "Rounds must be between 1 and 100." };
-  }
-
-  // Session 91: parse round duration (total) and review phase
-  const roundDurationStr = fd.get("round_duration_hours") as string;
-  const reviewPhaseStr = fd.get("review_phase_hours") as string;
-  const roundDurationHours = parseFloat(roundDurationStr);
-  const reviewPhaseHours = parseFloat(reviewPhaseStr);
-
-  if (!Number.isFinite(roundDurationHours) || roundDurationHours <= 0) {
-    return { ok: false, error: "Invalid round time." };
-  }
-  if (!Number.isFinite(reviewPhaseHours) || reviewPhaseHours < 0) {
-    return { ok: false, error: "Invalid review time." };
-  }
-  if (reviewPhaseHours >= roundDurationHours) {
-    return { ok: false, error: "Review time must be less than round time." };
-  }
-
-  // Compute play time (game phase) = total round - review
-  const gamePhaseHours = roundDurationHours - reviewPhaseHours;
-
-  const startsAtRaw = fd.get("game_starts_at") as string;
-  let gameStartsAt: string | null = null;
-  if (startsAtRaw) {
-    const d = new Date(startsAtRaw);
-    if (!isNaN(d.getTime())) {
-      gameStartsAt = d.toISOString();
-    }
-  }
-
-  const roundTopicsRaw = fd.get("round_topics") as string;
-  let gameRoundTopics: Record<string, string | null> | null = null;
-  if (roundTopicsRaw) {
-    try {
-      gameRoundTopics = JSON.parse(roundTopicsRaw);
-    } catch {
-      // ignore bad JSON
-    }
-  }
-
-  // 1. Save to admin_settings
-  const { error: settErr } = await supabase
-    .from("admin_settings")
-    .update({
-      game_total_rounds: totalRounds,
-      game_round_duration_hours: roundDurationHours,
-      game_phase_hours: gamePhaseHours,
-      review_phase_hours: reviewPhaseHours,
-      game_starts_at: gameStartsAt,
-      game_round_topics: gameRoundTopics,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", 1);
-  if (settErr) return { ok: false, error: settErr.message };
-
-  // 2. Push to all active (non-archived) classes
-  const { error: pushErr } = await supabase
-    .from("classes")
-    .update({
-      total_rounds: totalRounds,
-      round_duration_hours: roundDurationHours,
-      game_phase_hours: gamePhaseHours,
-      review_phase_hours: reviewPhaseHours,
-      game_starts_at: gameStartsAt,
-      round_topics: gameRoundTopics,
-    })
-    .eq("is_archived", false);
-  if (pushErr) return { ok: false, error: `Saved settings but failed to push to classes: ${pushErr.message}` };
-
-  // 3. Auto-post schedule notification to all teachers in rotation
-  const { data: rotTeachers } = await supabase
-    .from("teacher_rotation")
-    .select("teacher_id");
-  if (rotTeachers && rotTeachers.length > 0) {
-    const durationLabel = `${gamePhaseHours}h play + ${reviewPhaseHours}h review`;
-    const startLabel = gameStartsAt
-      ? `starts ${new Date(gameStartsAt).toLocaleString()}`
-      : "no start time set";
-    const body = `📋 Schedule updated: ${totalRounds} rounds, ${roundDurationHours}h per round (${durationLabel}), ${startLabel}. Please review and respond with any concerns.`;
-    const inserts = rotTeachers.map((rt) => ({
-      sender_id: userId,
-      recipient_id: rt.teacher_id,
-      body,
-      thread_context: "schedule",
-      is_read: false,
-    }));
-    await supabase.from("messages").insert(inserts);
-  }
-
-  revalidatePath("/admin");
-  revalidatePath("/teacher/students");
   return { ok: true };
 }
 

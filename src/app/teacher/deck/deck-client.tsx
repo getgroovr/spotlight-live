@@ -7,6 +7,9 @@
 //   - Each class card: collapsible, shows recruiting toggle, warmup
 //     title/prompt, upload form, photo grid
 //   - Photos are per-class (not per-level)
+//
+// Session 96: Removed "Your name" display from deck page (redundant
+//   with teacher profile page at /teacher/profile).
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -17,7 +20,6 @@ import {
   updateStarterDescription,
   toggleInWarmup,
   toggleRecruiting,
-  saveDisplayName,
   saveWarmupTitle,
   saveWarmupPrompt,
   createClassWithLevel,
@@ -77,7 +79,7 @@ export function DeckClient({
   initialDisplayName,
 }: {
   classes: ClassData[];
-  initialDisplayName: string;
+  initialDisplayName?: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
@@ -97,12 +99,6 @@ export function DeckClient({
 
   return (
     <>
-      <DisplayNameField
-        initialName={initialDisplayName}
-        pending={pending}
-        startTransition={startTransition}
-      />
-
       {LEVELS.map(({ key, label }) => {
         const levelClasses = classes
           .filter((c) => c.level === key)
@@ -589,64 +585,6 @@ function ClassCard({
         </div>
       )}
     </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// DisplayNameField (unchanged from session 93)
-// ─────────────────────────────────────────────────────────────────────────
-function DisplayNameField({
-  initialName,
-  pending,
-  startTransition,
-}: {
-  initialName: string;
-  pending: boolean;
-  startTransition: (cb: () => void) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const [nameResult, setNameResult] = useState<UploadResult | null>(null);
-  const [savedName, setSavedName] = useState(initialName);
-
-  const doSave = () => {
-    const trimmed = name.trim();
-    if (trimmed === savedName.trim() || !trimmed) return;
-    startTransition(async () => {
-      const r = await saveDisplayName(trimmed);
-      setNameResult(r);
-      if (r.ok) setSavedName(trimmed);
-      if (r.ok) setTimeout(() => setNameResult(null), 2000);
-    });
-  };
-
-  return (
-    <section style={{
-      background: C.panel, border: `1px solid ${C.panelEdge}`,
-      borderRadius: 12, padding: "12px 18px", marginBottom: 20,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
-            Your name
-          </label>
-          <input
-            type="text" value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={doSave}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); doSave(); } }}
-            maxLength={100} placeholder="Enter your name" disabled={pending}
-            style={{
-              width: "100%", boxSizing: "border-box", background: "#fff",
-              border: `1px solid ${C.panelEdge}`, borderRadius: 8,
-              padding: "7px 10px", fontSize: 14, color: C.text,
-              fontFamily: "inherit", outline: "none", opacity: pending ? 0.6 : 1,
-            }}
-          />
-        </div>
-        {nameResult && !nameResult.ok && <p style={{ fontSize: 12, color: C.error }}>{nameResult.error}</p>}
-        {nameResult && nameResult.ok && <p style={{ fontSize: 12, color: C.success }}>Saved.</p>}
-      </div>
-    </section>
   );
 }
 
