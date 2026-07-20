@@ -6,6 +6,8 @@
 //   - Fetches all starter entries and groups them by class_id
 //   - Passes structured ClassData[] to DeckClient
 //   - DeckClient renders level sections → expandable class cards → photos
+//
+// Session 97: Added Profile link to TopNav (Class | Deck | Profile).
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -41,6 +43,10 @@ function TopNav() {
         paddingBottom: 8, fontWeight: 700, color: C.light,
         borderBottom: `2px solid ${C.light}`, marginBottom: -1,
       }}>Deck</span>
+      <Link href="/teacher/profile" style={{
+        paddingBottom: 8, fontWeight: 500, color: C.textFaint,
+        textDecoration: "none", borderBottom: "2px solid transparent", marginBottom: -1,
+      }}>Profile</Link>
     </nav>
   );
 }

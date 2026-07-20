@@ -102,10 +102,13 @@ Updated tests 6, 7, 15, 16 for session 96 changes. Updated diagnostic 6.
 - Teachers see who else is contributing and how many photos are in the pot
 
 **What a multi-teacher "game" is:**
-- A shared photo pot that multiple teachers contribute to
-- Students from any participating teacher's class see the mixed deck in warmup
-- Each teacher still manages their own classes, rounds, schedule
-- The only shared thing is the warmup grid — it shows photos from all contributors
+this was incorrect.  this are my words from previous chats: 
+the warmup should NOT load all warm up pics- it should only load those from 
+the class from which they come.  the teacher deck has the pics loaded by class now...  
+and the student chose the class, so... only those pics from the class.
+
+
+
 
 **How teachers join:**
 - A teacher creates a multi-teacher game from `/teacher/multi` (becomes the coordinator)

@@ -7,6 +7,13 @@
 //   - Per-round prompts section under a toggle (replaces single prompt)
 //   - round_prompts JSONB parallel to round_topics
 //   - Warmup title is free-text; game round titles use topic dropdown
+//
+// Session 97:
+//   - "Rounds" → "Student rounds", "Game time" → "Round time"
+//   - "Play time" calculated display (round time − review time)
+//   - Round count note: "X rounds total (warmup + N student rounds)"
+//   - Review time dropdown filters to values less than round time
+//   - "Round N" → "Student round N" in titles and prompts
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -121,14 +128,18 @@ export function ClassHeader({
   // ── CONTROLLED total_rounds ───────────────────────────────────────────
   const [totalRounds, setTotalRounds] = useState(selectedClass.total_rounds);
 
-  // ── Game/review phase durations ───────────────────────────────────────
-  const [gamePhaseHours, setGamePhaseHours] = useState(
-    String(selectedClass.game_phase_hours),
+  // ── Round time (total) and review time ─────────────────────────────────
+  // Teacher picks Round time (total duration) and Review time.
+  // Play time = Round time − Review time (calculated, shown to teacher).
+  // Hidden fields still send round_duration_hours, game_phase_hours (= play), review_phase_hours.
+  const initRoundTime = selectedClass.game_phase_hours + selectedClass.review_phase_hours;
+  const [roundTimeHours, setRoundTimeHours] = useState(
+    String(initRoundTime || selectedClass.game_phase_hours),
   );
   const [reviewPhaseHours, setReviewPhaseHours] = useState(
     String(selectedClass.review_phase_hours),
   );
-  const totalDurationHours = parseFloat(gamePhaseHours) + parseFloat(reviewPhaseHours);
+  const playTimeHours = parseFloat(roundTimeHours) - parseFloat(reviewPhaseHours);
 
   // ── Per-round topics state (includes round 0 = warmup) ────────────────
   const [roundTopics, setRoundTopics] = useState<Record<string, string>>(() => {
@@ -304,8 +315,8 @@ export function ClassHeader({
         <input type="hidden" name="round_topics" value={roundTopicsJson} />
         <input type="hidden" name="round_prompts" value={roundPromptsJson} />
         <input type="hidden" name="teacher_prompt" value={teacherPromptBridge} />
-        <input type="hidden" name="round_duration_hours" value={String(totalDurationHours)} />
-        <input type="hidden" name="game_phase_hours" value={gamePhaseHours} />
+        <input type="hidden" name="round_duration_hours" value={roundTimeHours} />
+        <input type="hidden" name="game_phase_hours" value={String(playTimeHours)} />
         <input type="hidden" name="review_phase_hours" value={reviewPhaseHours} />
 
         {/* ── Row 2: name + status pill ─────────────────────────── */}
@@ -349,7 +360,7 @@ export function ClassHeader({
         <div style={{
           display: "grid", gridTemplateColumns: "0.7fr 1fr 1fr 1.3fr", gap: 12,
         }}>
-          <Field label="Rounds">
+          <Field label="Student rounds">
             <input
               type="number" name="total_rounds"
               value={totalRounds} onChange={handleRoundsChange}
@@ -357,8 +368,8 @@ export function ClassHeader({
               style={inputStyle()}
             />
           </Field>
-          <Field label="Game time">
-            <select value={gamePhaseHours} onChange={(e) => setGamePhaseHours(e.target.value)} style={selectStyle()}>
+          <Field label="Round time">
+            <select value={roundTimeHours} onChange={(e) => setRoundTimeHours(e.target.value)} style={selectStyle()}>
               {GAME_TIME_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
@@ -366,7 +377,7 @@ export function ClassHeader({
           </Field>
           <Field label="Review time">
             <select value={reviewPhaseHours} onChange={(e) => setReviewPhaseHours(e.target.value)} style={selectStyle()}>
-              {REVIEW_TIME_OPTIONS.map((opt) => (
+              {REVIEW_TIME_OPTIONS.filter((opt) => parseFloat(opt.value) < parseFloat(roundTimeHours) || opt.value === "0").filter((opt, i, arr) => arr.findIndex((o) => o.value === opt.value) === i).map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -380,7 +391,12 @@ export function ClassHeader({
           </Field>
         </div>
         <div style={{ fontSize: 11, color: C.textFaint, marginTop: -4 }}>
-          Total round: {durationLabel(totalDurationHours) || `${totalDurationHours}h`}
+          {totalRounds + 1} rounds total (warmup + {totalRounds} student round{totalRounds !== 1 ? "s" : ""})
+          {parseFloat(reviewPhaseHours) > 0 && (
+            <span style={{ marginLeft: 12 }}>
+              Play time: {durationLabel(playTimeHours) || `${playTimeHours}h`}
+            </span>
+          )}
         </div>
 
         {/* ── Row 4: Round titles (prominent toggle) ────────────── */}
@@ -440,7 +456,7 @@ export function ClassHeader({
                 {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
                   const locked = r < currentRound;
                   return (
-                    <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
+                    <Field key={r} label={`Student round ${r}${locked ? " ✓" : ""}`}>
                       <select
                         value={roundTopics[String(r)] || ""}
                         onChange={(e) => handleTopicChange(r, e.target.value)}
@@ -615,13 +631,13 @@ export function ClassHeader({
                 {Array.from({ length: totalRounds }, (_, i) => i + 1).map((r) => {
                   const locked = r < currentRound;
                   return (
-                    <Field key={r} label={`Round ${r}${locked ? " ✓" : ""}`}>
+                    <Field key={r} label={`Student round ${r}${locked ? " ✓" : ""}`}>
                       <input
                         type="text"
                         value={roundPrompts[String(r)] || ""}
                         onChange={(e) => handlePromptChange(r, e.target.value)}
                         disabled={locked}
-                        placeholder={`Round ${r} prompt…`}
+                        placeholder={`Student round ${r} prompt…`}
                         maxLength={200}
                         style={{
                           ...inputStyle(),

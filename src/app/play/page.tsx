@@ -6,8 +6,9 @@
 // with a real browse page. Shows teachers who have at least one class
 // with is_recruiting = true and whose profile has is_public = true.
 //
-// Each teacher card links to /teachers/[id] (full profile) and offers
-// direct "Try a warmup →" buttons per level, linking to /play/[teacherId].
+// Session 97: Simplified cards — whole card links to teacher profile.
+// Level buttons removed (warmup access is from the profile page).
+// "See profile →" shown next to teacher name.
 //
 // REDIRECT-IF-ENROLLED: preserved from Session 93. If someone is already
 // enrolled, send them to their dashboard regardless of route.
@@ -152,7 +153,11 @@ export default async function PlayBrowsePage() {
         {hasTeachers ? (
           <div style={styles.grid}>
             {teachers.map((t) => (
-              <div key={t.id} style={styles.card}>
+              <Link
+                key={t.id}
+                href={`/teachers/${t.id}`}
+                style={styles.card}
+              >
                 <div style={styles.cardTop}>
                   {t.avatar_url ? (
                     <img
@@ -166,33 +171,20 @@ export default async function PlayBrowsePage() {
                     </div>
                   )}
                   <div style={styles.cardInfo}>
-                    <Link
-                      href={`/teachers/${t.id}`}
-                      style={styles.cardName}
-                    >
-                      {t.display_name}
-                    </Link>
+                    <div style={styles.cardNameRow}>
+                      <span style={styles.cardName}>
+                        {t.display_name}
+                      </span>
+                      <span style={styles.profileLink}>
+                        See profile →
+                      </span>
+                    </div>
                     {t.teaching_style && (
                       <p style={styles.cardStyle}>{t.teaching_style}</p>
                     )}
                   </div>
                 </div>
-
-                <div style={styles.cardLevels}>
-                  {t.recruiting_levels.map((level) => (
-                    <Link
-                      key={level}
-                      href={`/play/${t.id}?level=${level}`}
-                      style={{
-                        ...styles.levelButton,
-                        backgroundColor: LEVEL_COLORS[level] || "#666",
-                      }}
-                    >
-                      {LEVEL_LABELS[level] || level} warmup →
-                    </Link>
-                  ))}
-                </div>
-              </div>
+              </Link>
             ))}
           </div>
         ) : (
@@ -208,7 +200,7 @@ export default async function PlayBrowsePage() {
         {/* ── Teacher CTA ────────────────────────────── */}
         <div style={styles.teacherCta}>
           <p style={styles.ctaText}>Are you a teacher?</p>
-          <Link href="/login" style={styles.ctaLink}>
+          <Link href="/teacher/students" style={styles.ctaLink}>
             Sign in to set up your class →
           </Link>
         </div>
@@ -256,12 +248,15 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #E0D5BA",
     borderRadius: "10px",
     padding: "1.25rem",
+    textDecoration: "none",
+    color: "inherit",
+    display: "block",
+    transition: "border-color 0.15s ease",
   },
   cardTop: {
     display: "flex",
     alignItems: "center",
     gap: "1rem",
-    marginBottom: "1rem",
   },
   cardAvatar: {
     width: "56px",
@@ -289,11 +284,20 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
   },
   cardName: {
-    display: "block",
     fontSize: "1.15rem",
     fontWeight: 600,
     color: "#3D2E1E",
-    textDecoration: "none",
+  },
+  cardNameRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+  },
+  profileLink: {
+    fontSize: "0.82rem",
+    fontWeight: 600,
+    color: "#8A6D3B",
+    whiteSpace: "nowrap" as const,
   },
   cardStyle: {
     fontSize: "0.9rem",
@@ -302,20 +306,6 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap" as const,
-  },
-  cardLevels: {
-    display: "flex",
-    flexWrap: "wrap" as const,
-    gap: "0.5rem",
-  },
-  levelButton: {
-    display: "inline-block",
-    padding: "0.4rem 0.9rem",
-    borderRadius: "6px",
-    color: "#fff",
-    textDecoration: "none",
-    fontWeight: 600,
-    fontSize: "0.85rem",
   },
   emptyState: {
     textAlign: "center" as const,

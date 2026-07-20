@@ -1,4 +1,4 @@
-# SESSION 93 HANDOFF
+npm# SESSION 93 HANDOFF
 **Date:** 2026-07-18
 **Session range covered:** 84–93
 **Supabase project:** ilctdtppstvmpvuvdqvf

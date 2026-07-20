@@ -4,22 +4,16 @@
 // DESTINATION: src/lib/deck.ts   (REPLACES existing file)
 //
 // Session 93: Level-aware solo deck loader.
-// Session 96: Multi-teacher deck loader.
+// Session 96: Shared internals refactored.
+// Session 98: Removed loadMultiTeacherDeck (wrong "shared pot" model),
+//   getActiveRotationTeacherIds, and getAppMode. Multi-teacher games
+//   are handled by /teacher/multi with their own data model — they
+//   do NOT mix photos into a shared pot.
 //
 // loadTeacherDeck(teacherId, level?)
 //   Fetches starter photos for ONE teacher. Used in standard (solo) mode.
 //
-// loadMultiTeacherDeck(teacherIds, level?)
-//   Fetches starter photos from MULTIPLE teachers (the shared pot).
-//   Photos are shuffled together; the grid shows a mix from all
-//   contributors, padded with monsters client-side if < 9.
-//
-// getActiveRotationTeacherIds()
-//   Returns non-paused teacher IDs from teacher_rotation, in order.
-//   The warmup page calls this when app_mode = "multi" to build the
-//   teacher ID list for loadMultiTeacherDeck.
-//
-// Minimum: 3 total photos across all contributing teachers.
+// Minimum: 3 photos from the teacher.
 // Monster filler cards (padWithMonsters in monsters.jsx) pad the 3×3
 // grid client-side when the deck has fewer than 9 photos.
 // ─────────────────────────────────────────────────────────────────────────
@@ -179,95 +173,4 @@ export async function loadTeacherDeck(
   shuffleInPlace(starters);
   const picked = starters.slice(0, DECK_SIZE);
   return { ok: true, students: startersToEngineStudents(sb, picked) };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Multi-teacher deck loader (shared pot)
-//
-// Pulls starter photos from ALL provided teacher IDs, shuffles them
-// together, and picks up to DECK_SIZE. The grid shows a mix from
-// every contributor. Monster filler pads client-side if < 9 total.
-//
-// The caller gets teacher IDs from getActiveRotationTeacherIds().
-// ─────────────────────────────────────────────────────────────────────────
-
-export async function loadMultiTeacherDeck(
-  teacherIds: string[],
-  level?: string,
-): Promise<DeckResult> {
-  const sb = getSupabase();
-  if (!sb) return { ok: false, reason: "no-supabase", have: 0 };
-
-  if (teacherIds.length === 0) {
-    return { ok: false, reason: "no-teacher", have: 0 };
-  }
-
-  // Fetch active starters from all contributing teachers
-  let query = sb
-    .from("entries")
-    .select(
-      "id, student_id, media_url, media_type, description_text, description_l1, uploaded_at",
-    )
-    .in("student_id", teacherIds)
-    .eq("is_starter", true)
-    .eq("is_active", true)
-    .eq("status", "live");
-
-  if (level) {
-    query = query.eq("level", level);
-  }
-
-  const { data: starters, error } = await query;
-
-  if (error || !starters) {
-    return { ok: false, reason: "underfilled", have: 0 };
-  }
-
-  if (starters.length < DECK_MIN) {
-    return { ok: false, reason: "underfilled", have: starters.length };
-  }
-
-  // Shuffle all photos together — the shared pot
-  shuffleInPlace(starters);
-  const picked = starters.slice(0, DECK_SIZE);
-  return { ok: true, students: startersToEngineStudents(sb, picked) };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Rotation helpers — used by the warmup page to detect multi-teacher mode
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * Returns teacher IDs for all non-paused teachers in the rotation queue,
- * in sort_order. Returns [] if no rotation entries exist or supabase is
- * not configured.
- */
-export async function getActiveRotationTeacherIds(): Promise<string[]> {
-  const sb = getSupabase();
-  if (!sb) return [];
-
-  const { data: rows } = await sb
-    .from("teacher_rotation")
-    .select("teacher_id")
-    .neq("status", "paused")
-    .order("sort_order", { ascending: true });
-
-  return (rows || []).map((r) => r.teacher_id);
-}
-
-/**
- * Returns the current app_mode from admin_settings.
- * Defaults to "standard" if not set or not configured.
- */
-export async function getAppMode(): Promise<"standard" | "multi"> {
-  const sb = getSupabase();
-  if (!sb) return "standard";
-
-  const { data } = await sb
-    .from("admin_settings")
-    .select("app_mode")
-    .eq("id", 1)
-    .maybeSingle();
-
-  return (data?.app_mode as "standard" | "multi") || "standard";
 }

@@ -7,6 +7,11 @@
 //   - Students grouped by class under collapsible cards with level badges
 //   - Enrollment counts fetched for all active classes
 //   - Selected class expanded with students; others show compact summary
+//
+// Session 97:
+//   - Added "Profile" link to TopNav (Class | Deck | Profile)
+// Session 98:
+//   - Added "Multi" link to TopNav (Class | Deck | Multi | Profile)
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -684,6 +689,30 @@ function TopNav() {
         }}
       >
         Deck
+      </Link>
+      <Link
+        href="/teacher/multi"
+        style={{
+          color: C.textDim,
+          textDecoration: "none",
+          paddingBottom: 6,
+          marginBottom: -1,
+          fontWeight: 500,
+        }}
+      >
+        Multi
+      </Link>
+      <Link
+        href="/teacher/profile"
+        style={{
+          color: C.textDim,
+          textDecoration: "none",
+          paddingBottom: 6,
+          marginBottom: -1,
+          fontWeight: 500,
+        }}
+      >
+        Profile
       </Link>
     </nav>
   );

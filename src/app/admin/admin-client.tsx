@@ -2,12 +2,15 @@
 // DESTINATION: src/app/admin/admin-client.tsx   (REPLACES existing file)
 //
 // Session 96: Cleanup — removed warm-up mode controls, mode column,
-//   max-classes editing, and centralized game schedule. Teachers set
-//   their own schedules. The grid is flexible (no fixed mode).
+//   max-classes editing, and centralized game schedule.
+// Session 98: Removed rotation queue entirely (TeacherSection,
+//   TeacherTable, StandardModeLanding, "Switch to Multi" flow).
+//   Multi-teacher coordination now lives at /teacher/multi where
+//   teachers self-organize into games — no admin involvement needed.
 //
-//   RECRUITMENT tab — multi-teacher coordination:
-//     • Teacher rotation queue (simplified: #, Name, Active, Request, Actions)
-//     • Teacher coordination thread (standalone — moved from game schedule)
+//   TEACHERS tab — managing teachers & class requests:
+//     • Class requests (pending approve/deny)
+//     • Teacher coordination thread
 //     • Game topics
 //
 //   OVERSIGHT tab — managing established teachers & classes:
@@ -27,10 +30,6 @@ import React, { useState, useTransition } from "react";
 import type { TeacherRow, ClassRow, StarterRow, ClassRequestRow, TopicRow, ScheduleThreadMessage } from "./page";
 import MessagePanel, { type MessageRow, type Recipient } from "@/components/MessagePanel";
 import {
-  addToRotation,
-  removeFromRotation,
-  setRotationStatus,
-  moveInRotation,
   togglePhotoActive,
   approveClassRequest,
   denyClassRequest,
@@ -39,7 +38,6 @@ import {
   deleteTopic,
   setTopicStatus,
   archiveClass,
-  updateAppMode,
   postScheduleMessage,
 } from "./actions";
 
@@ -49,86 +47,6 @@ const CARD_BORDER = "2px solid #b8a888";
 const CARD_STYLE = { backgroundColor: CARD_BG, border: CARD_BORDER } as const;
 const CARD_PAD = { padding: "20px 28px" } as const;
 const CARD_PAD_TIGHT = { padding: "14px 28px" } as const;
-
-// ═════════════════════════════════════════════════════════════════════════
-// Standard mode landing — shown at /admin when app_mode = 'standard'
-// ═════════════════════════════════════════════════════════════════════════
-export function StandardModeLanding() {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-
-  function handleSwitch() {
-    setError(null);
-    startTransition(async () => {
-      const res = await updateAppMode("multi");
-      if (!res.ok) setError(res.error);
-    });
-  }
-
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-stone-800">Admin</h1>
-
-      <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
-        <div style={CARD_PAD}>
-          <p className="text-sm text-stone-600 mb-3">
-            You&apos;re currently running in <strong>Standard mode</strong> — a single-teacher setup
-            where you manage classes, topics, and game scheduling directly from your teacher dashboard.
-          </p>
-          <p className="text-sm text-stone-600 mb-4">
-            <strong>Multi mode</strong> unlocks the full admin dashboard for coordinating multiple teachers.
-            It adds a teacher rotation queue, warm-up matchmaking (solo, trio, or full 9-teacher),
-            centralized game scheduling pushed to all classes, teacher topic approval workflows,
-            class request management, and inter-teacher messaging.
-          </p>
-
-          {!confirmed ? (
-            <button
-              onClick={() => setConfirmed(true)}
-              className="text-xs font-bold px-5 py-2 rounded-full bg-amber-600 text-white hover:bg-amber-500 transition"
-            >
-              Switch to Multi mode
-            </button>
-          ) : (
-            <div className="p-4 rounded-lg border border-amber-200 bg-amber-50">
-              <p className="text-[11px] text-amber-700 mb-3">
-                This will activate the full admin dashboard with rotation queue, game scheduling,
-                and multi-teacher coordination. You can switch back to Standard from the dashboard.
-              </p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={handleSwitch}
-                  disabled={pending}
-                  className="text-xs font-medium px-4 py-1.5 rounded border border-amber-300 bg-amber-100 text-amber-700 hover:bg-amber-200 transition disabled:opacity-40"
-                >
-                  {pending ? "Switching…" : "Confirm — activate Multi mode"}
-                </button>
-                <button
-                  onClick={() => setConfirmed(false)}
-                  className="text-xs font-medium px-4 py-1.5 rounded border border-stone-200 bg-stone-50 text-stone-500 hover:bg-stone-100 transition"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {error && <div className="text-xs text-red-500 mt-3">{error}</div>}
-        </div>
-      </div>
-
-      <div className="text-center">
-        <a
-          href="/teacher/students"
-          className="text-xs text-stone-400 hover:text-stone-600 transition underline"
-        >
-          ← Back to teacher dashboard
-        </a>
-      </div>
-    </div>
-  );
-}
 
 // ═════════════════════════════════════════════════════════════════════════
 // Main component
@@ -142,9 +60,9 @@ export function AdminClient({
   msgRecipients,
   msgUnreadCount,
   msgUserId,
-  appMode,
   scheduleThread,
   isTeacherAdmin,
+  appMode: _appMode,
 }: {
   teachers: TeacherRow[];
   topicOptions: string[];
@@ -154,13 +72,12 @@ export function AdminClient({
   msgRecipients: Recipient[];
   msgUnreadCount: number;
   msgUserId: string;
-  appMode: "standard" | "multi";
   scheduleThread: ScheduleThreadMessage[];
   isTeacherAdmin?: boolean;
+  appMode?: string; // kept for backward compat with page.tsx, not used
 }) {
   // Overview stats
   const activeTeachers = teachers.filter((t) => !t.is_archived).length;
-  const inRotation = teachers.filter((t) => t.rotation !== null).length;
 
   const seededTopics = topics.filter((t) => !t.suggested_by);
   const teacherTopics = topics.filter((t) => !!t.suggested_by);
@@ -175,7 +92,7 @@ export function AdminClient({
   const pendingTopics = teacherTopics.filter((t) => t.status === "pending").length;
 
   // ── Tab state ──────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"recruitment" | "oversight" | "business">("recruitment");
+  const [activeTab, setActiveTab] = useState<"teachers" | "oversight" | "business">("teachers");
 
   return (
     <div className="space-y-4">
@@ -209,10 +126,10 @@ export function AdminClient({
       {/* ─── TAB BAR ─────────────────────────────────────────────── */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(120,113,108,0.15)" }}>
         <TabButton
-          label="Recruitment"
-          active={activeTab === "recruitment"}
-          onClick={() => setActiveTab("recruitment")}
-          badge={inRotation > 0 ? `${inRotation} in queue` : undefined}
+          label="Teachers"
+          active={activeTab === "teachers"}
+          onClick={() => setActiveTab("teachers")}
+          badge={pendingRequests > 0 ? `${pendingRequests} pending` : undefined}
         />
         <TabButton
           label="Oversight"
@@ -228,16 +145,16 @@ export function AdminClient({
       </div>
 
       {/* ═══════════════════════════════════════════════════════════ */}
-      {/* RECRUITMENT TAB                                           */}
-      {/* Teacher queue, coordination thread, topics                */}
+      {/* TEACHERS TAB                                              */}
+      {/* Class requests, coordination thread, topics               */}
       {/* ═══════════════════════════════════════════════════════════ */}
-      {activeTab === "recruitment" && (
+      {activeTab === "teachers" && (
         <>
-          {/* ─── TEACHER ROTATION QUEUE ──────────────────────────── */}
-          <SectionLabel text="Teacher rotation queue" />
-          <TeacherSection
-            teachers={teachers}
+          {/* ─── CLASS REQUESTS ──────────────────────────────────── */}
+          <SectionLabel text="Class requests" />
+          <ClassRequestsSection
             classRequests={classRequests}
+            teachers={teachers}
           />
 
           {/* ─── TEACHER COORDINATION ─────────────────────────────── */}
@@ -264,7 +181,6 @@ export function AdminClient({
           <SectionLabel text="Overview" />
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             <StatItem label="Active teachers" value={activeTeachers} />
-            <StatItem label="In rotation" value={inRotation} color="text-violet-600" />
             <StatItem label="Active classes" value={activeClasses.length} />
             {archivedClasses.length > 0 && (
               <StatItem label="Archived" value={archivedClasses.length} color="text-stone-400" />
@@ -399,68 +315,29 @@ function TabButton({
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Teachers section — collapsible rotation queue
+// Class Requests section — standalone (moved from rotation table)
 // ═════════════════════════════════════════════════════════════════════════
-function TeacherSection({
-  teachers,
+function ClassRequestsSection({
   classRequests,
+  teachers,
 }: {
-  teachers: TeacherRow[];
   classRequests: ClassRequestRow[];
+  teachers: TeacherRow[];
 }) {
   const [showSection, setShowSection] = useState(false);
-
-  const inRotation = teachers
-    .filter((t) => t.rotation !== null)
-    .sort((a, b) => a.rotation!.sort_order - b.rotation!.sort_order);
-  const notInRotation = teachers.filter((t) => t.rotation === null);
-  const sorted = [...inRotation, ...notInRotation];
-
-  return (
-    <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
-      <button
-        onClick={() => setShowSection(!showSection)}
-        className="w-full flex items-center justify-between text-left hover:brightness-[0.97] transition" style={CARD_PAD_TIGHT}
-      >
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-medium">
-            {teachers.length} teacher{teachers.length !== 1 ? "s" : ""}
-          </span>
-          <span className="text-[10px] text-stone-400">
-            {inRotation.length} in rotation
-          </span>
-        </div>
-        <span className="text-stone-300 text-[10px]">{showSection ? "Close teachers" : "See teachers"}</span>
-      </button>
-
-      {showSection && (
-        <div className="border-t border-stone-200">
-          <TeacherTable
-            teachers={sorted}
-            classRequests={classRequests}
-            inRotationCount={inRotation.length}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// Teacher table — simplified: #, Name, Active classes, Request, Actions
-// ═════════════════════════════════════════════════════════════════════════
-function TeacherTable({
-  teachers,
-  classRequests,
-  inRotationCount,
-}: {
-  teachers: TeacherRow[];
-  classRequests: ClassRequestRow[];
-  inRotationCount: number;
-}) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [capOverrides, setCapOverrides] = useState<Record<string, number>>({});
+
+  const pendingReqs = classRequests.filter((r) => r.status === "pending");
+  const recentResolved = classRequests
+    .filter((r) => r.status !== "pending")
+    .slice(0, 10);
+
+  const teacherNameMap = new Map<string, string>();
+  teachers.forEach((t) => {
+    teacherNameMap.set(t.id, t.display_name || t.username || "Unnamed");
+  });
 
   function act(fn: () => Promise<any>) {
     setError(null);
@@ -470,139 +347,132 @@ function TeacherTable({
     });
   }
 
-  const pendingByTeacher = new Map<string, ClassRequestRow[]>();
-  classRequests.filter((r) => r.status === "pending").forEach((r) => {
-    const list = pendingByTeacher.get(r.teacher_id) || [];
-    list.push(r);
-    pendingByTeacher.set(r.teacher_id, list);
-  });
+  if (pendingReqs.length === 0 && recentResolved.length === 0) {
+    return (
+      <div className="rounded-xl p-6 text-center text-stone-300 text-xs" style={CARD_STYLE}>
+        No class requests yet
+      </div>
+    );
+  }
 
   return (
-    <div className={`text-xs ${pending ? "opacity-60 pointer-events-none" : ""}`}>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr className="border-b border-stone-200 text-stone-400">
-            <th className="text-center font-medium py-2 px-2" style={{ width: 28 }}>#</th>
-            <th className="text-left font-medium py-2 px-3">Name</th>
-            <th className="text-center font-medium py-2 px-2">Active classes</th>
-            <th className="text-center font-medium py-2 px-2">Request</th>
-            <th className="text-center font-medium py-2 px-2">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {teachers.map((t, idx) => {
-            const name = t.display_name || t.username || "Unnamed";
-            const inQueue = t.rotation !== null;
-            const isPaused = t.rotation?.status === "paused";
+    <div className={`rounded-xl overflow-hidden ${pending ? "opacity-60 pointer-events-none" : ""}`} style={CARD_STYLE}>
+      <button
+        onClick={() => setShowSection(!showSection)}
+        className="w-full flex items-center justify-between text-left hover:brightness-[0.97] transition" style={CARD_PAD_TIGHT}
+      >
+        <div className="flex items-center gap-3">
+          {pendingReqs.length > 0 ? (
+            <span className="text-xs font-medium text-amber-700">
+              {pendingReqs.length} pending request{pendingReqs.length !== 1 ? "s" : ""}
+            </span>
+          ) : (
+            <span className="text-xs font-medium text-stone-500">
+              No pending requests
+            </span>
+          )}
+          {recentResolved.length > 0 && (
+            <span className="text-[10px] text-stone-400">
+              {recentResolved.length} resolved
+            </span>
+          )}
+        </div>
+        <span className="text-stone-300 text-[10px]">{showSection ? "Close" : "See requests"}</span>
+      </button>
 
-            const teacherPending = pendingByTeacher.get(t.id) || [];
-            const showSeparator = idx === inRotationCount && inRotationCount > 0;
-            const activeClassCount = t.classes.filter((c) => !c.is_archived).length;
-
+      {showSection && (
+        <div className="border-t border-stone-200 p-4 space-y-3">
+          {/* Pending requests */}
+          {pendingReqs.map((req) => {
+            const teacherName = teacherNameMap.get(req.teacher_id) || "Unknown teacher";
             return (
-              <React.Fragment key={t.id}>
-                {showSeparator && (
-                  <tr>
-                    <td colSpan={5} className="px-3 py-1">
-                      <div className="border-t border-stone-200 text-[9px] text-stone-300 uppercase tracking-wider pt-1">
-                        Not in rotation
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                <tr className="border-b border-stone-100 last:border-0">
-                  <td className="text-center text-stone-300 py-1.5 px-2">
-                    {inQueue ? idx + 1 : "—"}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        inQueue && !isPaused ? "bg-emerald-500"
-                          : "bg-stone-300"
-                      }`} />
-                      <span className="text-stone-700">{name}</span>
-                      {t.is_admin && (
-                        <span className="text-[8px] px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
-                          admin
-                        </span>
-                      )}
-                      {isPaused && <StatusBadge status="paused" />}
-                    </div>
-                  </td>
-                  {/* Active classes */}
-                  <td className="text-center py-1.5 px-2">
-                    <span className="text-stone-500">{activeClassCount}</span>
-                  </td>
-                  {/* Request */}
-                  <td className="text-center py-1.5 px-2">
-                    {teacherPending.length > 0 ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center" }}>
-                        {teacherPending[0].class_name && (
-                          <span className="text-[9px] text-stone-500 italic truncate" style={{ maxWidth: 110 }}>
-                            &ldquo;{teacherPending[0].class_name}&rdquo;
-                          </span>
-                        )}
-                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <select
-                            value={capOverrides[teacherPending[0].id] ?? teacherPending[0].requested_capacity ?? 9}
-                            onChange={(e) => setCapOverrides((prev) => ({
-                              ...prev,
-                              [teacherPending[0].id]: Number(e.target.value),
-                            }))}
-                            className="rounded bg-stone-100 border border-stone-300 px-2 py-0.5 text-[9px] text-stone-800"
-                            title="Class size (override if needed)"
-                          >
-                            <option value={9} className="bg-white">9</option>
-                            <option value={16} className="bg-white">16</option>
-                            <option value={25} className="bg-white">25</option>
-                          </select>
-                          <span className="text-[8px] text-stone-300">seats</span>
-                        </div>
-                        <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
-                          <button
-                            onClick={() => {
-                              const cap = capOverrides[teacherPending[0].id];
-                              const reqCap = teacherPending[0].requested_capacity ?? 9;
-                              const override = cap != null && cap !== reqCap ? cap : undefined;
-                              act(() => approveClassRequest(teacherPending[0].id, override));
-                            }}
-                            className="text-[9px] px-2.5 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition"
-                          >Approve</button>
-                          <button
-                            onClick={() => act(() => denyClassRequest(teacherPending[0].id))}
-                            className="text-[9px] px-2.5 py-1 rounded border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 transition"
-                          >Deny</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <span className="text-stone-300">—</span>
+              <div
+                key={req.id}
+                className="rounded-lg border border-amber-200 bg-amber-50/50 p-3"
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div>
+                    <span className="text-xs font-medium text-stone-700">{teacherName}</span>
+                    {req.class_name && (
+                      <span className="text-[10px] text-stone-400 ml-2">
+                        &ldquo;{req.class_name}&rdquo;
+                      </span>
                     )}
-                  </td>
-                  <td className="text-center py-1.5 px-2">
-                    <div style={{ display: "flex", gap: 3, justifyContent: "center", flexWrap: "wrap" }}>
-                      {inQueue ? (
-                        <>
-                          <Pill onClick={() => act(() => moveInRotation(t.id, "up"))} variant="default">↑</Pill>
-                          <Pill onClick={() => act(() => moveInRotation(t.id, "down"))} variant="default">↓</Pill>
-                          {isPaused ? (
-                            <Pill onClick={() => act(() => setRotationStatus(t.id, "waiting"))} variant="green">Resume</Pill>
-                          ) : (
-                            <Pill onClick={() => act(() => setRotationStatus(t.id, "paused"))} variant="amber">Pause</Pill>
-                          )}
-                          <Pill onClick={() => act(() => removeFromRotation(t.id))} variant="red">✕</Pill>
-                        </>
-                      ) : (
-                        <Pill onClick={() => act(() => addToRotation(t.id))} variant="green">Add</Pill>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              </React.Fragment>
+                  </div>
+                  <span className="text-[9px] font-medium px-2.5 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200">
+                    pending
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <select
+                    value={capOverrides[req.id] ?? req.requested_capacity ?? 9}
+                    onChange={(e) => setCapOverrides((prev) => ({
+                      ...prev,
+                      [req.id]: Number(e.target.value),
+                    }))}
+                    className="rounded bg-stone-100 border border-stone-300 px-2 py-0.5 text-[10px] text-stone-800"
+                    title="Class size (override if needed)"
+                  >
+                    <option value={9} className="bg-white">9 seats</option>
+                    <option value={16} className="bg-white">16 seats</option>
+                    <option value={25} className="bg-white">25 seats</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      const cap = capOverrides[req.id];
+                      const reqCap = req.requested_capacity ?? 9;
+                      const override = cap != null && cap !== reqCap ? cap : undefined;
+                      act(() => approveClassRequest(req.id, override));
+                    }}
+                    className="text-[10px] font-medium px-3 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition"
+                  >Approve</button>
+                  <button
+                    onClick={() => act(() => denyClassRequest(req.id))}
+                    className="text-[10px] font-medium px-3 py-1 rounded border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 transition"
+                  >Deny</button>
+                </div>
+              </div>
             );
           })}
-        </tbody>
-      </table>
-      {error && <div className="text-xs text-red-400 px-4 py-2">{error}</div>}
+
+          {/* Recently resolved */}
+          {recentResolved.length > 0 && (
+            <>
+              <div className="text-[9px] text-stone-300 uppercase tracking-wider pt-2">
+                Recently resolved
+              </div>
+              {recentResolved.map((req) => {
+                const teacherName = teacherNameMap.get(req.teacher_id) || "Unknown teacher";
+                return (
+                  <div
+                    key={req.id}
+                    className="rounded-lg border border-stone-100 p-2 opacity-60"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                  >
+                    <div>
+                      <span className="text-[11px] text-stone-500">{teacherName}</span>
+                      {req.class_name && (
+                        <span className="text-[10px] text-stone-300 ml-2">
+                          &ldquo;{req.class_name}&rdquo;
+                        </span>
+                      )}
+                    </div>
+                    <span className={`text-[9px] font-medium px-2.5 py-0.5 rounded border ${
+                      req.status === "approved"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+                        : "border-red-200 bg-red-50 text-red-500"
+                    }`}>
+                      {req.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
+          {error && <div className="text-xs text-red-400 pt-1">{error}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -692,7 +562,6 @@ function TeacherProfileRow({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {t.rotation && <StatusBadge status={t.rotation.status} />}
           {t.starters.length > 0 && (
             <span className="text-[9px] px-2.5 py-0.5 rounded border border-stone-200 bg-stone-50 text-stone-400">
               {t.starters.filter((s) => s.is_active).length} photo{t.starters.filter((s) => s.is_active).length !== 1 ? "s" : ""}
@@ -1445,7 +1314,7 @@ function AddTopicInput() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// Schedule coordination thread — standalone section
+// Teacher coordination thread — standalone section
 // ═════════════════════════════════════════════════════════════════════════
 function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
   const [showThread, setShowThread] = useState(false);
@@ -1542,7 +1411,7 @@ function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
             value={body}
             onChange={(e) => { if (e.target.value.length <= 500) setBody(e.target.value); }}
             rows={2}
-            placeholder="Message all teachers in rotation…"
+            placeholder="Message all teachers…"
             className="w-full rounded bg-stone-100 border border-stone-300 px-3 py-2 text-xs text-stone-800 outline-none focus:border-amber-500 placeholder:text-stone-300"
             style={{ resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 }}
             autoFocus
@@ -1570,7 +1439,7 @@ function ScheduleThread({ thread }: { thread: ScheduleThreadMessage[] }) {
 
       {!hasMessages && !composing && (
         <p className="text-[10px] text-stone-400 mt-2">
-          No messages yet. Use this thread to coordinate with teachers in rotation.
+          No messages yet. Use this thread to coordinate with teachers.
         </p>
       )}
     </div>
@@ -1628,19 +1497,6 @@ function BusinessPlaceholder() {
 // ═════════════════════════════════════════════════════════════════════════
 // Shared
 // ═════════════════════════════════════════════════════════════════════════
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    recruiting: "bg-emerald-100 text-emerald-600 border-emerald-200",
-    waiting: "bg-stone-50 text-stone-400 border-stone-200",
-    paused: "bg-amber-100 text-amber-600 border-amber-200",
-  };
-  return (
-    <span className={`text-[9px] font-medium px-2.5 py-0.5 rounded border ${styles[status] || styles.waiting}`}>
-      {status}
-    </span>
-  );
-}
-
 function Pill({
   children, onClick, variant = "default",
 }: {

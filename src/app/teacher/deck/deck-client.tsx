@@ -10,6 +10,11 @@
 //
 // Session 96: Removed "Your name" display from deck page (redundant
 //   with teacher profile page at /teacher/profile).
+//
+// Session 97:
+//   - "Add to deck" → "Save to deck"
+//   - Styled file picker as visible button (was bare input)
+//   - Warning banner when recruiting with fewer than 3 warmup photos
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -406,7 +411,7 @@ function ClassCard({
           {/* ── Recruiting toggle ─────────────────────────────────── */}
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "12px 0", gap: 10,
+            padding: "12px 0", gap: 10, flexWrap: "wrap",
           }}>
             <span style={{ fontSize: 13, color: C.textDim }}>
               {activeCount < 3
@@ -427,6 +432,15 @@ function ClassCard({
               {classData.is_recruiting ? "Recruiting ✓" : "Not recruiting"}
             </button>
           </div>
+          {classData.is_recruiting && activeCount < 3 && (
+            <div style={{
+              background: "#F8D87A44", border: "1px solid #C9A248",
+              borderRadius: 8, padding: "8px 12px", fontSize: 12,
+              color: "#6B4A12", lineHeight: 1.45, marginBottom: 6,
+            }}>
+              ⚠ Students need at least 3 warmup photos to play. Add {3 - activeCount} more and mark {3 - activeCount === 1 ? "it" : "them"} as &ldquo;In warmup&rdquo; below.
+            </div>
+          )}
 
           {/* ── Warmup title ──────────────────────────────────────── */}
           <div style={{ marginBottom: 10 }}>
@@ -507,12 +521,29 @@ function ClassCard({
                 <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
                   Photo (JPEG / PNG / WebP, ≤ 8 MB)
                 </label>
-                <input
-                  type="file" name="photo" required
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={onFileChange}
-                  style={{ fontSize: 13, color: C.text }}
-                />
+                <label
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 8,
+                    background: C.light + "15", border: `1px solid ${C.light}66`,
+                    borderRadius: 8, padding: "8px 16px",
+                    cursor: "pointer", fontSize: 13, fontWeight: 600,
+                    color: C.light, fontFamily: "inherit",
+                    transition: "background 0.15s ease",
+                  }}
+                >
+                  📷 Choose file
+                  <input
+                    type="file" name="photo" required
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={onFileChange}
+                    style={{ display: "none" }}
+                  />
+                </label>
+                {previewUrl && (
+                  <span style={{ fontSize: 12, color: C.success, marginLeft: 8 }}>
+                    File selected ✓
+                  </span>
+                )}
               </div>
               {previewUrl && (
                 <div style={{
@@ -548,7 +579,7 @@ function ClassCard({
                   opacity: pending ? 0.6 : 1,
                 }}
               >
-                {pending ? "Uploading…" : "Add to deck"}
+                {pending ? "Uploading…" : "Save to deck"}
               </button>
               {result && !result.ok && (
                 <p style={{ fontSize: 13, color: C.error, marginTop: 8 }}>{result.error}</p>

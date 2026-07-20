@@ -413,8 +413,8 @@ function ProfileCard({
 function StageGrid({ order, shownIds, running }) {
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10,
-      maxWidth: 460, margin: "0 auto",
+      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6,
+      width: "100%", maxWidth: 460, margin: "0 auto",
     }}>
       {order.map((s) => {
         // Chunk F: monster filler cards — non-interactive visual padding.
@@ -423,8 +423,8 @@ function StageGrid({ order, shownIds, running }) {
             <div key={s.id} style={{
               background: C.panel,
               border: `1px solid ${s.color}44`,
-              borderRadius: 14, padding: "10px 8px 12px",
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+              borderRadius: 14, padding: "4px 4px 8px",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
               opacity: 0.7,
               transition: running ? "all 0.18s ease" : "all 0.3s ease",
             }}>
@@ -432,8 +432,14 @@ function StageGrid({ order, shownIds, running }) {
                 width: "100%", aspectRatio: "1/1",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 background: s.color + "18", borderRadius: 10,
+                overflow: "hidden",
               }}>
-                <MonsterCard index={s.monsterIndex} size={56} />
+                <MonsterCard index={s.monsterIndex} size={105} />
+              </div>
+              <div style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: "transparent",
+                userSelect: "none", lineHeight: "1.35", height: "2.7em", width: "100%",
+              }}>
+                {"\u00A0"}
               </div>
             </div>
           );
@@ -446,8 +452,8 @@ function StageGrid({ order, shownIds, running }) {
           <div key={s.id} style={{
             background: C.panel,
             border: `1px solid ${shown ? C.panelEdge : s.color + "66"}`,
-            borderRadius: 14, padding: "10px 8px 12px",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+            borderRadius: 14, padding: "4px 4px 8px",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
             opacity: shown ? 0.4 : 1,
             transition: running ? "all 0.18s ease" : "all 0.3s ease",
             position: "relative",
@@ -466,7 +472,10 @@ function StageGrid({ order, shownIds, running }) {
             ) : (
               <Avatar student={s} size={50} />
             )}
-            <div style={{ fontFamily: F, fontSize: 13, fontWeight: 600, color: shown ? C.textFaint : C.text }}>
+            <div style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: shown ? C.textFaint : C.text,
+              width: "100%", textAlign: "center", lineHeight: "1.35",
+              height: "2.7em", overflow: "hidden",
+            }}>
               {s.name}
             </div>
           </div>
@@ -515,8 +524,8 @@ function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
             >
               <div style={{ width: "100%", aspectRatio: "1/1",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: s.color + "15", borderRadius: 8 }}>
-                <MonsterCard index={s.monsterIndex} size={46} />
+                background: s.color + "15", borderRadius: 8, overflow: "hidden" }}>
+                <MonsterCard index={s.monsterIndex} size={86} />
               </div>
             </div>
           );
@@ -1527,8 +1536,9 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
                       alignItems: "center",
                       justifyContent: "center",
                       background: C.panel,
+                      overflow: "hidden",
                     }}>
-                      <MonsterCard index={i < 4 ? i : i - 1} size={36} />
+                      <MonsterCard index={i < 4 ? i : i - 1} size={68} />
                     </div>
                   );
                 })}

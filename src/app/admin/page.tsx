@@ -4,11 +4,14 @@
 // Session 96: Cleanup — removed WarmupConfig, GameSchedule types and
 //   props. Simplified admin_settings query. Teachers control their own
 //   schedules; admin dashboard no longer pushes centralized schedule.
+// Session 98: Removed rotation query, rotationMap, admin_settings/appMode
+//   gate, StandardModeLanding import. TeacherRow.rotation removed.
+//   Dashboard always renders — no mode check.
 // ─────────────────────────────────────────────────────────────────────────
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
-import { AdminClient, StandardModeLanding } from "./admin-client";
+import { AdminClient } from "./admin-client";
 import type { MessageRow, Recipient } from "@/components/MessagePanel";
 
 export const dynamic = "force-dynamic";
@@ -61,10 +64,6 @@ export type TeacherRow = {
   max_classes: number;
   is_admin: boolean;
   is_archived: boolean;
-  rotation: {
-    status: "recruiting" | "waiting" | "paused";
-    sort_order: number;
-  } | null;
   classes: ClassRow[];
   starters: StarterRow[];
 };
@@ -146,12 +145,6 @@ export default async function AdminPage() {
     .eq("role", "teacher")
     .order("display_name", { ascending: true });
 
-  // ── Fetch rotation rows ────────────────────────────────────────────────
-  const { data: rotationRows } = await supabase
-    .from("teacher_rotation")
-    .select("teacher_id, status, sort_order")
-    .order("sort_order", { ascending: true });
-
   // ── Fetch all classes (D1: added game_phase_hours, review_phase_hours) ──
   const { data: classes } = await supabase
     .from("classes")
@@ -221,25 +214,6 @@ export default async function AdminPage() {
     }),
   );
 
-  // ── Fetch admin settings (just need app_mode) ──────────────────────────
-  const { data: settings } = await supabase
-    .from("admin_settings")
-    .select("app_mode")
-    .eq("id", 1)
-    .single();
-
-  // ── M2: Mode check ──────────────────────────────────────────────────
-  const appMode = (settings?.app_mode as "standard" | "multi") || "standard";
-  if (appMode === "standard") {
-    // Show a simple landing page instead of redirecting —
-    // lets admin switch to multi mode from /admin
-    return (
-      <Frame>
-        <StandardModeLanding />
-      </Frame>
-    );
-  }
-
   // ── Fetch class requests (now includes requested_capacity) ────────
   const { data: classRequests } = await supabase
     .from("class_requests")
@@ -275,18 +249,6 @@ export default async function AdminPage() {
     suggested_by_name: t.suggested_by ? (suggestedByNameMap.get(t.suggested_by) || "Unknown") : null,
     created_at: t.created_at,
   }));
-
-  // ── Build lookup maps ─────────────────────────────────────────────
-  const rotationMap = new Map<
-    string,
-    { status: "recruiting" | "waiting" | "paused"; sort_order: number }
-  >();
-  (rotationRows || []).forEach((r) => {
-    rotationMap.set(r.teacher_id, {
-      status: r.status as "recruiting" | "waiting" | "paused",
-      sort_order: r.sort_order,
-    });
-  });
 
   const studentProfileMap = new Map<string, { display_name: string | null; username: string | null }>();
   studentProfiles.forEach((sp) => {
@@ -455,7 +417,6 @@ export default async function AdminPage() {
 
   // ── Assemble teacher rows with nested data ────────────────────────
   const teacherRows: TeacherRow[] = (teachers || []).map((t) => {
-    const rot = rotationMap.get(t.id);
     const teacherClasses: ClassRow[] = (classes || [])
       .filter((c) => c.teacher_id === t.id)
       .map((c) => {
@@ -494,9 +455,6 @@ export default async function AdminPage() {
       max_classes: t.max_classes,
       is_admin: t.is_admin ?? false,
       is_archived: t.is_archived ?? false,
-      rotation: rot
-        ? { status: rot.status, sort_order: rot.sort_order }
-        : null,
       classes: teacherClasses,
       starters: startersByTeacher.get(t.id) || [],
     };
@@ -514,7 +472,6 @@ export default async function AdminPage() {
         msgUnreadCount={msgUnreadCount}
         msgUserId={user.id}
         isTeacherAdmin={profile.role === "teacher"}
-        appMode={appMode}
         scheduleThread={scheduleThread}
       />
     </Frame>
