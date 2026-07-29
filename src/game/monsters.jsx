@@ -1,6 +1,9 @@
 // src/game/monsters.jsx
 //
 // Chunk F + session 88: 9 cute monster characters for flexible-grid filler cards.
+// Session 102: Monster names shown under images. Cards fill their grid cell
+//   (background color fills the space, no inset border).
+//   Added MonsterAvatar for game-detail spinner display.
 //
 // When a round has fewer than 9 real entries (students or teachers),
 // monster cards fill the remaining 3×3 grid slots so the layout never
@@ -17,13 +20,16 @@
 // to complete the set — one unique monster per grid slot.
 //
 // Usage:
-//   import { MonsterCard, padWithMonsters } from "./monsters.jsx";
+//   import { MonsterCard, MonsterAvatar, padWithMonsters, MONSTERS } from "./monsters.jsx";
 //
 //   // Pad a deck of N students up to 9 with shuffled monster fillers:
 //   const fullDeck = padWithMonsters(realStudents);
 //
-//   // Render a single monster by index (0–8):
+//   // Render a single monster card with name (filler grid slot):
 //   <MonsterCard index={2} />
+//
+//   // Render a monster avatar (spinner, profile badge, reveal):
+//   <MonsterAvatar index={0} size={80} showName />
 
 import { useMemo } from "react";
 
@@ -233,7 +239,7 @@ function Zap({ size = 64 }) {
   );
 }
 
-// ── NEW SESSION 88 MONSTERS ─────────────────────────────────────────────
+// ── SESSION 88 MONSTERS ─────────────────────────────────────────────────
 
 function Nubs({ size = 64 }) {
   const m = MONSTERS[6];
@@ -352,11 +358,117 @@ function Munch({ size = 64 }) {
 
 // ── Monster card component ──────────────────────────────────────────────
 // Used by StageGrid and ReviewGrid to render a filler slot.
+//
+// Session 102: Card now fills its grid cell with the monster's body color
+// and shows the monster's name underneath. The SVG is centered in the
+// colored area, and the name sits in the same space where photo
+// descriptions appear on real cards — so the layout stays consistent.
 const MONSTER_COMPONENTS = [Gorp, Pip, Fizz, Bloop, Sprout, Zap, Nubs, Dottie, Munch];
 
 export function MonsterCard({ index, size = 56 }) {
-  const MonsterSvg = MONSTER_COMPONENTS[index % MONSTER_COMPONENTS.length];
-  return <MonsterSvg size={size} />;
+  const idx = index % MONSTER_COMPONENTS.length;
+  const MonsterSvg = MONSTER_COMPONENTS[idx];
+  const m = MONSTERS[idx];
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        width: "100%",
+        height: "100%",
+        background: m.belly,
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 8,
+          minHeight: 0,
+        }}
+      >
+        <MonsterSvg size={size} />
+      </div>
+      <div
+        style={{
+          width: "100%",
+          textAlign: "center",
+          padding: "4px 6px 6px",
+          fontSize: 11,
+          fontWeight: 700,
+          color: m.accent,
+          letterSpacing: 0.3,
+          background: "rgba(255,255,255,0.35)",
+        }}
+      >
+        {m.name}
+      </div>
+    </div>
+  );
+}
+
+// ── Monster avatar component ────────────────────────────────────────────
+// Session 102: Standalone monster display for use in the spinner,
+// profile badges, reveal ceremony, and grid avatar tags.
+// Can optionally show the name and a colored ring.
+export function MonsterAvatar({
+  index,
+  size = 64,
+  showName = false,
+  greyed = false,
+  ring = false,
+}) {
+  const idx = index % MONSTER_COMPONENTS.length;
+  const MonsterSvg = MONSTER_COMPONENTS[idx];
+  const m = MONSTERS[idx];
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 4,
+        opacity: greyed ? 0.3 : 1,
+        filter: greyed ? "grayscale(0.8)" : "none",
+        transition: "opacity 0.3s, filter 0.3s",
+      }}
+    >
+      <div
+        style={{
+          width: size + 8,
+          height: size + 8,
+          borderRadius: "50%",
+          background: ring ? m.body + "30" : "transparent",
+          border: ring ? `3px solid ${m.body}` : "3px solid transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "border-color 0.3s, background 0.3s",
+        }}
+      >
+        <MonsterSvg size={size} />
+      </div>
+      {showName && (
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            color: greyed ? "#999" : m.accent,
+            letterSpacing: 0.3,
+            textAlign: "center",
+          }}
+        >
+          {m.name}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // ── Pad a deck with monster fillers ─────────────────────────────────────

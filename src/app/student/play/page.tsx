@@ -222,22 +222,22 @@ function ClassPlayHoldingPage({
     reason === "no-session"
       ? "Please sign in"
       : reason === "no-class"
-      ? "You're not in a class yet"
+      ? "Almost there!"
       : reason === "no-entries"
-      ? "Nothing to play yet"
+      ? "Upload your first photo"
       : reason === "game-not-started"
-      ? "Hang tight!"
+      ? "Waiting for the class to start"
       : "Your class isn't set up yet";
 
   const body =
     reason === "no-session"
       ? "Sign in with the magic-link email your teacher sent you, then come back to this page."
       : reason === "no-class"
-      ? "Finish joining your class on your profile page first."
+      ? "Your profile is set up — now upload your first photo from your dashboard. Once your photo is in, you'll be part of the class and ready to play."
       : reason === "no-entries"
-      ? "Add your first photo and a few words about it on your profile page — that's your entry in the game. Once it's in, you'll see it here, and your classmates' photos will appear as soon as the teacher approves them."
+      ? "Head to your dashboard and add your first photo with a short description — that's your entry in the game. Your classmates' photos will appear here once the teacher approves them."
       : reason === "game-not-started"
-      ? "Your teacher hasn't started the game yet. Once they do, you'll be able to play here. In the meantime, make sure your profile is set up and your first photo is uploaded on your dashboard."
+      ? "Your teacher hasn't started this round yet. You'll be able to play as soon as it opens — check back soon!"
       : "Ask your teacher to check the Spotlight setup.";
 
   return (
@@ -259,7 +259,7 @@ function ClassPlayHoldingPage({
           {headline}
         </h1>
         <p style={{ fontSize: 15, lineHeight: 1.6, margin: 0 }}>{body}</p>
-        {reason === "game-not-started" && (
+        {(reason === "no-class" || reason === "no-entries" || reason === "game-not-started") && (
           <Link
             href="/student/dashboard"
             style={{

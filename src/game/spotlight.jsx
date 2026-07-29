@@ -413,7 +413,7 @@ function ProfileCard({
 function StageGrid({ order, shownIds, running }) {
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6,
+      display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6,
       width: "100%", maxWidth: 460, margin: "0 auto",
     }}>
       {order.map((s) => {
@@ -474,7 +474,7 @@ function StageGrid({ order, shownIds, running }) {
             )}
             <div style={{ fontFamily: F, fontSize: 12, fontWeight: 600, color: shown ? C.textFaint : C.text,
               width: "100%", textAlign: "center", lineHeight: "1.35",
-              height: "2.7em", overflow: "hidden",
+              height: "2.7em", overflow: "hidden", overflowWrap: "anywhere",
             }}>
               {s.name}
             </div>
@@ -504,7 +504,7 @@ function StageGrid({ order, shownIds, running }) {
 function ReviewGrid({ students, myComments, favoriteId, onSelectFavorite }) {
   return (
     <div style={{
-      display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8,
+      display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8,
       maxWidth: 580, margin: "0 auto",
     }}>
       {students.map((s) => {

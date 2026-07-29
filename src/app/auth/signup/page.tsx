@@ -1,9 +1,33 @@
+// ─────────────────────────────────────────────────────────────────────────
+// DESTINATION: src/app/auth/signup/page.tsx   (REPLACES existing file)
+//
+// Session 107 — Restyled to match login page's tan/cream palette.
+//   Purple gradient → warm cream background with tan card.
+//   Removed "house rules" reference → just "I confirm I'm 18 or older."
+//   Same auth logic (email + password → Supabase signUp).
+// ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase-client";
+
+const C = {
+  bg: "#FBF6EC",
+  card: "#FFFDF7",
+  cardBorder: "#E8D5B5",
+  text: "#3A2A18",
+  textDim: "#6E5536",
+  textFaint: "#9A815E",
+  accent: "#D98A2B",
+  accentHover: "#C47A20",
+  error: "#C0392B",
+  inputBg: "#FFFFFF",
+  inputBorder: "#D4C4A8",
+  inputFocus: "#D98A2B",
+};
+const F = "'Outfit', sans-serif";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -40,10 +64,6 @@ export default function SignupPage() {
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
-        // Recorded into raw_user_meta_data; the profiles auto-provision trigger
-        // (migration 01) reads is_18_plus from here. NOTE: this is an adult
-        // *affirmation*, not verification — it records the user's claim, it does
-        // not prevent an under-18 user from signing up (BUILD_PLAN #4).
         data: { is_18_plus: confirm },
       },
     });
@@ -54,88 +74,266 @@ export default function SignupPage() {
       return;
     }
 
-    // If email confirmation is ON, Supabase returns a user but no session.
-    // If email confirmation is OFF, we get a session immediately and can go to dashboard.
     if (data.session) {
-      router.push("/dashboard");
+      router.push("/");
       router.refresh();
     } else {
       setNeedsEmailConfirm(true);
     }
   };
 
+  /* ── Email-confirmation screen ── */
   if (needsEmailConfirm) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-purple-950 to-blue-950 p-6">
-        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 text-center backdrop-blur">
-          <h1 className="mb-3 text-2xl font-bold text-white">Check your email</h1>
-          <p className="text-white/70">
-            We sent a confirmation link to <strong>{email}</strong>. Click it to finish signing up.
+      <div style={{
+        background: C.bg,
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "2rem 1rem",
+        fontFamily: F,
+      }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+
+        <div style={{
+          background: C.card,
+          border: `1px solid ${C.cardBorder}`,
+          borderRadius: 20,
+          padding: "40px 36px 36px",
+          width: "100%",
+          maxWidth: 420,
+          textAlign: "center",
+          boxShadow: "0 4px 24px rgba(58, 42, 24, 0.08)",
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>✉️</div>
+          <h1 style={{
+            fontSize: 24,
+            fontWeight: 800,
+            color: C.text,
+            margin: "0 0 8px",
+            letterSpacing: -0.5,
+          }}>
+            Check your email
+          </h1>
+          <p style={{ fontSize: 15, color: C.textDim, margin: 0, lineHeight: 1.6 }}>
+            We sent a confirmation link to{" "}
+            <strong style={{ color: C.text }}>{email}</strong>.
+            Click it to finish signing up.
           </p>
         </div>
-      </main>
+      </div>
     );
   }
 
+  /* ── Signup form ── */
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-purple-950 to-blue-950 p-6">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur">
-        <h1 className="mb-6 bg-gradient-to-r from-fuchsia-400 to-violet-400 bg-clip-text text-3xl font-extrabold text-transparent">
-          Create your Spotlight account
-        </h1>
+    <div style={{
+      background: C.bg,
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "2rem 1rem",
+      fontFamily: F,
+    }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
 
-        <form onSubmit={handleSignup} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-sm text-white/80">Email</label>
+      <div style={{
+        background: C.card,
+        border: `1px solid ${C.cardBorder}`,
+        borderRadius: 20,
+        padding: "40px 36px 36px",
+        width: "100%",
+        maxWidth: 420,
+        boxShadow: "0 4px 24px rgba(58, 42, 24, 0.08)",
+      }}>
+        {/* Logo / Title */}
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{
+            fontSize: 36,
+            marginBottom: 8,
+            filter: "drop-shadow(0 2px 8px rgba(217, 138, 43, 0.3))",
+          }}>
+            📸
+          </div>
+          <h1 style={{
+            fontSize: 26,
+            fontWeight: 800,
+            color: C.text,
+            margin: "0 0 4px",
+            letterSpacing: -0.5,
+          }}>
+            Create your Spotlight account
+          </h1>
+          <p style={{
+            fontSize: 14,
+            color: C.textFaint,
+            margin: 0,
+          }}>
+            Share photos, learn English, have fun
+          </p>
+        </div>
+
+        <form onSubmit={handleSignup}>
+          {/* Email */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{
+              display: "block",
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.textDim,
+              marginBottom: 6,
+              letterSpacing: 0.3,
+            }}>
+              Email
+            </label>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white outline-none focus:border-fuchsia-400"
+              placeholder="you@example.com"
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "12px 14px",
+                fontSize: 15,
+                fontFamily: F,
+                color: C.text,
+                background: C.inputBg,
+                border: `1.5px solid ${C.inputBorder}`,
+                borderRadius: 10,
+                outline: "none",
+                transition: "border-color 0.2s ease",
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = C.inputFocus; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = C.inputBorder; }}
             />
           </div>
 
-          <div>
-            <label className="mb-1 block text-sm text-white/80">Password</label>
+          {/* Password */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{
+              display: "block",
+              fontSize: 13,
+              fontWeight: 600,
+              color: C.textDim,
+              marginBottom: 6,
+              letterSpacing: 0.3,
+            }}>
+              Password
+            </label>
             <input
               type="password"
               required
               minLength={6}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white outline-none focus:border-fuchsia-400"
+              placeholder="At least 6 characters"
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "12px 14px",
+                fontSize: 15,
+                fontFamily: F,
+                color: C.text,
+                background: C.inputBg,
+                border: `1.5px solid ${C.inputBorder}`,
+                borderRadius: 10,
+                outline: "none",
+                transition: "border-color 0.2s ease",
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = C.inputFocus; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = C.inputBorder; }}
             />
           </div>
 
-          <label className="flex items-start gap-2 text-sm text-white/80">
+          {/* Age confirmation — no "house rules" */}
+          <label style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            fontSize: 14,
+            color: C.textDim,
+            marginBottom: 20,
+            cursor: "pointer",
+            lineHeight: 1.4,
+          }}>
             <input
               type="checkbox"
               checked={confirm}
               onChange={(e) => setConfirm(e.target.checked)}
-              className="mt-1"
+              style={{
+                marginTop: 2,
+                width: 16,
+                height: 16,
+                accentColor: C.accent,
+                flexShrink: 0,
+              }}
             />
-            <span>I'm 18 or older and accept the house rules.</span>
+            <span>I confirm I&apos;m 18 or older.</span>
           </label>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Error */}
+          {error && (
+            <div style={{
+              background: "#FDF2F0",
+              border: `1px solid ${C.error}33`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              marginBottom: 16,
+              fontSize: 13,
+              color: C.error,
+              lineHeight: 1.5,
+            }}>
+              {error}
+            </div>
+          )}
 
+          {/* Submit */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 py-3 font-semibold text-white disabled:opacity-50"
+            style={{
+              width: "100%",
+              padding: "14px",
+              fontSize: 16,
+              fontWeight: 700,
+              fontFamily: F,
+              color: "#fff",
+              background: loading ? C.textFaint : C.accent,
+              border: "none",
+              borderRadius: 12,
+              cursor: loading ? "not-allowed" : "pointer",
+              letterSpacing: 0.5,
+              boxShadow: "0 3px 12px rgba(217, 138, 43, 0.3)",
+              transition: "background 0.2s ease, transform 0.15s ease",
+            }}
+            onMouseOver={(e) => { if (!loading) e.currentTarget.style.background = C.accentHover; }}
+            onMouseOut={(e) => { if (!loading) e.currentTarget.style.background = C.accent; }}
           >
-            {loading ? "Creating account..." : "Sign up"}
+            {loading ? "Creating account…" : "Sign up"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-white/60">
+        {/* Log in link */}
+        <p style={{
+          textAlign: "center",
+          marginTop: 20,
+          fontSize: 14,
+          color: C.textDim,
+        }}>
           Already have an account?{" "}
-          <Link href="/auth/login" className="text-fuchsia-400 hover:underline">
+          <Link href="/auth/login" style={{
+            color: C.accent,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}>
             Log in
           </Link>
         </p>
       </div>
-    </main>
+    </div>
   );
 }

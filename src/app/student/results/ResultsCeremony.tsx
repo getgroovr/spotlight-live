@@ -1,6 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/results/ResultsCeremony.tsx
 //
+// Session 99 — Student continuation CTA:
+//   • Finale shows "Continue with [teacher name] →" linking to
+//     /teachers/[teacherId] when the teacher has open classes.
+//   • "Back to dashboard" becomes secondary (outlined) when the CTA shows.
+//   • Props: teacherId, teacherName, teacherHasOpenClasses (all optional).
+//
 // Session 88 — Monster mascots sprinkled through the ceremony:
 //   • Intro: row of 5 random monsters flanking the trophy as "audience"
 //   • Countdown: random monster peeking from the corner, bobbing
@@ -60,6 +66,11 @@ type Round = {
 type Props = {
   rounds: Round[];
   className: string;
+  /** Teacher who ran this class — used for the "Continue" CTA. */
+  teacherId?: string | null;
+  teacherName?: string | null;
+  /** Whether the teacher has at least one other recruiting class. */
+  teacherHasOpenClasses?: boolean;
 };
 
 // ── Palette ─────────────────────────────────────────────────────────────
@@ -903,7 +914,7 @@ type Phase =
   | "finale-burst"
   | "finale";
 
-export default function ResultsCeremony({ rounds, className }: Props) {
+export default function ResultsCeremony({ rounds, className, teacherId, teacherName, teacherHasOpenClasses }: Props) {
   const [phase, setPhase] = useState<Phase>("intro");
   const [roundIndex, setRoundIndex] = useState(0);
   const [countdownValue, setCountdownValue] = useState(3);
@@ -1467,11 +1478,29 @@ export default function ResultsCeremony({ rounds, className }: Props) {
 
             <MonsterCelebration />
 
+            {/* ── Session 99: Continue with this teacher CTA ─────────── */}
+            {teacherId && teacherHasOpenClasses && (
+              <Link href={`/teachers/${teacherId}`} style={{
+                display: "block", width: "100%", boxSizing: "border-box" as const,
+                textAlign: "center", textDecoration: "none", padding: "14px",
+                fontFamily: F, fontSize: 16, fontWeight: 700,
+                background: C.gold, color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+                position: "relative" as const, zIndex: 60,
+                boxShadow: "0 4px 20px rgba(212,168,67,0.4)",
+                marginBottom: 12,
+              }}>
+                Continue with {teacherName || "your teacher"} →
+              </Link>
+            )}
+
             <Link href="/student/dashboard" style={{
               display: "block", width: "100%", boxSizing: "border-box" as const,
               textAlign: "center", textDecoration: "none", padding: "14px",
               fontFamily: F, fontSize: 15, fontWeight: 700,
-              background: C.light, color: "#fff", border: "none", borderRadius: 12, letterSpacing: 0.5,
+              background: teacherId && teacherHasOpenClasses ? "transparent" : C.light,
+              color: teacherId && teacherHasOpenClasses ? C.textDim : "#fff",
+              border: teacherId && teacherHasOpenClasses ? `1px solid ${C.panelEdge}` : "none",
+              borderRadius: 12, letterSpacing: 0.5,
               position: "relative" as const, zIndex: 60,
             }}>
               Back to your dashboard →

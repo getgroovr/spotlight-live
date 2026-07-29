@@ -35,6 +35,11 @@
 //   The class query now reads game_phase_hours + review_phase_hours and
 //   includes them in the ClassTiming for phase-aware helpers.
 //
+// Session 108: Added enrollments fallback for class_id lookup. When
+//   profiles.class_id is null (not yet set — common for real users whose
+//   enrollStudent created the enrollment but never wrote profiles.class_id),
+//   we fall back to the enrollments table via students.email match.
+//
 // isSelf FLAG (added in slice 1 engine-adaptation pass):
 //   Each EngineStudent now carries isSelf:boolean. We set it to true for the
 //   tile that belongs to the currently-logged-in student, false for everyone
@@ -86,9 +91,34 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
     .select("class_id, role")
     .eq("id", user.id)
     .maybeSingle();
-  const classId = profile?.class_id ?? null;
-  if (!classId) {
+  let classId = profile?.class_id ?? null;
+
+  // ── Session 108: Enrollments fallback ────────────────────────────────
+  // profiles.class_id is never set by enrollStudent (it creates an
+  // enrollments row but doesn't touch profiles). Real users hit "no-class"
+  // here. Fall back to the enrollments table via email → students → enrollments.
+  if (!classId && user.email) {
     // Session 72: detect teacher/admin on student route (session swap).
+    if (profile?.role === "teacher") {
+      return { ok: false, reason: "teacher-account", classId: null };
+    }
+    const { data: studentRow } = await admin
+      .from("students")
+      .select("id")
+      .eq("email", user.email.toLowerCase())
+      .maybeSingle();
+    if (studentRow) {
+      const { data: enrollment } = await admin
+        .from("enrollments")
+        .select("class_id")
+        .eq("student_id", studentRow.id)
+        .eq("status", "active")
+        .maybeSingle();
+      classId = enrollment?.class_id ?? null;
+    }
+  }
+
+  if (!classId) {
     const reason = (profile?.role === "teacher") ? "teacher-account" as const : "no-class" as const;
     return { ok: false, reason, classId: null };
   }
@@ -178,20 +208,11 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
 
   // ── B39: don't let the student play if their entry is pending ────────
   // If the student submitted a photo for this round but the teacher
-  // hasn't approved it yet, they shouldn't play — they'd see their own
-  // pending photo in the grid alongside approved classmates, which is
-  // confusing. Gate here so the /student/play page can show a "waiting
-  // for approval" message.
-  //
-  // Three cases:
-  //   • No entry for this round → proceed (B38 placeholder, student
-  //     can still comment on classmates)
-  //   • Pending entry → block ("entry-pending")
-  //   • Approved (live) entry → proceed (normal play)
-  //   • Rejected entry → proceed (they can still play; they'll see
-  //     the resubmit prompt on the dashboard)
-  {
-    const { data: ownCurrentRoundEntry } = await admin
+  // hasn't approved it yet, show a "pending" holding page instead of
+  // the game. The student shouldn't see the grid until their photo is
+  // live. Check only non-starter entries for the current round.
+  if (currentRound > 0) {
+    const { data: ownEntry } = await admin
       .from("entries")
       .select("status")
       .eq("student_id", user.id)
@@ -199,86 +220,61 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
       .eq("round_number", currentRound)
       .eq("is_starter", false)
       .maybeSingle();
-    if (ownCurrentRoundEntry?.status === "pending") {
+    if (ownEntry?.status === "pending") {
       return { ok: false, reason: "entry-pending", classId };
     }
   }
 
-  // Two reads, then merge — clearer than a compound .or() filter, and avoids
-  // any string-interpolation worries on the filter syntax. Two small queries
-  // against a class-sized table is nothing.
-  //
-  // B38 (session 51): added `round_number` so we can filter the deck to
-  // entries from the CURRENT round only. Before this, the deck pulled live
-  // entries from any round, which meant a student who submitted for round 1
-  // but skipped round 2 would still appear in round 2's spotlight with
-  // their stale round 1 photo. Now they appear as a placeholder instead.
-  const selectCols =
-    "id, student_id, media_url, media_type, description_text, description_l1, uploaded_at, status, round_number";
-
-  const { data: liveRows } = await admin
+  // ── Load ALL entries for this class in the current round ─────────────
+  // B38: also load round 0 starter entries so the warm-up round has tiles.
+  // For class rounds (currentRound >= 1): only non-starter entries.
+  // For warm-up (currentRound === 0): only starter entries.
+  const isWarmup = currentRound === 0;
+  const entriesQuery = admin
     .from("entries")
-    .select(selectCols)
-    .eq("class_id", classId)
-    .eq("is_starter", false)
-    .eq("status", "live")
-    .order("uploaded_at", { ascending: false });
+    .select("id, student_id, media_url, media_type, uploaded_at, description_text, description_l1, status, round_number, is_starter")
+    .eq("class_id", classId);
 
-  const { data: ownPendingRows } = await admin
-    .from("entries")
-    .select(selectCols)
-    .eq("class_id", classId)
-    .eq("is_starter", false)
-    .eq("student_id", user.id)
-    .eq("status", "pending")
-    .order("uploaded_at", { ascending: false });
+  if (isWarmup) {
+    entriesQuery.eq("is_starter", true);
+  } else {
+    entriesQuery.eq("round_number", currentRound).eq("is_starter", false);
+  }
 
-  const rows = [...(liveRows || []), ...(ownPendingRows || [])];
-  if (rows.length === 0) {
+  const { data: rawEntries } = await entriesQuery;
+  if (!rawEntries || rawEntries.length === 0) {
     return { ok: false, reason: "no-entries", classId };
   }
 
-  // ── B38: round-filtered grouping ────────────────────────────────────
-  // Group by student_id, but ONLY keep entries whose round_number matches
-  // the current round. A student with a round 1 entry and no round 2 entry,
-  // playing during round 2, gets an EMPTY entry list here — and falls into
-  // the placeholder branch below.
-  //
-  // Own pending entries pass the same round filter, so a student who just
-  // uploaded for the current round sees their own pending photo in the
-  // grid (the pre-B38 behavior, preserved).
-  const byStudent = new Map<string, typeof rows>();
-  for (const r of rows) {
-    if ((r.round_number as number) !== currentRound) continue;
-    const sid = r.student_id as string;
-    const list = byStudent.get(sid) || [];
-    list.push(r);
-    byStudent.set(sid, list);
+  // ── Visibility rules ─────────────────────────────────────────────────
+  // Current student sees pending + live for their own entries.
+  // Everyone else only sees live.
+  const visibleEntries = rawEntries.filter((e) => {
+    if (e.student_id === user.id) return true; // own entries: pending + live
+    return e.status === "live";                // others: live only
+  });
+
+  // Group entries by student_id
+  const byStudent = new Map<string, typeof visibleEntries>();
+  const submitterIds = new Set<string>();
+  for (const e of visibleEntries) {
+    submitterIds.add(e.student_id as string);
+    const arr = byStudent.get(e.student_id as string) || [];
+    arr.push(e);
+    byStudent.set(e.student_id as string, arr);
   }
 
-  // ── B38: fetch all profiles enrolled in this class ─────────────────
-  // IMPORTANT: derive "who's in this class" from the ENROLLMENTS table,
-  // NOT from profiles.class_id. profiles.class_id is a convenience
-  // pointer set by syncCurrentClass — it can be stale (a profile from
-  // a prior test run still has class_id set, causing a phantom 10th
-  // tile). Enrollments are the source of truth.
-  //
-  // The join: enrollments.student_id → students.id, but profiles.id ==
-  // auth.users.id (different from students.id for real users). For seed
-  // voters the SQL sets students.id == auth.users.id, so the direct
-  // path works. For real users we bridge via email.
-  //
-  // We also pull submitter profiles for anyone who has entries but might
-  // not be in the enrollment set (edge case: class switch).
-  const submitterIds = Array.from(byStudent.keys());
-
-  // Step 1: get enrolled student rows (students.id, email)
-  const { data: enrollmentRows } = await admin
+  // ── B38: enrolled students for placeholders ──────────────────────────
+  // Get all students with active enrollment in this class. We need them
+  // for placeholder tiles (students who didn't submit this round).
+  const { data: enrollments } = await admin
     .from("enrollments")
     .select("student_id")
-    .eq("class_id", classId);
-  const enrolledStudentIds = (enrollmentRows ?? []).map((e: any) => e.student_id as string);
+    .eq("class_id", classId)
+    .eq("status", "active");
+  const enrolledStudentIds = (enrollments || []).map((e) => e.student_id as string);
 
+  // Now load actual student rows for enrolled students
   const { data: enrolledStudents } = enrolledStudentIds.length > 0
     ? await admin
         .from("students")

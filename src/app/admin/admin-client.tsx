@@ -11,15 +11,14 @@
 //   TEACHERS tab — managing teachers & class requests:
 //     • Class requests (pending approve/deny)
 //     • Teacher coordination thread
-//     • Game topics
-//
-//   OVERSIGHT tab — managing established teachers & classes:
-//     • Overview stats
-//     • Teacher profiles (all teachers with class/topic summaries)
+//     • Teacher profiles (active/inactive, with game counts and class lists)
 //     • Messages
-//     • Current classes (active + archived)
 //
-//   BUSINESS tab (placeholder) — subscriptions, payment tiers
+//   GAMES tab — managing games & topics:
+//     • Overview stats
+//     • Game topics
+//     • Active classes
+//     • Archived classes
 //
 // NOTE: Tailwind grid-cols-N does NOT work in this project's build.
 // All multi-column layouts use inline styles.
@@ -92,7 +91,7 @@ export function AdminClient({
   const pendingTopics = teacherTopics.filter((t) => t.status === "pending").length;
 
   // ── Tab state ──────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"teachers" | "oversight" | "business">("teachers");
+  const [activeTab, setActiveTab] = useState<"teachers" | "games">("teachers");
 
   return (
     <div className="space-y-4">
@@ -132,15 +131,10 @@ export function AdminClient({
           badge={pendingRequests > 0 ? `${pendingRequests} pending` : undefined}
         />
         <TabButton
-          label="Oversight"
-          active={activeTab === "oversight"}
-          onClick={() => setActiveTab("oversight")}
+          label="Games"
+          active={activeTab === "games"}
+          onClick={() => setActiveTab("games")}
           badge={msgUnreadCount > 0 ? `${msgUnreadCount} unread` : undefined}
-        />
-        <TabButton
-          label="Business"
-          active={activeTab === "business"}
-          onClick={() => setActiveTab("business")}
         />
       </div>
 
@@ -165,28 +159,6 @@ export function AdminClient({
             </div>
           </div>
 
-          {/* ─── GAME TOPICS ─────────────────────────────────────── */}
-          <SectionLabel text="Game topics" />
-          <TopicsSection seededTopics={seededTopics} teacherTopics={teacherTopics} />
-        </>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {/* OVERSIGHT TAB                                             */}
-      {/* Overview, teacher profiles, messages, classes             */}
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {activeTab === "oversight" && (
-        <>
-          {/* ─── OVERVIEW ────────────────────────────────────────── */}
-          <SectionLabel text="Overview" />
-          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
-            <StatItem label="Active teachers" value={activeTeachers} />
-            <StatItem label="Active classes" value={activeClasses.length} />
-            {archivedClasses.length > 0 && (
-              <StatItem label="Archived" value={archivedClasses.length} color="text-stone-400" />
-            )}
-          </div>
-
           {/* ─── TEACHER PROFILES ────────────────────────────────── */}
           <SectionLabel text="Teachers" />
           <TeacherProfilesSection
@@ -204,9 +176,31 @@ export function AdminClient({
               theme="light"
             />
           </div>
+        </>
+      )}
 
-          {/* ─── CURRENT CLASSES ──────────────────────────────────── */}
-          <SectionLabel text="Current classes" />
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* GAMES TAB                                                 */}
+      {/* Overview, topics, active + archived classes                */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {activeTab === "games" && (
+        <>
+          {/* ─── OVERVIEW ────────────────────────────────────────── */}
+          <SectionLabel text="Overview" />
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <StatItem label="Active teachers" value={activeTeachers} />
+            <StatItem label="Active classes" value={activeClasses.length} />
+            {archivedClasses.length > 0 && (
+              <StatItem label="Archived" value={archivedClasses.length} color="text-stone-400" />
+            )}
+          </div>
+
+          {/* ─── GAME TOPICS ─────────────────────────────────────── */}
+          <SectionLabel text="Game topics" />
+          <TopicsSection seededTopics={seededTopics} teacherTopics={teacherTopics} />
+
+          {/* ─── ACTIVE CLASSES ───────────────────────────────────── */}
+          <SectionLabel text="Active classes" />
           <CurrentClassesSection
             activeClasses={activeClasses}
             teachers={teachers}
@@ -222,17 +216,6 @@ export function AdminClient({
               />
             </>
           )}
-        </>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {/* BUSINESS TAB                                              */}
-      {/* Subscriptions, revenue — online platform only             */}
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {activeTab === "business" && (
-        <>
-          <SectionLabel text="Platform" />
-          <BusinessPlaceholder />
         </>
       )}
     </div>
@@ -537,9 +520,16 @@ function TeacherProfileRow({
 }) {
   const [open, setOpen] = useState(false);
 
-  const activeClasses = t.classes.filter((c) => !c.is_archived);
+  const activeClasses = t.classes
+    .filter((c) => !c.is_archived)
+    .sort((a, b) => {
+      const da = a.game_starts_at ? new Date(a.game_starts_at).getTime() : 0;
+      const db = b.game_starts_at ? new Date(b.game_starts_at).getTime() : 0;
+      return db - da;
+    });
   const archivedClasses = t.classes.filter((c) => c.is_archived);
   const name = t.display_name || t.username || "Unnamed";
+  const totalStudents = activeClasses.reduce((sum, c) => sum + c.student_count, 0);
 
   return (
     <div className={`rounded-lg border overflow-hidden ${t.is_archived ? "border-stone-100 opacity-60" : "border-stone-200"}`}>
@@ -555,6 +545,11 @@ function TeacherProfileRow({
           <span className="text-stone-400 flex-shrink-0">
             {activeClasses.length} class{activeClasses.length !== 1 ? "es" : ""}
           </span>
+          {totalStudents > 0 && (
+            <span className="text-[10px] text-stone-300 flex-shrink-0">
+              · {totalStudents} student{totalStudents !== 1 ? "s" : ""}
+            </span>
+          )}
           {archivedClasses.length > 0 && (
             <span className="text-[10px] text-stone-300 flex-shrink-0">
               + {archivedClasses.length} archived
@@ -573,7 +568,44 @@ function TeacherProfileRow({
 
       {open && (
         <div className="border-t border-stone-200 px-4 py-3">
-          <p className="text-[10px] text-stone-300 italic">Profile info coming soon</p>
+          {/* Profile link */}
+          <div style={{ marginBottom: 10 }}>
+            <a
+              href={`/teachers/${t.id}`}
+              className="text-[11px] font-medium text-amber-700 hover:text-amber-800"
+              style={{ textDecoration: "none" }}
+            >
+              View profile →
+            </a>
+          </div>
+
+          {/* Active classes list */}
+          {activeClasses.length > 0 ? (
+            <div>
+              <div className="text-[9px] text-stone-400 uppercase tracking-wider mb-1.5">Active classes</div>
+              <div className="space-y-1">
+                {activeClasses.map((c) => (
+                  <div
+                    key={c.id}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                    className="text-[11px] py-1 px-2 rounded bg-stone-50"
+                  >
+                    <span className="font-medium text-stone-600 truncate">{c.name}</span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="text-stone-400">{c.student_count} student{c.student_count !== 1 ? "s" : ""}</span>
+                      {c.game_starts_at && (
+                        <span className="text-[10px] text-stone-300">
+                          {new Date(c.game_starts_at).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-[10px] text-stone-300 italic">No active classes</p>
+          )}
         </div>
       )}
     </div>
@@ -1458,40 +1490,6 @@ function formatThreadDate(iso: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return d.toLocaleDateString();
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// Business tab placeholder
-// ═════════════════════════════════════════════════════════════════════════
-function BusinessPlaceholder() {
-  return (
-    <div className="rounded-xl overflow-hidden" style={CARD_STYLE}>
-      <div style={CARD_PAD}>
-        <p className="text-xs text-stone-500 mb-3">
-          This tab will manage the business side of the online platform — subscriptions,
-          teacher onboarding, payment tiers, and revenue tracking.
-        </p>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
-          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
-            <div className="text-[10px] text-stone-400 mb-0.5">Subscriptions</div>
-            <div className="text-sm font-bold text-stone-300">Coming soon</div>
-          </div>
-          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
-            <div className="text-[10px] text-stone-400 mb-0.5">Revenue</div>
-            <div className="text-sm font-bold text-stone-300">Coming soon</div>
-          </div>
-          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3" style={{ flex: "1 1 140px" }}>
-            <div className="text-[10px] text-stone-400 mb-0.5">Onboarding</div>
-            <div className="text-sm font-bold text-stone-300">Coming soon</div>
-          </div>
-        </div>
-        <p className="text-[10px] text-stone-400">
-          Stripe integration, feature gating by tier, and tenant isolation will be built
-          after the core game experience is demo-ready.
-        </p>
-      </div>
-    </div>
-  );
 }
 
 // ═════════════════════════════════════════════════════════════════════════

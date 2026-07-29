@@ -4,12 +4,19 @@
 // Server Actions for the /play surface and profile.
 //
 // Slice 1 (cohorts foundation):
-//   - enrollStudent derives the class from the FAVORITED ENTRY (not a
-//     hardcoded NEXT_PUBLIC_DEMO_CLASS_ID). The deck mixes starters across
-//     public classes; whichever pic the visitor favorited determines which
-//     cohort they join. The favorite's entry id is the key in the `favorites`
-//     map ({ "<entryId>": true }); we look up that entry's class_id and
-//     enroll there.
+//   - enrollStudent derives teacher + level from the FAVORITED ENTRY's
+//     class, then finds the best available RECRUITING class for that
+//     teacher at that level with room (< 9 active enrollments). Prefers
+//     the original class if it qualifies; falls back to other classes at
+//     the same teacher/level. This replaced the old approach of directly
+//     using the favorite entry's class_id (which failed when that class
+//     was full or no longer recruiting).
+//
+// Session 99: Smart class routing — enrollStudent no longer assumes the
+//   favorite entry's class_id is the enrollment target. Instead it looks
+//   up teacher_id + level from that class, finds all recruiting classes
+//   for that teacher at that level, and picks the first with room. The
+//   favorite's class gets priority if it qualifies.
 //
 // Slice 1 Part 2 guard (World B — "one active class at a time"):
 //   - Before creating a NEW enrollment, refuse if the student already has an
@@ -24,62 +31,41 @@
 //   - enrollStudent : end-of-game join. EMAIL ONLY. Creates/reuses a student,
 //     an enrollment, a round-0 (warm-up) game_session (nine comments + the
 //     favorite), then sends a magic link. Name/screen name/the "why" come later.
-//   - saveProfile   : profile-page form once logged in. Saves real name +
-//     screen name, an optional self-photo, and the "why was this your
-//     favorite?" note.
+//
+// Session 108: saveProfile split into two actions:
+//   - saveProfileInfo : saves students.name + students.screen_name. No photo,
+//     no entry, no enrollment. Step 1 of the two-step finish-joining flow.
+//   - saveFirstEntry  : uploads first game entry photo, creates entries row
+//     at round 1, sets profiles.class_id (fixing the no-class bug), and
+//     saves the favorite comment on the game_session. Step 2.
+//   The old saveProfile is removed.
 //
 // Slice 1 engine-adaptation (#25):
 //   - addEntry     : dashboard form for adding ANOTHER photo after the
-//     first one (which saveProfile captures at finish-joining time). Same
-//     write path as saveProfile's entry block — uploads to PRIVATE `media`
+//     first one. Same write path — uploads to PRIVATE `media`
 //     bucket, inserts `entries` row at status='pending' on the profiles
 //     track (entries.student_id = profiles.id = auth user.id). No limit
 //     on how many pending an account can have; teacher moderates.
 //
 // Error surfacing (#26):
-//   - saveProfile AND addEntry now return ActionResult (previously
-//     Promise<void> with console.error + silent no-op). The dashboard
-//     wraps each form in a client component (FinishJoiningForm /
-//     AddEntryForm) that calls useFormState against the action and
-//     renders an error banner above the submit on failure.
-//   - The OPTIONAL self-photo upload inside saveProfile stays a SOFT fail
-//     (logs and continues without photo_url) — the rest of the profile
-//     still saves; the self-photo can be retried via a future edit-profile
-//     feature. The REQUIRED entry upload/insert paths are HARD fails: if
-//     any step fails, the action returns ok:false with a specific error
-//     so the student knows their photo didn't land and can retry.
-//   - Signatures take a leading prevState arg (ignored) per the
-//     useFormState contract: (prevState, formData) => Promise<NewState>.
+//   - saveProfileInfo AND saveFirstEntry return ActionResult. The dashboard
+//     wraps each form in a client component (ProfileForm / PhotoUploadForm)
+//     that calls useFormState against the action and renders an error
+//     banner above the submit on failure.
 //
 // Slice 1 round assignment (#27):
 //   - entries.round_number is now NOT NULL. Every insert must set it.
-//   - saveProfile's first-entry insert is always round_number = 1.
-//     Finish-joining is by definition pre-game (the student JUST joined),
-//     so their first photo is round 1.
+//   - saveFirstEntry's first-entry insert is always round_number = 1.
 //   - addEntry resolves a target round number:
 //       * If the form passes a round_number (the slot-grid UI in pass 2),
 //         that value is validated and used.
 //       * Otherwise (today's "Add another photo" form, which has no slot
 //         picker yet), addEntry finds the lowest unlocked + unfilled slot.
-//     Rejects if the target round is locked, already filled by this
-//     student, out of range (> total_rounds), or if the game is over.
-//   - NEW removeEntry action: deletes an entry the student owns, but only
-//     if the entry's round is not yet locked. Used by the pass-2 slot grid
-//     for the remove-and-re-upload flow on unlocked slots.
-//
-// Lock semantics (#27 — Mike's call):
-//   Round N is LOCKED the moment round N STARTS, i.e.,
-//     now >= game_starts_at + (N - 1) * round_duration_hours.
-//   Equivalently, N is locked iff N <= currentRound. Pre-game (no timing
-//   set, or now < game_starts_at), no round is locked; the student can
-//   stage their entire queue ahead of time. When the game starts, slot 1
-//   locks. When round 2 starts, slot 2 locks. And so on. After the last
-//   round starts, every slot is locked — the game is effectively over.
 //
 // Round-timing helpers (#30 follow-up): extracted to src/lib/round-timing.ts
 // and now imported alongside the rest of the module's dependencies.
 //
-// #38: saveProfile now sets favorite_comment_status = 'pending' when
+// #38: saveFirstEntry now sets favorite_comment_status = 'pending' when
 //      writing the why-note to game_sessions, so it appears in the
 //      teacher's pending queue for approval. Resubmissions (after a
 //      rejection) reset the reviewed fields.
@@ -96,7 +82,7 @@
 //   The teacher review queue filters on favorite_comment_status='pending',
 //   so student-round favorite comments were invisible. Fixed: the favorite
 //   entry's comment is now extracted and written to favorite_comment with
-//   status='pending', mirroring the warm-up path in saveProfile.
+//   status='pending', mirroring the warm-up path in saveFirstEntry.
 //
 // D2 (session 84): Student-side round-phase enforcement.
 //   - addEntry: rejects submissions after the game phase deadline
@@ -128,8 +114,8 @@ export type EnrollResult =
   | { ok: false; error: string };
 
 // Generic shape for server actions whose success-side payload is just
-// "the page revalidated, look there." Used by saveProfile, addEntry,
-// and (new #27) removeEntry.
+// "the page revalidated, look there." Used by saveProfileInfo,
+// saveFirstEntry, addEntry, and removeEntry.
 export type ActionResult =
   | { ok: true }
   | { ok: false; error: string };
@@ -239,6 +225,10 @@ export async function requestMagicLink(formData: FormData): Promise<EnrollResult
 // enrollStudent — Session 72 fix: preserve the ID invariant
 //   students.id == auth.users.id == profiles.id
 //
+// Session 99: Smart class routing — no longer blindly enrolls into the
+//   favorite entry's class. Derives teacher + level, then finds a
+//   recruiting class with room. See class resolution block below.
+//
 // The bug this fixes: this function used to create a students row with a
 // fresh random UUID before the auth user existed. Later, when the visitor
 // clicked the magic link, Supabase created auth.users with a DIFFERENT id.
@@ -296,7 +286,13 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
     favorites = JSON.parse(favoritesRaw);
   } catch {}
 
-  // ── Resolve the class FROM THE FAVORITE ───────────────────────────────
+  // ── Resolve the class — find a recruiting class with room ─────────────
+  // Step 1: identify teacher + level from the favorite entry's class.
+  // Step 2: find the best available recruiting class for that teacher at
+  //         that level that still has room (< 9 active enrollments).
+  //
+  // This replaces the old approach of directly using the favorite entry's
+  // class_id, which broke when that class was full or no longer recruiting.
   const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
   if (!favEntryId) {
     return { ok: false, error: "No favorite was selected." };
@@ -310,7 +306,62 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
   if (favErr || !favEntry?.class_id) {
     return { ok: false, error: "Could not resolve the favorited photo's class." };
   }
-  const classId = favEntry.class_id;
+
+  // Look up the teacher + level from the favorite's class
+  const { data: favClass, error: favClassErr } = await admin
+    .from("classes")
+    .select("teacher_id, level")
+    .eq("id", favEntry.class_id)
+    .maybeSingle();
+  if (favClassErr || !favClass?.teacher_id) {
+    return { ok: false, error: "Could not identify the teacher for this class." };
+  }
+  const targetTeacherId = favClass.teacher_id;
+  const targetLevel = favClass.level || "beginner";
+
+  // Find all recruiting classes for this teacher at this level
+  const { data: candidateClasses, error: candidateErr } = await admin
+    .from("classes")
+    .select("id")
+    .eq("teacher_id", targetTeacherId)
+    .eq("level", targetLevel)
+    .eq("is_recruiting", true);
+  if (candidateErr || !candidateClasses || candidateClasses.length === 0) {
+    return {
+      ok: false,
+      error: "This teacher doesn't have an open class at this level right now.",
+    };
+  }
+
+  // For each candidate, check enrollment count — pick the first with room.
+  // Prefer the original favorite's class if it's among the candidates and
+  // has room, so the student lands where the photos came from.
+  const candidateIds = candidateClasses.map((c) => c.id);
+  // Put the favorite's class first so it gets priority
+  candidateIds.sort((a, b) =>
+    a === favEntry.class_id ? -1 : b === favEntry.class_id ? 1 : 0,
+  );
+
+  let classId: string | null = null;
+  for (const cid of candidateIds) {
+    const { count, error: cntErr } = await admin
+      .from("enrollments")
+      .select("id", { count: "exact", head: true })
+      .eq("class_id", cid)
+      .eq("status", "active");
+    if (cntErr) continue;
+    if ((count ?? 0) < 9) {
+      classId = cid;
+      break;
+    }
+  }
+  if (!classId) {
+    return {
+      ok: false,
+      error:
+        "All of this teacher's classes at this level are full. Ask your teacher to open another class.",
+    };
+  }
 
   // ── Ensure auth.users row exists; get its id ──────────────────────────
   // Attempt to create the auth user (email_confirm: false — the magic link
@@ -477,35 +528,18 @@ export async function enrollStudent(formData: FormData): Promise<EnrollResult> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// saveProfile — used as a <form action> on the dashboard (INCOMPLETE state),
-// wrapped by FinishJoiningForm.tsx via useFormState.
+// saveProfileInfo — Session 108: Step 1 of the two-step finish-joining flow.
 //
-// Reads the logged-in user from the session cookie, then saves:
-//   • students.name        (real name — private, for the teacher)
-//   • students.screen_name (public — classmates see this in later rounds)
-//   • students.photo_url   (REQUIRED self-photo — hard fail if missing/upload fails)
-//   • game_sessions.favorite_comment on their most recent round (the "why")
-//   • entries row           (REQUIRED first game entry — hard fail, round 1)
+// Saves only students.name + students.screen_name. No photo upload, no
+// entry creation, no enrollment mutation. Lightweight — just two fields.
 //
-// TWO DISTINCT PHOTOS — do not conflate:
-//   • Self-photo (form field "photo"): a picture OF the student. REQUIRED.
-//     Uploaded to the PUBLIC 'profile-photos' bucket; we store the public URL
-//     in students.photo_url (directly usable in <img src>). B38: this photo
-//     is used as the greyed-out placeholder tile when the student misses a
-//     round deadline, so it must exist.
-//   • First game entry (fields "entry_photo" + "entry_description"): the
-//     student's OWN contribution that classmates see and comment on. REQUIRED.
-//     Uploaded to the PRIVATE 'media' bucket. Per src/lib/deck.ts convention,
-//     entries.media_url stores the storage PATH (not a URL) — the read layer
-//     builds a (signed, for the private bucket) URL at display time. We write
-//     an entries row at status='pending' (the default), attached to the
-//     student's ACTIVE class.  ALWAYS round_number = 1 (#27): finish-joining
-//     is by definition pre-game.
+// After this succeeds, the dashboard re-renders. The student now has a
+// complete profile (name + screen_name) but no entry yet, so the dashboard
+// shows PhotoUploadForm (step 2) instead of ProfileForm (step 1).
 //
-// All uploads use the service-role `admin` client, which bypasses storage
-// RLS — so NO storage policy is needed for either bucket here.
+// Signature: (prevState, formData) => ActionResult — useFormState contract.
 // ─────────────────────────────────────────────────────────────────────────
-export async function saveProfile(
+export async function saveProfileInfo(
   _prevState: ActionResult | null,
   formData: FormData
 ): Promise<ActionResult> {
@@ -535,17 +569,11 @@ export async function saveProfile(
 
   const name = String(formData.get("name") || "").trim();
   const screenName = String(formData.get("screen_name") || "").trim();
-  const why = String(formData.get("favorite_comment") || "").trim();
-  const photo = formData.get("photo");
-  const entryPhoto = formData.get("entry_photo");
-  const entryDescription = String(formData.get("entry_description") || "").trim();
 
-  // Defensive — the form already enforces these.
-  if (!name || !screenName || why.length < 15) {
+  if (!name || !screenName) {
     return {
       ok: false,
-      error:
-        "Please fill in your name, screen name, and a why-note of at least 15 characters.",
+      error: "Please fill in your full name and screen name.",
     };
   }
 
@@ -563,68 +591,107 @@ export async function saveProfile(
     };
   }
 
-  // ── Self-photo (REQUIRED — hard fail) ───────────────────────────────
-  // Session 51 / B38: profile photo is now required so that when a student
-  // misses a round deadline, their greyed-out profile photo can fill the
-  // placeholder tile in the gameplay grid. Without a photo, the placeholder
-  // would just be a generic colored-initial avatar, which doesn't read as
-  // "this is a real classmate who missed this round."
-  if (!(photo instanceof File) || photo.size === 0) {
+  await admin
+    .from("students")
+    .update({ name, screen_name: screenName })
+    .eq("id", student.id);
+
+  revalidatePath("/student/dashboard");
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// saveFirstEntry — Session 108: Step 2 of the two-step finish-joining flow.
+//
+// Uploads the student's first game photo, creates the entries row at
+// round 1, sets profiles.class_id (fixing the "no-class" bug for real
+// users), and saves the favorite comment on the game_session.
+//
+// This is the action that makes the student "exist" in the class from
+// the dashboard's perspective — after this, isComplete becomes true.
+//
+// Fields:
+//   entry_photo       — File, REQUIRED — the student's first game entry
+//   entry_description — string, REQUIRED — what is it, why they picked it
+//   favorite_comment  — string, OPTIONAL — "why was this your favorite?"
+//                       (only present when a warmup favorite exists)
+//
+// Class resolution: finds the enrollment's class_id via students →
+//   enrollments. Also sets profiles.class_id so downstream code
+//   (class-deck, addEntry, saveStudentRound) can find the class via the
+//   fast path.
+//
+// Signature: (prevState, formData) => ActionResult — useFormState contract.
+// ─────────────────────────────────────────────────────────────────────────
+export async function saveFirstEntry(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
     return {
       ok: false,
-      error: "Please upload a photo of yourself — it's used as your avatar in the game.",
+      error: "The server isn't configured. Please tell your teacher.",
     };
   }
 
-  let photoUrl: string | null = null;
-  {
-    const ext =
-      photo.name.includes(".") ? photo.name.split(".").pop() : "jpg";
-    const path = `${student.id}/${Date.now()}.${ext}`;
-    const { error: upErr } = await admin.storage
-      .from("profile-photos")
-      .upload(path, photo, {
-        contentType: photo.type || "image/jpeg",
-        upsert: true,
-      });
-    if (upErr) {
-      console.error("Profile photo upload failed:", upErr.message);
-      return {
-        ok: false,
-        error: "Your profile photo failed to upload. Please try again.",
-      };
-    }
-    const { data: pub } = admin.storage
-      .from("profile-photos")
-      .getPublicUrl(path);
-    photoUrl = pub.publicUrl;
+  const supabase = await createClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      error: "We couldn't reach the server. Please try again in a moment.",
+    };
+  }
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || !user.email) {
+    return {
+      ok: false,
+      error: "Your sign-in expired. Please use the magic link again.",
+    };
   }
 
-  const update: { name: string; screen_name: string; photo_url?: string } = {
-    name,
-    screen_name: screenName,
-  };
-  if (photoUrl) update.photo_url = photoUrl;
+  const entryPhoto = formData.get("entry_photo");
+  const entryDescription = String(formData.get("entry_description") || "").trim();
+  const why = String(formData.get("favorite_comment") || "").trim();
 
-  await admin
-    .from("students")
-    .update(update)
-    .eq("id", student.id);
-
-  // ── First game entry (REQUIRED — HARD fail) ───────────────────────────
-  // The student's own photo + description, written as an `entries` row at
-  // status='pending'.  entries lives on the PROFILES track (student_id FKs
-  // to profiles, not students), and the class lives on profiles.class_id.
   if (!(entryPhoto instanceof File) || entryPhoto.size === 0) {
     return { ok: false, error: "Please add your first photo." };
   }
+  if (!entryDescription) {
+    return { ok: false, error: "Please write a short description of your photo." };
+  }
 
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // ── Find student row ──────────────────────────────────────────────────
+  const { data: student } = await admin
+    .from("students")
+    .select("id")
+    .eq("email", user.email.toLowerCase())
+    .maybeSingle();
+  if (!student) {
+    return {
+      ok: false,
+      error: "We couldn't find your enrollment. Try the play page and re-join.",
+    };
+  }
+
+  // ── Resolve class via enrollments (the reliable path) ─────────────────
+  // profiles.class_id may not be set yet. The enrollment was created by
+  // enrollStudent during warmup, so the enrollments table is the source
+  // of truth.
+  let entryClassId: string | null = null;
+
+  // Try profiles.class_id first (fast path for returning students)
   const { data: profile } = await admin
     .from("profiles")
     .select("class_id")
     .eq("id", user.id)
     .maybeSingle();
-  let entryClassId: string | null = profile?.class_id ?? null;
+  entryClassId = profile?.class_id ?? null;
+
+  // Enrollments fallback (the common path for new students)
   if (!entryClassId) {
     const { data: enrollment } = await admin
       .from("enrollments")
@@ -634,6 +701,7 @@ export async function saveProfile(
       .maybeSingle();
     entryClassId = enrollment?.class_id ?? null;
   }
+
   if (!entryClassId) {
     return {
       ok: false,
@@ -641,6 +709,7 @@ export async function saveProfile(
     };
   }
 
+  // ── Upload photo to PRIVATE media bucket ──────────────────────────────
   const ext =
     entryPhoto.name.includes(".") ? entryPhoto.name.split(".").pop() : "jpg";
   const entryPath = `${entryClassId}/${user.id}-${Date.now()}.${ext}`;
@@ -657,13 +726,14 @@ export async function saveProfile(
     };
   }
 
+  // ── Create entries row at round 1 ─────────────────────────────────────
   const { error: entryErr } = await admin.from("entries").insert({
     student_id: user.id,       // profiles(id) — NOT students.id
     class_id: entryClassId,
     media_url: entryPath,
     media_type: "photo",
     description_text: entryDescription,
-    round_number: 1,            // #27: finish-joining is always pre-game
+    round_number: 1,            // finish-joining is always pre-game
     // status defaults to 'pending'; is_starter to false; uploaded_at to now()
   });
   if (entryErr) {
@@ -673,28 +743,39 @@ export async function saveProfile(
     };
   }
 
+  // ── Set profiles.class_id (fixes the "no-class" bug) ──────────────────
+  // This is the field that class-deck.ts, addEntry, and saveStudentRound
+  // use as the fast path to find the student's class. enrollStudent never
+  // set it, which is why real users hit the "no-class" error.
+  await admin
+    .from("profiles")
+    .update({ class_id: entryClassId })
+    .eq("id", user.id);
+
   // ── Attach the why-note to their most recent session (soft) ───────────
   // #38: Also set favorite_comment_status = 'pending' so the teacher sees
   // it in the pending queue. Reset reviewed fields in case this is a
   // resubmission after rejection.
-  const { data: session } = await admin
-    .from("game_sessions")
-    .select("id")
-    .eq("student_id", student.id)
-    .order("completed_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (session) {
-    await admin
+  if (why.length >= 15) {
+    const { data: session } = await admin
       .from("game_sessions")
-      .update({
-        favorite_comment: why,
-        favorite_comment_status: "pending",
-        favorite_comment_reviewed_by: null,
-        favorite_comment_reviewed_at: null,
-        favorite_comment_rejection_reason: null,
-      })
-      .eq("id", session.id);
+      .select("id")
+      .eq("student_id", student.id)
+      .order("completed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (session) {
+      await admin
+        .from("game_sessions")
+        .update({
+          favorite_comment: why,
+          favorite_comment_status: "pending",
+          favorite_comment_reviewed_by: null,
+          favorite_comment_reviewed_at: null,
+          favorite_comment_rejection_reason: null,
+        })
+        .eq("id", session.id);
+    }
   }
 
   revalidatePath("/student/dashboard");
@@ -912,7 +993,7 @@ export async function addEntry(
 // served).  The row deletion is the source of truth.
 //
 // Authorization: we verify entry.student_id === user.id ourselves rather
-// than relying on RLS, because addEntry/saveProfile also use the service-
+// than relying on RLS, because addEntry/saveFirstEntry also use the service-
 // role admin client which bypasses RLS.  Pattern stays consistent.
 // ─────────────────────────────────────────────────────────────────────────
 export async function removeEntry(
@@ -1151,9 +1232,7 @@ export async function saveStudentRound(formData: FormData): Promise<ActionResult
   // ── B56: Extract the favorite's comment for moderation ────────────────
   // The teacher needs to review the student's comment on their chosen
   // favorite before it becomes visible to classmates. Mirror the warm-up
-  // path in saveProfile: populate favorite_comment + set status to
-  // 'pending'. The favorite entry id is the key in the favorites map;
-  // the comment text is that entry's value in the comments map.
+  // path: populate favorite_comment + set status to 'pending'.
   const favEntryId = Object.keys(favorites).find((k) => favorites[k]);
   const favoriteComment = favEntryId ? (comments[favEntryId] || "").trim() : "";
 

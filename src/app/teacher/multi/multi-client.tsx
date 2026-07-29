@@ -1,18 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────
 // DESTINATION: src/app/teacher/multi/multi-client.tsx
 //
-// Session 98: Client component for multi-teacher game dashboard.
+// Session 100: Client component for multi-teacher game dashboard.
 //
-// Three sections:
-//   1. "My games" — games the teacher participates in (with photo upload)
-//   2. "Available games" — forming games the teacher can join
-//   3. "Create game" — form to start a new game
+// Changes from session 99:
+//   - "Create a game" form collapsed behind a button (expands on click)
+//   - Submit button renamed "Save your game"
+//   - Warmup round is optional checkbox (default on); rounds dropdown
+//     just says "3 rounds" (no "including warmup" text)
+//   - Play time = round time − review time (was already correct)
+//   - Cleaned up round time options: added 6 hr, 12 hr
+//   - Cleaned up review time options: removed 22 hr, added 1 day
+//   - formatDuration updated for new values
 //
-// Each teacher uploads their own photos. There is no shared pot.
+// Session 106 (Phases 7–8):
+//   - Waiting list position shown on game cards
+//   - "Drop out" button for waiting/active teachers
+//   - Game history section for completed games
+//   - Completed game cards show basic outcome summary
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
 import { useState, useTransition, useEffect } from "react";
+import Link from "next/link";
 import {
   createMultiGame,
   joinMultiGame,
@@ -21,6 +31,7 @@ import {
   deleteMultiPhoto,
   startMultiGame,
   deleteMultiGame,
+  dropOutOfGame,
 } from "./actions";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -31,6 +42,7 @@ export type ParticipantData = {
   teacher_id: string;
   joined_at: string;
   name?: string;
+  participant_status?: string;
 };
 
 export type PhotoData = {
@@ -53,12 +65,14 @@ export type GameData = {
   review_phase_hours: number | null;
   created_by: string;
   created_by_name: string;
-  status: "forming" | "ready" | "active" | "complete";
+  status: "forming" | "ready" | "active" | "complete" | "archived";
   created_at: string;
   participants: (ParticipantData & { name: string })[];
   photos: PhotoData[];
   isParticipant: boolean;
   isCreator: boolean;
+  myParticipantStatus?: string;
+  waitingCount?: number;
 };
 
 // ── Colors ───────────────────────────────────────────────────────────────
@@ -73,6 +87,7 @@ const C = {
   textFaint: "#9A815E",
   success: "#2B8A3E",
   error: "#C53030",
+  white: "#FFFFFF",
 };
 
 // ── Duration formatting ─────────────────────────────────────────────────
@@ -81,30 +96,32 @@ function formatDuration(hours: number | null): string {
   if (hours == null) return "—";
   if (hours === 0) return "none";
   const labels: Record<string, string> = {
-    "0.25": "15 min", "0.5": "30 min", "1": "1 hr", "1.5": "90 min",
-    "2": "2 hr", "5": "5 hr", "22": "22 hr", "24": "1 day",
-    "46": "46 hr", "48": "2 days", "144": "6 days", "168": "1 week",
+    "0.5": "30 min", "1": "1 hr", "1.5": "90 min",
+    "2": "2 hr", "6": "6 hr", "12": "12 hr",
+    "24": "1 day", "46": "46 hr", "48": "2 days", "168": "1 week",
   };
   return labels[String(hours)] || `${hours}h`;
 }
 
 const ROUND_TIME_OPTIONS = [
+  { value: 1, label: "1 hr" },
+  { value: 2, label: "2 hr" },
+  { value: 6, label: "6 hr" },
+  { value: 12, label: "12 hr" },
   { value: 24, label: "1 day" },
   { value: 48, label: "2 days" },
   { value: 168, label: "1 week" },
 ];
 
 const REVIEW_TIME_OPTIONS = [
-  { value: 0.25, label: "15 min" },
   { value: 0.5, label: "30 min" },
   { value: 1, label: "1 hr" },
   { value: 2, label: "2 hr" },
-  { value: 5, label: "5 hr" },
-  { value: 22, label: "22 hr" },
+  { value: 24, label: "1 day" },
 ];
 
 // ═════════════════════════════════════════════════════════════════════════
-// MultiClient — top-level
+// MultiClient — top-level with max-width container + page header
 // ═════════════════════════════════════════════════════════════════════════
 export function MultiClient({
   games,
@@ -115,19 +132,49 @@ export function MultiClient({
   teacherId: string;
   teacherName: string;
 }) {
-  const myGames = games.filter((g) => g.isParticipant);
+  const myActiveGames = games.filter(
+    (g) => g.isParticipant && g.status !== "complete" && g.status !== "archived",
+  );
+  const myCompletedGames = games.filter(
+    (g) => g.isParticipant && (g.status === "complete" || g.status === "archived"),
+  );
   const availableGames = games.filter(
     (g) => !g.isParticipant && g.status === "forming",
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+    <div
+      style={{
+        maxWidth: 720,
+        margin: "0 auto",
+        padding: "0 16px 40px",
+      }}
+    >
+      {/* ── Page header ─────────────────────────────────────────── */}
+      <div style={{ marginBottom: 28 }}>
+        <h1
+          style={{
+            fontSize: 22,
+            fontWeight: 800,
+            color: C.text,
+            margin: "0 0 4px",
+            letterSpacing: -0.3,
+          }}
+        >
+          Multi-Teacher Games
+        </h1>
+        <p style={{ fontSize: 13, color: C.textFaint, margin: 0 }}>
+          Create or join games where multiple teachers contribute photos.
+          Students vote across all teachers — identities revealed at the end.
+        </p>
+      </div>
+
       {/* ── My games ───────────────────────────────────────────────── */}
-      {myGames.length > 0 && (
-        <section>
+      {myActiveGames.length > 0 && (
+        <section style={{ marginBottom: 24 }}>
           <SectionLabel text="My games" />
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {myGames.map((g) => (
+            {myActiveGames.map((g) => (
               <MyGameCard key={g.id} game={g} teacherId={teacherId} />
             ))}
           </div>
@@ -136,7 +183,7 @@ export function MultiClient({
 
       {/* ── Available games ────────────────────────────────────────── */}
       {availableGames.length > 0 && (
-        <section>
+        <section style={{ marginBottom: 24 }}>
           <SectionLabel text="Available games" />
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {availableGames.map((g) => (
@@ -147,7 +194,7 @@ export function MultiClient({
       )}
 
       {/* ── No games message ──────────────────────────────────────── */}
-      {myGames.length === 0 && availableGames.length === 0 && (
+      {myActiveGames.length === 0 && availableGames.length === 0 && (
         <div
           style={{
             background: C.panel,
@@ -155,6 +202,7 @@ export function MultiClient({
             borderRadius: 14,
             padding: "24px 20px",
             textAlign: "center",
+            marginBottom: 24,
           }}
         >
           <p style={{ fontSize: 14, color: C.textDim, margin: "0 0 4px" }}>
@@ -166,11 +214,22 @@ export function MultiClient({
         </div>
       )}
 
-      {/* ── Create game ────────────────────────────────────────────── */}
-      <section>
-        <SectionLabel text="Create a game" />
-        <CreateGameForm />
+      {/* ── Create game (collapsible) ──────────────────────────────── */}
+      <section style={{ marginBottom: 24 }}>
+        <CreateGameSection />
       </section>
+
+      {/* ── Session 106: Game history ─────────────────────────────── */}
+      {myCompletedGames.length > 0 && (
+        <section>
+          <SectionLabel text="Game history" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {myCompletedGames.map((g) => (
+              <CompletedGameCard key={g.id} game={g} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -195,6 +254,7 @@ function SectionLabel({ text }: { text: string }) {
           letterSpacing: 1.2,
           color: C.textFaint,
           fontWeight: 600,
+          whiteSpace: "nowrap",
         }}
       >
         {text}
@@ -213,6 +273,7 @@ function StatusBadge({ status }: { status: string }) {
     ready: { bg: "#D1FAE5", text: "#065F46", border: "#A7F3D0" },
     active: { bg: "#DBEAFE", text: "#1E40AF", border: "#93C5FD" },
     complete: { bg: "#F3F4F6", text: "#6B7280", border: "#D1D5DB" },
+    archived: { bg: "#F3F4F6", text: "#9CA3AF", border: "#E5E7EB" },
   };
   const c = colors[status] || colors.forming;
   return (
@@ -235,7 +296,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// My Game Card — expanded view with photo upload
+// My Game Card — expandable with photo upload
 // ═════════════════════════════════════════════════════════════════════════
 function MyGameCard({ game, teacherId }: { game: GameData; teacherId: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -262,7 +323,7 @@ function MyGameCard({ game, teacherId }: { game: GameData; teacherId: string }) 
   return (
     <div
       style={{
-        background: expanded ? "#fff" : C.panel,
+        background: expanded ? C.white : C.panel,
         border: `1px solid ${expanded ? C.light + "66" : C.panelEdge}`,
         borderRadius: 14,
         overflow: "hidden",
@@ -298,7 +359,27 @@ function MyGameCard({ game, teacherId }: { game: GameData; teacherId: string }) 
           {game.participants.length} teacher{game.participants.length !== 1 ? "s" : ""}
           {" · "}
           {myPhotos.length} photo{myPhotos.length !== 1 ? "s" : ""}
+          {game.waitingCount != null && game.waitingCount > 0 && (
+            <> · {game.waitingCount} waiting</>
+          )}
         </span>
+        {game.myParticipantStatus === "waiting" && (
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: "#EDE9FE",
+              color: "#7C3AED",
+              border: "1px solid #DDD6FE",
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
+            }}
+          >
+            Waiting
+          </span>
+        )}
         <StatusBadge status={game.status} />
       </button>
 
@@ -382,8 +463,26 @@ function MyGameCard({ game, teacherId }: { game: GameData; teacherId: string }) 
               paddingTop: 12,
               borderTop: `1px solid ${C.panelEdge}33`,
               flexWrap: "wrap",
+              alignItems: "center",
             }}
           >
+            <Link
+              href={`/teacher/multi/${game.id}`}
+              style={{
+                background: C.light,
+                color: "#fff",
+                border: "none",
+                borderRadius: 999,
+                padding: "6px 16px",
+                fontSize: 12,
+                fontWeight: 700,
+                fontFamily: "inherit",
+                textDecoration: "none",
+                display: "inline-block",
+              }}
+            >
+              Manage →
+            </Link>
             {canStart && (
               <ActionButton
                 label="Start game"
@@ -391,13 +490,27 @@ function MyGameCard({ game, teacherId }: { game: GameData; teacherId: string }) 
                 onClick={() => handleAction(() => startMultiGame(game.id), "Game started!")}
               />
             )}
-            {!game.isCreator && (game.status === "forming" || game.status === "ready") && (
+            {!game.isCreator && (game.status === "forming" || game.status === "ready") && game.myParticipantStatus !== "waiting" && (
               <ActionButton
                 label="Leave game"
                 variant="danger"
                 onClick={() => {
                   if (confirm("Leave this game? Your photos will be removed.")) {
                     handleAction(() => leaveMultiGame(game.id));
+                  }
+                }}
+              />
+            )}
+            {!game.isCreator && (game.myParticipantStatus === "waiting" || game.status === "active") && (
+              <ActionButton
+                label={game.myParticipantStatus === "waiting" ? "Leave waiting list" : "Drop out"}
+                variant="danger"
+                onClick={() => {
+                  const msg = game.myParticipantStatus === "waiting"
+                    ? "Leave the waiting list for this game?"
+                    : "Drop out of this active game? Your photos from past rounds will remain.";
+                  if (confirm(msg)) {
+                    handleAction(() => dropOutOfGame(game.id));
                   }
                 }}
               />
@@ -494,7 +607,7 @@ function PhotoUploadSection({
         padding: "14px 16px",
       }}
     >
-      <h3 style={{ fontSize: 14, fontWeight: 700, margin: "0 0 10px", color: C.text }}>
+      <h3 style={{ fontSize: 13, fontWeight: 700, margin: "0 0 10px", color: C.text }}>
         Your photos ({myPhotos.length})
       </h3>
 
@@ -516,7 +629,7 @@ function PhotoUploadSection({
                 borderRadius: 8,
                 overflow: "hidden",
                 border: `1px solid ${C.panelEdge}`,
-                background: "#fff",
+                background: C.white,
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -615,7 +728,7 @@ function PhotoUploadSection({
             style={{
               borderRadius: 8,
               border: `1px solid ${C.panelEdge}`,
-              background: "#fff",
+              background: C.white,
               padding: 6,
               marginBottom: 10,
               textAlign: "center",
@@ -645,7 +758,7 @@ function PhotoUploadSection({
             style={{
               width: "100%",
               boxSizing: "border-box",
-              background: "#fff",
+              background: C.white,
               border: `1px solid ${C.panelEdge}`,
               borderRadius: 8,
               padding: "7px 10px",
@@ -777,12 +890,137 @@ function AvailableGameCard({ game }: { game: GameData }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// Completed Game Card — compact summary (Session 106)
+// ═════════════════════════════════════════════════════════════════════════
+function CompletedGameCard({ game }: { game: GameData }) {
+  const createdDate = new Date(game.created_at).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return (
+    <div
+      style={{
+        background: C.panel,
+        border: `1px solid ${C.panelEdge}`,
+        borderRadius: 14,
+        padding: "14px 16px",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
+          {game.topic}
+        </span>
+        <StatusBadge status={game.status} />
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          fontSize: 12,
+          color: C.textFaint,
+          marginBottom: 8,
+        }}
+      >
+        <span>{createdDate}</span>
+        <span>{game.total_rounds} round{game.total_rounds !== 1 ? "s" : ""}</span>
+        <span>{game.participants.length} teacher{game.participants.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {game.participants.map((p) => (
+          <span
+            key={p.id}
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: "#f5f0eb",
+              border: `1px solid ${C.panelEdge}66`,
+              color: C.textDim,
+            }}
+          >
+            {p.name}
+          </span>
+        ))}
+      </div>
+
+      {game.status === "complete" && (
+        <div style={{ marginTop: 10 }}>
+          <Link
+            href={`/teacher/multi/${game.id}`}
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: C.light,
+              textDecoration: "none",
+            }}
+          >
+            View stats →
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Create Game Section — collapsed behind a button, expands to show form
+// ═════════════════════════════════════════════════════════════════════════
+function CreateGameSection() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          style={{
+            width: "100%",
+            background: C.light,
+            color: "#fff",
+            border: "none",
+            borderRadius: 14,
+            padding: "14px 20px",
+            fontSize: 15,
+            fontWeight: 700,
+            fontFamily: "inherit",
+            cursor: "pointer",
+            letterSpacing: 0.2,
+          }}
+        >
+          + Create a game
+        </button>
+      ) : (
+        <div>
+          <SectionLabel text="Create a game" />
+          <CreateGameForm onClose={() => setOpen(false)} />
+        </div>
+      )}
+    </>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Create Game Form
 // ═════════════════════════════════════════════════════════════════════════
-function CreateGameForm() {
+function CreateGameForm({ onClose }: { onClose: () => void }) {
   const [pending, startTransition] = useTransition();
   const [topic, setTopic] = useState("");
   const [rounds, setRounds] = useState(3);
+  const [includeWarmup, setIncludeWarmup] = useState(true);
   const [roundTime, setRoundTime] = useState(48);
   const [reviewTime, setReviewTime] = useState(2);
   const [result, setResult] = useState<{ ok: boolean; error?: string } | null>(null);
@@ -797,10 +1035,11 @@ function CreateGameForm() {
       return;
     }
     setResult(null);
+    const totalRounds = includeWarmup ? rounds + 1 : rounds;
     startTransition(async () => {
       const r = await createMultiGame(
         trimmed,
-        rounds,
+        totalRounds,
         roundTime,
         playTime > 0 ? playTime : null,
         reviewTime,
@@ -811,9 +1050,32 @@ function CreateGameForm() {
         setRounds(3);
         setRoundTime(48);
         setReviewTime(2);
+        setIncludeWarmup(true);
       }
     });
   }
+
+  // Shared input style
+  const inputStyle = {
+    width: "100%",
+    boxSizing: "border-box" as const,
+    background: C.white,
+    border: `1px solid ${C.panelEdge}`,
+    borderRadius: 8,
+    padding: "7px 10px",
+    fontSize: 13,
+    color: C.text,
+    fontFamily: "inherit",
+    outline: "none",
+  };
+
+  const labelStyle = {
+    display: "block" as const,
+    fontSize: 12,
+    color: C.textDim,
+    fontWeight: 600,
+    marginBottom: 4,
+  };
 
   return (
     <div
@@ -828,110 +1090,88 @@ function CreateGameForm() {
     >
       {/* Topic */}
       <div style={{ marginBottom: 14 }}>
-        <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
-          Topic
-        </label>
+        <label style={labelStyle}>Topic</label>
         <input
           type="text"
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           placeholder="e.g. Mountain landscapes of the American Southwest"
           maxLength={200}
-          style={{
-            width: "100%",
-            boxSizing: "border-box",
-            background: "#fff",
-            border: `1px solid ${C.panelEdge}`,
-            borderRadius: 8,
-            padding: "7px 10px",
-            fontSize: 13,
-            color: C.text,
-            fontFamily: "inherit",
-            outline: "none",
-          }}
+          style={inputStyle}
         />
       </div>
 
-      {/* Rounds */}
+      {/* Rounds + warmup toggle */}
       <div style={{ marginBottom: 14 }}>
-        <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
-          Student rounds
-        </label>
-        <select
-          value={rounds}
-          onChange={(e) => setRounds(Number(e.target.value))}
-          style={{
-            background: "#fff",
-            border: `1px solid ${C.panelEdge}`,
-            borderRadius: 8,
-            padding: "7px 10px",
-            fontSize: 13,
-            color: C.text,
-            fontFamily: "inherit",
-            outline: "none",
-          }}
-        >
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-            <option key={n} value={n}>
-              {n} round{n !== 1 ? "s" : ""}
-              {n > 0 && ` (${n + 1} total with warmup)`}
-            </option>
-          ))}
-        </select>
+        <label style={labelStyle}>Rounds</label>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <select
+            value={rounds}
+            onChange={(e) => setRounds(Number(e.target.value))}
+            style={{ ...inputStyle, width: "auto", minWidth: 160 }}
+          >
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+              <option key={n} value={n}>
+                {n} round{n !== 1 ? "s" : ""}
+              </option>
+            ))}
+          </select>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              color: C.textDim,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={includeWarmup}
+              onChange={(e) => setIncludeWarmup(e.target.checked)}
+              style={{ accentColor: C.light }}
+            />
+            Include warmup round
+          </label>
+        </div>
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>
+          {includeWarmup
+            ? `${rounds + 1} rounds total (warmup + ${rounds} student round${rounds !== 1 ? "s" : ""})`
+            : `${rounds} student round${rounds !== 1 ? "s" : ""}`
+          }
+        </div>
       </div>
 
-      {/* Timing */}
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
-        <div style={{ flex: "1 1 140px" }}>
-          <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
-            Round time
-          </label>
+      {/* Timing — compact row */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ flex: "1 1 130px", minWidth: 130 }}>
+          <label style={labelStyle}>Round time</label>
           <select
             value={roundTime}
             onChange={(e) => setRoundTime(Number(e.target.value))}
-            style={{
-              width: "100%",
-              background: "#fff",
-              border: `1px solid ${C.panelEdge}`,
-              borderRadius: 8,
-              padding: "7px 10px",
-              fontSize: 13,
-              color: C.text,
-              fontFamily: "inherit",
-              outline: "none",
-            }}
+            style={inputStyle}
           >
             {ROUND_TIME_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </div>
-        <div style={{ flex: "1 1 140px" }}>
-          <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
-            Review time
-          </label>
+        <div style={{ flex: "1 1 130px", minWidth: 130 }}>
+          <label style={labelStyle}>Review time</label>
           <select
             value={reviewTime}
             onChange={(e) => setReviewTime(Number(e.target.value))}
-            style={{
-              width: "100%",
-              background: "#fff",
-              border: `1px solid ${C.panelEdge}`,
-              borderRadius: 8,
-              padding: "7px 10px",
-              fontSize: 13,
-              color: C.text,
-              fontFamily: "inherit",
-              outline: "none",
-            }}
+            style={inputStyle}
           >
             {REVIEW_TIME_OPTIONS.filter((o) => o.value < roundTime).map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </div>
-        <div style={{ flex: "1 1 140px" }}>
-          <label style={{ display: "block", fontSize: 12, color: C.textDim, fontWeight: 600, marginBottom: 4 }}>
+        <div style={{ flex: "1 1 130px", minWidth: 130 }}>
+          <label style={labelStyle}>
             Play time
             <span style={{ fontWeight: 400, color: C.textFaint, marginLeft: 4 }}>(calculated)</span>
           </label>
@@ -950,26 +1190,45 @@ function CreateGameForm() {
         </div>
       </div>
 
-      {/* Submit */}
-      <button
-        type="button"
-        onClick={handleCreate}
-        disabled={pending}
-        style={{
-          background: C.light,
-          color: "#fff",
-          border: "none",
-          borderRadius: 999,
-          padding: "8px 22px",
-          fontSize: 14,
-          fontWeight: 700,
-          fontFamily: "inherit",
-          cursor: pending ? "default" : "pointer",
-          opacity: pending ? 0.6 : 1,
-        }}
-      >
-        {pending ? "Creating…" : "Create game"}
-      </button>
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={handleCreate}
+          disabled={pending}
+          style={{
+            background: C.light,
+            color: "#fff",
+            border: "none",
+            borderRadius: 999,
+            padding: "8px 22px",
+            fontSize: 14,
+            fontWeight: 700,
+            fontFamily: "inherit",
+            cursor: pending ? "default" : "pointer",
+            opacity: pending ? 0.6 : 1,
+          }}
+        >
+          {pending ? "Saving…" : "Save your game"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            background: "transparent",
+            color: C.textFaint,
+            border: `1px solid ${C.panelEdge}`,
+            borderRadius: 999,
+            padding: "8px 18px",
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          Cancel
+        </button>
+      </div>
 
       {result && !result.ok && (
         <p style={{ fontSize: 13, color: C.error, marginTop: 8 }}>{result.error}</p>
@@ -995,10 +1254,10 @@ function ActionButton({
   variant: "primary" | "danger" | "default";
   onClick: () => void;
 }) {
-  const styles: Record<string, { bg: string; color: string; border: string; hover: string }> = {
-    primary: { bg: C.light, color: "#fff", border: "none", hover: "#c47a24" },
-    danger: { bg: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", hover: "#FEE2E2" },
-    default: { bg: "#f5f0eb", color: C.textDim, border: `1px solid ${C.panelEdge}`, hover: "#ede7dd" },
+  const styles: Record<string, { bg: string; color: string; border: string }> = {
+    primary: { bg: C.light, color: "#fff", border: "none" },
+    danger: { bg: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA" },
+    default: { bg: "#f5f0eb", color: C.textDim, border: `1px solid ${C.panelEdge}` },
   };
   const s = styles[variant];
 

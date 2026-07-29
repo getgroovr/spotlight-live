@@ -12,6 +12,18 @@
 //   - Added "Profile" link to TopNav (Class | Deck | Profile)
 // Session 98:
 //   - Added "Multi" link to TopNav (Class | Deck | Multi | Profile)
+// Session 99:
+//   - Removed "Multi" from TopNav (back to Class | Deck | Profile)
+//   - Renamed "Your classes" → "Current classes"
+//   - Added prominent "Multi-Mode" button in header row
+// Session 100:
+//   - "Current classes" → "Classes"
+//   - Current / Archived toggle buttons replace bottom <details>
+//   - ClassHeader + archive/export bar folded into selected class card
+//   - Archived classes shown inline when Archived tab selected
+// Session 104:
+//   - Class settings (ClassHeader + archive bar) collapsed behind
+//     a toggle button — shown on click, not by default
 // ─────────────────────────────────────────────────────────────────────────
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -691,18 +703,6 @@ function TopNav() {
         Deck
       </Link>
       <Link
-        href="/teacher/multi"
-        style={{
-          color: C.textDim,
-          textDecoration: "none",
-          paddingBottom: 6,
-          marginBottom: -1,
-          fontWeight: 500,
-        }}
-      >
-        Multi
-      </Link>
-      <Link
         href="/teacher/profile"
         style={{
           color: C.textDim,
@@ -721,11 +721,13 @@ function TopNav() {
 export default async function TeacherStudents({
   searchParams,
 }: {
-  searchParams: Promise<{ class?: string | string[] }>;
+  searchParams: Promise<{ class?: string | string[]; tab?: string | string[] }>;
 }) {
   const params = await searchParams;
   const classParam =
     typeof params.class === "string" ? params.class : undefined;
+  const tabParam =
+    typeof params.tab === "string" ? params.tab : "current";
 
   const data = await getPageData(classParam);
 
@@ -780,7 +782,7 @@ export default async function TeacherStudents({
             }}
           >
             <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
-              Your classes
+              Classes
             </h1>
             <MessagePanel
               messages={data.msgMessages}
@@ -829,6 +831,8 @@ export default async function TeacherStudents({
     ? activeClasses
     : [selectedClass, ...activeClasses];
 
+  const showArchived = tabParam === "archived";
+
   return (
     <div
       style={{
@@ -856,10 +860,10 @@ export default async function TeacherStudents({
             gap: 8,
           }}
         >
-          <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
-            Your classes
-          </h1>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>
+              Classes
+            </h1>
             <MessagePanel
               messages={msgMessages}
               recipients={msgRecipients}
@@ -874,339 +878,447 @@ export default async function TeacherStudents({
               hasPending={hasPendingRequest}
             />
           </div>
+          <Link
+            href="/teacher/multi"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "10px 20px",
+              fontSize: 14,
+              fontWeight: 700,
+              color: "#fff",
+              background: C.light,
+              border: `2px solid ${C.light}`,
+              borderRadius: 24,
+              textDecoration: "none",
+              letterSpacing: 0.3,
+              transition: "all 0.15s ease",
+            }}
+          >
+            Multi-Mode →
+          </Link>
         </div>
 
-        {/* ── SECTION 1: Class settings header ── */}
-        <ClassHeader
-          key={selectedClass.id}
-          classes={dropdownClasses.map((c) => ({ id: c.id, name: c.name }))}
-          selectedClass={{
-            id: selectedClass.id,
-            name: selectedClass.name,
-            total_rounds: selectedClass.total_rounds ?? 5,
-            game_phase_hours:
-              selectedClass.game_phase_hours != null
-                ? Number(selectedClass.game_phase_hours)
-                : selectedClass.round_duration_hours != null
-                  ? Number(selectedClass.round_duration_hours)
-                  : 24,
-            review_phase_hours:
-              selectedClass.review_phase_hours != null
-                ? Number(selectedClass.review_phase_hours)
-                : 0,
-            game_starts_at: selectedClass.game_starts_at,
-            round_topics: (selectedClass.round_topics as Record<string, string | null>) ?? null,
-            teacher_prompt: selectedClass.teacher_prompt ?? null,
-            round_prompts: (selectedClass.round_prompts as Record<string, string | null>) ?? null,
-          }}
-          statusLine={statusLine}
-          topicOptionsWithId={topicOptionsWithId}
-          currentRound={currentRound}
-          currentPhase={currentPhase ?? undefined}
-        />
-
-        {/* Archive / export bar */}
-        {!selectedClass.is_archived && (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 8 }}>
-            <a
-              href={`/teacher/students/export?class=${selectedClass.id}`}
-              style={{
-                fontSize: 12, color: C.light, textDecoration: "none",
-                fontWeight: 600,
-              }}
-            >
-              Download class spreadsheet
-            </a>
-            <ArchiveClassButton classId={selectedClass.id} action="archive" />
-          </div>
-        )}
-
-        {/* ── SECTION 2: Pending queue ── */}
-        <div style={{ marginTop: 20 }}>
-          <PendingQueue
-            entries={pendingEntries}
-            favoriteComments={pendingFavoriteComments}
-          />
+        {/* ── Current / Archived toggle buttons ── */}
+        <div style={{ display: "flex", gap: 6, marginTop: 10, marginBottom: 16 }}>
+          <a
+            href="/teacher/students?tab=current"
+            style={{
+              padding: "6px 18px",
+              fontSize: 13,
+              fontWeight: 700,
+              borderRadius: 999,
+              textDecoration: "none",
+              border: `1px solid ${C.panelEdge}`,
+              background: !showArchived ? C.light : "transparent",
+              color: !showArchived ? "#fff" : C.textDim,
+              transition: "all 0.15s ease",
+            }}
+          >
+            Current{activeClasses.length > 0 ? ` (${activeClasses.length})` : ""}
+          </a>
+          <a
+            href="/teacher/students?tab=archived"
+            style={{
+              padding: "6px 18px",
+              fontSize: 13,
+              fontWeight: 700,
+              borderRadius: 999,
+              textDecoration: "none",
+              border: `1px solid ${C.panelEdge}`,
+              background: showArchived ? C.light : "transparent",
+              color: showArchived ? "#fff" : C.textDim,
+              transition: "all 0.15s ease",
+            }}
+          >
+            Archived{archivedClasses.length > 0 ? ` (${archivedClasses.length})` : ""}
+          </a>
         </div>
 
-        {/* ── SECTION 3: Classes with students (grouped by class) ── */}
-        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 10 }}>
-          {activeClasses.map((cls) => {
-            const isSelected = cls.id === selectedClass.id;
-            const count = activeClassCounts[cls.id] ?? 0;
-            const levelLabel = LEVEL_LABELS[cls.level || "beginner"] || "Beginning";
-            const clsStatus = buildStatusLine(cls);
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {/* ── CURRENT CLASSES VIEW ── */}
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {!showArchived && (
+          <>
+            {/* ── Pending queue ── */}
+            <div style={{ marginBottom: 20 }}>
+              <PendingQueue
+                entries={pendingEntries}
+                favoriteComments={pendingFavoriteComments}
+              />
+            </div>
 
-            return (
-              <div
-                key={cls.id}
-                style={{
-                  border: `1px solid ${isSelected ? C.light + "66" : C.panelEdge}`,
-                  borderRadius: 14,
-                  overflow: "hidden",
-                  background: isSelected ? "#fff" : C.panel,
-                  transition: "all 0.15s ease",
-                }}
-              >
-                {/* ── Class summary bar ── */}
-                {isSelected ? (
+            {/* ── Classes list ── */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {activeClasses.map((cls) => {
+                const isSelected = cls.id === selectedClass.id;
+                const count = activeClassCounts[cls.id] ?? 0;
+                const levelLabel = LEVEL_LABELS[cls.level || "beginner"] || "Beginning";
+                const clsStatus = buildStatusLine(cls);
+
+                return (
                   <div
+                    key={cls.id}
                     style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "12px 16px",
+                      border: `1px solid ${isSelected ? C.light + "66" : C.panelEdge}`,
+                      borderRadius: 14,
+                      overflow: "hidden",
+                      background: isSelected ? "#fff" : C.panel,
+                      transition: "all 0.15s ease",
                     }}
                   >
-                    <span style={{ fontSize: 12, color: C.light, lineHeight: 1, flexShrink: 0 }}>▾</span>
-                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
-                      {cls.name}
-                    </span>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
-                      background: C.light + "18", color: C.light,
-                    }}>
-                      {levelLabel}
-                    </span>
-                    <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
-                      {count} student{count !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                ) : (
-                  <a
-                    href={`/teacher/students?class=${cls.id}`}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "12px 16px",
-                      textDecoration: "none", color: "inherit",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <span style={{ fontSize: 12, color: C.textDim, lineHeight: 1, flexShrink: 0 }}>▸</span>
-                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
-                      {cls.name}
-                    </span>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
-                      background: C.panelEdge + "33", color: C.textDim,
-                    }}>
-                      {levelLabel}
-                    </span>
-                    <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
-                      {count} student{count !== 1 ? "s" : ""} · {clsStatus}
-                    </span>
-                  </a>
-                )}
-
-                {/* ── Expanded: student grid (selected class only) ── */}
-                {isSelected && (
-                  <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.panelEdge}44` }}>
-                    {students.length === 0 ? (
+                    {/* ── Class summary bar ── */}
+                    {isSelected ? (
                       <div
                         style={{
-                          background: C.panel,
-                          border: `1px dashed ${C.panelEdge}`,
-                          borderRadius: 16,
-                          padding: "32px 24px",
-                          textAlign: "center",
-                          color: C.textDim,
-                          fontSize: 14,
-                          lineHeight: 1.6,
-                          marginTop: 14,
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "12px 16px",
+                          flexWrap: "wrap",
                         }}
                       >
-                        No students yet. When someone plays the game and joins, they&apos;ll
-                        appear here.
+                        <span style={{ fontSize: 12, color: C.light, lineHeight: 1, flexShrink: 0 }}>▾</span>
+                        <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
+                          {cls.name}
+                        </span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                          background: C.light + "18", color: C.light,
+                        }}>
+                          {levelLabel}
+                        </span>
+                        <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
+                          {count} student{count !== 1 ? "s" : ""}
+                        </span>
                       </div>
                     ) : (
-                      <div
+                      <a
+                        href={`/teacher/students?class=${cls.id}`}
                         style={{
-                          display: "grid",
-                          gridTemplateColumns: "repeat(3, 1fr)",
-                          gap: 14,
-                          paddingTop: 14,
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "12px 16px",
+                          textDecoration: "none", color: "inherit",
+                          cursor: "pointer",
+                          flexWrap: "wrap",
                         }}
                       >
-                        {students.map((s) => (
-                          <Link
-                            key={s.id}
-                            href={`/teacher/students/${s.id}`}
-                            style={{ textDecoration: "none", color: "inherit" }}
+                        <span style={{ fontSize: 12, color: C.textDim, lineHeight: 1, flexShrink: 0 }}>▸</span>
+                        <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
+                          {cls.name}
+                        </span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                          background: C.panelEdge + "33", color: C.textDim,
+                        }}>
+                          {levelLabel}
+                        </span>
+                        <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap",
+                          overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%",
+                        }}>
+                          {count} student{count !== 1 ? "s" : ""} · {clsStatus}
+                        </span>
+                      </a>
+                    )}
+
+                    {/* ── Expanded: settings + students (selected class only) ── */}
+                    {isSelected && (
+                      <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.panelEdge}44` }}>
+
+                        {/* Session 104: Class settings behind collapsible toggle */}
+                        <details
+                          style={{ marginTop: 8, marginBottom: 4 }}
+                        >
+                          <summary
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: C.light,
+                              padding: "6px 0",
+                              listStyle: "none",
+                              userSelect: "none",
+                            }}
                           >
-                            <div
-                              style={{
-                                background: C.panel,
-                                border: `1px solid ${C.panelEdge}`,
-                                borderRadius: 16,
-                                padding: 16,
-                                height: "100%",
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: 12,
-                                transition: "transform 0.15s ease",
+                            <span style={{ fontSize: 10 }}>▸</span>
+                            Class settings
+                            <span style={{ fontSize: 11, color: C.textFaint, fontWeight: 400, marginLeft: 2 }}>
+                              {statusLine}
+                            </span>
+                          </summary>
+
+                          <style>{`details[open] > summary span:first-child { display: inline-block; transform: rotate(90deg); }`}</style>
+
+                          <div style={{ paddingTop: 4 }}>
+                            <ClassHeader
+                              key={selectedClass.id}
+                              classes={dropdownClasses.map((c) => ({ id: c.id, name: c.name }))}
+                              selectedClass={{
+                                id: selectedClass.id,
+                                name: selectedClass.name,
+                                total_rounds: selectedClass.total_rounds ?? 5,
+                                game_phase_hours:
+                                  selectedClass.game_phase_hours != null
+                                    ? Number(selectedClass.game_phase_hours)
+                                    : selectedClass.round_duration_hours != null
+                                      ? Number(selectedClass.round_duration_hours)
+                                      : 24,
+                                review_phase_hours:
+                                  selectedClass.review_phase_hours != null
+                                    ? Number(selectedClass.review_phase_hours)
+                                    : 0,
+                                game_starts_at: selectedClass.game_starts_at,
+                                round_topics: (selectedClass.round_topics as Record<string, string | null>) ?? null,
+                                teacher_prompt: selectedClass.teacher_prompt ?? null,
+                                round_prompts: (selectedClass.round_prompts as Record<string, string | null>) ?? null,
                               }}
-                            >
-                              <div
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 12,
-                                }}
+                              statusLine={statusLine}
+                              topicOptionsWithId={topicOptionsWithId}
+                              currentRound={currentRound}
+                              currentPhase={currentPhase ?? undefined}
+                            />
+
+                            {/* Archive / export bar */}
+                            {!selectedClass.is_archived && (
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 8 }}>
+                                <a
+                                  href={`/teacher/students/export?class=${selectedClass.id}`}
+                                  style={{
+                                    fontSize: 12, color: C.light, textDecoration: "none",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Download class spreadsheet
+                                </a>
+                                <ArchiveClassButton classId={selectedClass.id} action="archive" />
+                              </div>
+                            )}
+                          </div>
+                        </details>
+
+                        {/* Students */}
+                        {students.length === 0 ? (
+                          <div
+                            style={{
+                              background: C.panel,
+                              border: `1px dashed ${C.panelEdge}`,
+                              borderRadius: 16,
+                              padding: "32px 24px",
+                              textAlign: "center",
+                              color: C.textDim,
+                              fontSize: 14,
+                              lineHeight: 1.6,
+                              marginTop: 14,
+                            }}
+                          >
+                            No students yet. When someone plays the game and joins, they&apos;ll
+                            appear here.
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                              gap: 14,
+                              paddingTop: 14,
+                            }}
+                          >
+                            {students.map((s) => (
+                              <Link
+                                key={s.id}
+                                href={`/teacher/students/${s.id}`}
+                                style={{ textDecoration: "none", color: "inherit" }}
                               >
-                                {s.photoUrl ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    src={s.photoUrl}
-                                    alt=""
-                                    style={{
-                                      width: 52,
-                                      height: 52,
-                                      borderRadius: "50%",
-                                      objectFit: "cover",
-                                      border: `2px solid ${C.light}`,
-                                    }}
-                                  />
-                                ) : (
+                                <div
+                                  style={{
+                                    background: C.panel,
+                                    border: `1px solid ${C.panelEdge}`,
+                                    borderRadius: 16,
+                                    padding: 16,
+                                    height: "100%",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 12,
+                                    transition: "transform 0.15s ease",
+                                  }}
+                                >
                                   <div
                                     style={{
-                                      width: 52,
-                                      height: 52,
-                                      borderRadius: "50%",
-                                      background: C.panelEdge,
                                       display: "flex",
                                       alignItems: "center",
-                                      justifyContent: "center",
-                                      fontSize: 22,
-                                      color: "#fff",
-                                      flexShrink: 0,
+                                      gap: 12,
                                     }}
                                   >
-                                    {s.displayName[0]?.toUpperCase()}
+                                    {s.photoUrl ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img
+                                        src={s.photoUrl}
+                                        alt=""
+                                        style={{
+                                          width: 52,
+                                          height: 52,
+                                          borderRadius: "50%",
+                                          objectFit: "cover",
+                                          border: `2px solid ${C.light}`,
+                                        }}
+                                      />
+                                    ) : (
+                                      <div
+                                        style={{
+                                          width: 52,
+                                          height: 52,
+                                          borderRadius: "50%",
+                                          background: C.panelEdge,
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "center",
+                                          fontSize: 22,
+                                          color: "#fff",
+                                          flexShrink: 0,
+                                        }}
+                                      >
+                                        {s.displayName[0]?.toUpperCase()}
+                                      </div>
+                                    )}
+                                    <div style={{ minWidth: 0 }}>
+                                      <div
+                                        style={{
+                                          fontSize: 16,
+                                          fontWeight: 700,
+                                          whiteSpace: "nowrap",
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                        }}
+                                      >
+                                        {s.displayName}
+                                      </div>
+                                      {s.realName && s.realName !== s.displayName && (
+                                        <div
+                                          style={{
+                                            fontSize: 12,
+                                            color: C.textFaint,
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                          }}
+                                        >
+                                          {s.realName}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                )}
-                                <div style={{ minWidth: 0 }}>
+
                                   <div
                                     style={{
-                                      fontSize: 16,
-                                      fontWeight: 700,
-                                      whiteSpace: "nowrap",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
+                                      display: "flex",
+                                      gap: 8,
+                                      flexWrap: "wrap",
+                                      fontSize: 12,
                                     }}
                                   >
-                                    {s.displayName}
-                                  </div>
-                                  {s.realName && s.realName !== s.displayName && (
-                                    <div
+                                    <span
                                       style={{
-                                        fontSize: 12,
-                                        color: C.textFaint,
-                                        whiteSpace: "nowrap",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
+                                        background: C.light + "22",
+                                        color: C.text,
+                                        borderRadius: 20,
+                                        padding: "3px 10px",
                                       }}
                                     >
-                                      {s.realName}
+                                      {s.commentCount} comments
+                                    </span>
+                                    {!s.profileComplete && (
+                                      <span
+                                        style={{
+                                          background: "#E2554A22",
+                                          color: "#A23",
+                                          borderRadius: 20,
+                                          padding: "3px 10px",
+                                        }}
+                                      >
+                                        profile not finished
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {s.completedAt && (
+                                    <div
+                                      style={{
+                                        fontSize: 11,
+                                        color: C.textFaint,
+                                        marginTop: "auto",
+                                      }}
+                                    >
+                                      {s.round === 0 ? "Warm-up" : `Round ${s.round}`} ·{" "}
+                                      {new Date(s.completedAt).toLocaleDateString()}
                                     </div>
                                   )}
                                 </div>
-                              </div>
-
-                              <div
-                                style={{
-                                  display: "flex",
-                                  gap: 8,
-                                  flexWrap: "wrap",
-                                  fontSize: 12,
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    background: C.light + "22",
-                                    color: C.text,
-                                    borderRadius: 20,
-                                    padding: "3px 10px",
-                                  }}
-                                >
-                                  {s.commentCount} comments
-                                </span>
-                                {!s.profileComplete && (
-                                  <span
-                                    style={{
-                                      background: "#E2554A22",
-                                      color: "#A23",
-                                      borderRadius: 20,
-                                      padding: "3px 10px",
-                                    }}
-                                  >
-                                    profile not finished
-                                  </span>
-                                )}
-                              </div>
-
-                              {s.completedAt && (
-                                <div
-                                  style={{
-                                    fontSize: 11,
-                                    color: C.textFaint,
-                                    marginTop: "auto",
-                                  }}
-                                >
-                                  {s.round === 0 ? "Warm-up" : `Round ${s.round}`} ·{" "}
-                                  {new Date(s.completedAt).toLocaleDateString()}
-                                </div>
-                              )}
-                            </div>
-                          </Link>
-                        ))}
+                              </Link>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* ── ARCHIVED CLASSES ── */}
-        {archivedClasses.length > 0 && (
-          <details style={{ marginTop: 32 }}>
-            <summary style={{
-              cursor: "pointer",
-              fontSize: 13, fontWeight: 700, letterSpacing: 1,
-              textTransform: "uppercase", color: C.textFaint,
-              marginBottom: 12,
-            }}>
-              Archived classes ({archivedClasses.length})
-            </summary>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-              {archivedClasses.map((ac) => (
-                <div key={ac.id} style={{
-                  background: C.panel, border: `1px solid ${C.panelEdge}`,
-                  borderRadius: 12, padding: "12px 16px",
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  gap: 12, flexWrap: "wrap", opacity: 0.8,
-                }}>
-                  <div>
-                    <span style={{ fontWeight: 700, fontSize: 14 }}>{ac.name}</span>
-                    <span style={{ fontSize: 11, color: C.textFaint, marginLeft: 8 }}>
-                      archived {ac.created_at ? new Date(ac.created_at).toLocaleDateString() : ""}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                    <a
-                      href={`/teacher/students/export?class=${ac.id}`}
-                      style={{ fontSize: 11, color: C.light, textDecoration: "none", fontWeight: 600 }}
-                    >
-                      Download spreadsheet
-                    </a>
-                    <ArchiveClassButton classId={ac.id} action="unarchive" />
-                    {(archivedEnrollmentCounts[ac.id] ?? 0) === 0 && (
-                      <DeleteClassButton classId={ac.id} />
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          </details>
+          </>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {/* ── ARCHIVED CLASSES VIEW ── */}
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {showArchived && (
+          <>
+            {archivedClasses.length === 0 ? (
+              <div
+                style={{
+                  background: C.panel,
+                  border: `1px dashed ${C.panelEdge}`,
+                  borderRadius: 14,
+                  padding: "32px 24px",
+                  textAlign: "center",
+                  color: C.textDim,
+                  fontSize: 14,
+                }}
+              >
+                No archived classes.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {archivedClasses.map((ac) => (
+                  <div key={ac.id} style={{
+                    background: C.panel, border: `1px solid ${C.panelEdge}`,
+                    borderRadius: 12, padding: "12px 16px",
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    gap: 12, flexWrap: "wrap", opacity: 0.8,
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: 14 }}>{ac.name}</span>
+                      <span style={{ fontSize: 11, color: C.textFaint, marginLeft: 8 }}>
+                        archived {ac.created_at ? new Date(ac.created_at).toLocaleDateString() : ""}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                      <a
+                        href={`/teacher/students/export?class=${ac.id}`}
+                        style={{ fontSize: 11, color: C.light, textDecoration: "none", fontWeight: 600 }}
+                      >
+                        Download spreadsheet
+                      </a>
+                      <ArchiveClassButton classId={ac.id} action="unarchive" />
+                      {(archivedEnrollmentCounts[ac.id] ?? 0) === 0 && (
+                        <DeleteClassButton classId={ac.id} />
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
       </div>

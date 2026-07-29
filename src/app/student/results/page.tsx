@@ -9,6 +9,13 @@
 //   • U6: Awards/ceremony language throughout.
 //   • B51: Warm-up round still excluded.
 //
+// Session 99 — Student continuation CTA:
+//   • After the awards gate passes, resolves the teacher who runs this
+//     class (teacher_id → profile display_name) and checks whether they
+//     have any OTHER recruiting classes. Passes teacherId, teacherName,
+//     and teacherHasOpenClasses to ResultsCeremony so the finale can
+//     show a "Continue with [teacher] →" button.
+//
 // D2 (session 84) — Awards gate:
 //   • Before rendering the ceremony, checks that ALL favorite comments
 //     across ALL rounds for this class have been approved.
@@ -141,7 +148,20 @@ export default async function ResultsPage() {
     })),
   }));
 
-  return <ResultsCeremony rounds={serializedRounds} className={className} />;
+  // ── Session 99: Resolve teacher info for the continuation CTA ────────
+  // Find the teacher who runs the student's class, and check whether they
+  // have any other recruiting classes the student could continue with.
+  const teacherInfo = await resolveTeacherForContinuation();
+
+  return (
+    <ResultsCeremony
+      rounds={serializedRounds}
+      className={className}
+      teacherId={teacherInfo?.teacherId ?? null}
+      teacherName={teacherInfo?.teacherName ?? null}
+      teacherHasOpenClasses={teacherInfo?.hasOpenClasses ?? false}
+    />
+  );
 }
 
 // ── D2: Awards gate — check all favorite comments are approved ────────
@@ -203,5 +223,69 @@ async function checkAwardsGate(): Promise<{
     clear: pendingCount === 0 && rejectedCount === 0,
     pendingCount,
     rejectedCount,
+  };
+}
+
+// ── Session 99: Resolve teacher info for the "Continue" CTA ───────────
+// Finds the teacher who runs the student's current class, looks up their
+// display name, and checks whether they have at least one OTHER class
+// that is currently recruiting (so there's somewhere for the student to
+// continue). Returns null if anything can't be resolved (Supabase not
+// configured, student not logged in, etc.) — the CTA simply won't show.
+async function resolveTeacherForContinuation(): Promise<{
+  teacherId: string;
+  teacherName: string;
+  hasOpenClasses: boolean;
+} | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return null;
+
+  const ssr = await createClient();
+  if (!ssr) return null;
+  const { data: { user } } = await ssr.auth.getUser();
+  if (!user) return null;
+
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // Get the student's current class
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("class_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  const classId = profile?.class_id ?? null;
+  if (!classId) return null;
+
+  // Get the teacher who owns this class
+  const { data: cls } = await admin
+    .from("classes")
+    .select("teacher_id")
+    .eq("id", classId)
+    .maybeSingle();
+  if (!cls?.teacher_id) return null;
+
+  // Get the teacher's display name
+  const { data: teacherProfile } = await admin
+    .from("profiles")
+    .select("display_name")
+    .eq("id", cls.teacher_id)
+    .maybeSingle();
+  const teacherName = teacherProfile?.display_name || "your teacher";
+
+  // Check if the teacher has any recruiting classes (could be at the same
+  // or a different level — the student will see options on the profile page)
+  const { data: recruitingClasses } = await admin
+    .from("classes")
+    .select("id")
+    .eq("teacher_id", cls.teacher_id)
+    .eq("is_recruiting", true)
+    .limit(1);
+  const hasOpenClasses = (recruitingClasses?.length ?? 0) > 0;
+
+  return {
+    teacherId: cls.teacher_id,
+    teacherName,
+    hasOpenClasses,
   };
 }

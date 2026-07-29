@@ -1,39 +1,33 @@
 "use client";
 
 // ─────────────────────────────────────────────────────────────────────────
-// src/app/student/dashboard/FinishJoiningForm.tsx
+// src/app/student/dashboard/PhotoUploadForm.tsx
 //
-// Client wrapper around the finish-joining <form>. Uses useActionState
-// (aliased to useFormState below for grep continuity) to capture the
-// ActionResult returned by saveProfile and render a banner above the
-// submit button — red on failure, green on success.
+// Session 108: Step 2 of the two-step finish-joining flow.
 //
-// Before #26, saveProfile was Promise<void> and any failure (no class,
-// upload failed, insert failed) silently no-op'd; the student hit
-// "Finish joining →" and either nothing happened or they were left in
-// INCOMPLETE state with no explanation.
+// After the student has saved their name + screen name (step 1), the
+// dashboard transitions to this form. It collects:
+//   - First game entry photo (required) — becomes entries row at round 1
+//   - Description of the photo (required)
+//   - "Why was this your favorite?" comment (required when a warmup
+//     favorite exists) — saved on the game_session
 //
-// Success polish (#26 follow-up): green success banner and resets all
-// form fields on each successful submit by keying a wrapper div on a
-// submit counter — React unmounts and remounts the subtree, which resets
-// PhotoField's internal preview state alongside the native input/textarea
-// values.
+// On submit, calls saveFirstEntry which:
+//   - Uploads the photo to the media bucket
+//   - Creates the entries row
+//   - Sets profiles.class_id (fixing the no-class bug)
+//   - Saves the favorite comment on the game_session
 //
-// Note: on successful saveProfile, the dashboard immediately transitions
-// from INCOMPLETE to COMPLETE state and this component unmounts, so the
-// success banner and reset machinery here are effectively defense-in-
-// depth — they cost nothing but kick in if a re-render keeps the form
-// mounted (e.g. partial-save scenarios we haven't seen yet).
+// After success, the dashboard re-renders as COMPLETE (the student now
+// has an entry) and shows the full round stack.
 //
-// React/Next note: on Next 16 / React 19, useFormState from react-dom is
-// no longer available — useActionState from "react" replaces it. Same
-// signature (returns [state, dispatch, isPending] — we ignore isPending).
+// Uses useActionState (React 19) for error/success banners.
 // PhotoField is a pre-existing client component reused here.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { useActionState as useFormState } from "react";
 import { useEffect, useState } from "react";
-import { saveProfile, type ActionResult } from "@/app/play/actions";
+import { saveFirstEntry, type ActionResult } from "@/app/play/actions";
 import PhotoField from "./PhotoField";
 
 const C = {
@@ -52,28 +46,20 @@ const C = {
 const F = "'Outfit',sans-serif";
 
 type Props = {
-  studentName: string | null;
-  studentScreenName: string | null;
+  screenName: string;
   newestFavorite: {
     publicUrl: string | null;
     description_text: string | null;
   } | null;
 };
 
-export default function FinishJoiningForm({
-  studentName,
-  studentScreenName,
-  newestFavorite,
-}: Props) {
+export default function PhotoUploadForm({ screenName, newestFavorite }: Props) {
   const [state, formAction] = useFormState<ActionResult | null, FormData>(
-    saveProfile,
+    saveFirstEntry,
     null
   );
 
-  // Each successful submit bumps this counter. The wrapping <div key={...}>
-  // below keys on it, so a successful submit causes React to unmount and
-  // remount the whole subtree — which resets PhotoField (whose preview
-  // lives in its own client state) along with the native file/text inputs.
+  // Reset form on success (same pattern as the old FinishJoiningForm).
   const [submitId, setSubmitId] = useState(0);
   useEffect(() => {
     if (state?.ok) setSubmitId((n) => n + 1);
@@ -82,48 +68,7 @@ export default function FinishJoiningForm({
   return (
     <form action={formAction}>
       <div key={submitId}>
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
-            Your name <span style={{ color: C.textFaint, fontWeight: 400 }}>— your teacher sees this</span>
-          </label>
-          <input
-            name="name"
-            type="text"
-            required
-            defaultValue={studentName || ""}
-            placeholder="First name is fine"
-            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-              fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-              border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
-          />
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
-            Screen name <span style={{ color: C.textFaint, fontWeight: 400 }}>— what classmates see</span>
-          </label>
-          <input
-            name="screen_name"
-            type="text"
-            required
-            defaultValue={studentScreenName || ""}
-            placeholder="A name for the class to see"
-            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px",
-              fontFamily: F, fontSize: 14, background: "#FFFDF7", color: C.text,
-              border: `1px solid ${C.panelEdge}`, borderRadius: 10, outline: "none" }}
-          />
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <PhotoField
-            name="photo"
-            label="A photo of yourself"
-            helper="required — this is your avatar in the game"
-            required
-            previewSize={120}
-          />
-        </div>
-
+        {/* ── Favorite comment section (when a warmup favorite exists) ── */}
         {newestFavorite && (
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>
@@ -159,7 +104,7 @@ export default function FinishJoiningForm({
           </div>
         )}
 
-        {/* ── FIRST GAME ENTRY (required) — becomes their first entries row ── */}
+        {/* ── First game entry (required) ── */}
         <div style={{ marginTop: 8, marginBottom: 16, paddingTop: 18,
           borderTop: `1px solid ${C.panelEdge}` }}>
           <PhotoField
@@ -187,7 +132,7 @@ export default function FinishJoiningForm({
         </div>
       </div>
 
-      {/* ── Banners — live OUTSIDE the keyed wrapper so they persist across resets ── */}
+      {/* ── Banners — outside keyed wrapper so they persist ── */}
       {state?.ok && (
         <div role="status" style={{
           background: C.successBg, border: `1px solid ${C.successEdge}`,

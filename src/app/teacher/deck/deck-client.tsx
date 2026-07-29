@@ -386,7 +386,9 @@ function ClassCard({
         <span style={{ fontSize: 15, fontWeight: 700, color: C.text, flex: 1, minWidth: 0 }}>
           {classData.name}
         </span>
-        <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 12, color: C.textFaint, whiteSpace: "nowrap",
+          overflow: "hidden", textOverflow: "ellipsis",
+        }}>
           {photoCount} photo{photoCount !== 1 ? "s" : ""}
           {activeCount > 0 && ` · ${activeCount} in warmup`}
           {activeCount >= 3 && activeCount < 9 &&

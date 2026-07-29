@@ -1,14 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────
 // src/app/student/dashboard/page.tsx — the student profile.
 //
-// Landing page after the magic link. Two states:
+// Landing page after the magic link. Three states:
 //
-//   1. INCOMPLETE — they've just clicked the link but haven't finished
-//      joining. Shows the finish-joining form: real name, screen name, an
-//      OPTIONAL self-photo, the "why was this your favorite?" note, and the
-//      REQUIRED first game entry (a photo of their own + a description) that
-//      becomes their first `entries` row at round_number = 1.  Unchanged
-//      from #26 — FinishJoiningForm wraps saveProfile via useActionState.
+//   1a. PROFILE INCOMPLETE — name + screen name not set. Shows ProfileForm
+//       (step 1): two fields, one button. Calls saveProfileInfo.
+//
+//   1b. NEEDS FIRST ENTRY — profile set but no photo uploaded. Shows
+//       PhotoUploadForm (step 2): favorite comment + photo + description.
+//       Calls saveFirstEntry which creates the entry, sets profiles.class_id,
+//       and saves the favorite comment. This is when the student "exists."
+//
+//   Session 108: FinishJoiningForm replaced by ProfileForm + PhotoUploadForm.
+//   saveProfile split into saveProfileInfo + saveFirstEntry.
 //
 //   2. COMPLETE — shows the TWO-BAND ROUND STACK (#27, refined #28)
 //      followed by the "Your classes" history strip. The stack replaces
@@ -118,7 +122,10 @@
 // ─────────────────────────────────────────────────────────────────────────
 import { getStudentArchive, type OwnEntry, type ClassArchive, type RoundSessionData } from "@/lib/student-archive";
 import ProfileArchive from "./ProfileArchive";
-import FinishJoiningForm from "./FinishJoiningForm";
+// Session 108: FinishJoiningForm split into ProfileForm + PhotoUploadForm.
+// The old FinishJoiningForm.tsx can be deleted from the project.
+import ProfileForm from "./ProfileForm";
+import PhotoUploadForm from "./PhotoUploadForm";
 // Session 77: AddEntryForm import removed — photos are added through the
 // game flow only, not the dashboard.
 import RemoveEntryButton from "./RemoveEntryButton";
@@ -756,7 +763,13 @@ export default async function StudentProfile() {
   const newest = classes[0] || null;
   const newestFavorite = newest?.entries.find((e) => e.isFavorite) || null;
 
-  const isComplete = !!(student.name && student.screen_name && newest?.favoriteComment);
+  // Session 108: Two-step completion check.
+  // Step 1 complete: student has name + screen name set.
+  // Step 2 complete: student has uploaded at least one entry.
+  // Both must be true for the dashboard to show the full round stack.
+  const profileComplete = !!(student.name && student.screen_name);
+  const hasFirstEntry = ownEntries.length > 0;
+  const isComplete = profileComplete && hasFirstEntry;
 
   // ── MESSAGE DATA (session 77) ──────────────────────────────────────────
   let msgMessages: MessageRow[] = [];
@@ -881,26 +894,50 @@ export default async function StudentProfile() {
     }
   }
 
-  // ── INCOMPLETE: finish-joining form ──────────────────────────────────
+  // ── INCOMPLETE: two-step finish-joining flow (Session 108) ──────────
   if (!isComplete) {
+    // Step 1: profile info (name + screen name)
+    if (!profileComplete) {
+      return (
+        <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
+          fontFamily: F, color: C.text }}>
+          <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
+          <div style={{ maxWidth: 560, margin: "0 auto" }}>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 6px" }}>
+              Finish joining
+            </h1>
+            <p style={{ fontSize: 14, color: C.textDim, lineHeight: 1.6, margin: "0 0 24px" }}>
+              You&apos;re almost in. This is your profile — the home base for the class.
+              Each round you&apos;ll look at a set of photos, write about them, and add one
+              of your own; everything you and your teacher write stacks up here over
+              time. First, a couple of things:
+            </p>
+
+            <ProfileForm
+              studentName={student.name}
+              studentScreenName={student.screen_name}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // Step 2: first photo upload + favorite comment
     return (
       <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1rem 4rem",
         fontFamily: F, color: C.text }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
         <div style={{ maxWidth: 560, margin: "0 auto" }}>
           <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 6px" }}>
-            Finish joining
+            One more step, {student.screen_name}
           </h1>
           <p style={{ fontSize: 14, color: C.textDim, lineHeight: 1.6, margin: "0 0 24px" }}>
-            You&apos;re almost in. This is your profile — the home base for the class.
-            Each round you&apos;ll look at a set of photos, write about them, and add one
-            of your own; everything you and your teacher write stacks up here over
-            time. First, a couple of things:
+            Upload your first photo for the class. This is what your classmates will
+            see and comment on. Once your teacher approves it, you&apos;re in the game.
           </p>
 
-          <FinishJoiningForm
-            studentName={student.name}
-            studentScreenName={student.screen_name}
+          <PhotoUploadForm
+            screenName={student.screen_name || ""}
             newestFavorite={newestFavorite ? {
               publicUrl: newestFavorite.publicUrl,
               description_text: newestFavorite.description_text,
@@ -1004,14 +1041,17 @@ export default async function StudentProfile() {
         <AutoRefresh />
 
         {/* ── HEADER ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
-          <div style={{ width: 64, height: 64, borderRadius: "50%",
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20,
+          flexWrap: "wrap",
+        }}>
+          <div style={{ width: 52, height: 52, borderRadius: "50%",
             background: C.panelEdge, display: "flex", alignItems: "center",
-            justifyContent: "center", fontSize: 28, color: "#fff" }}>
+            justifyContent: "center", fontSize: 24, color: "#fff", flexShrink: 0,
+          }}>
             {displayName[0]?.toUpperCase()}
           </div>
-          <div>
-            <h1 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 4px" }}>
               {isGameOver
                 ? `Well done, ${displayName}.`
                 : `Welcome, ${displayName}.`}
@@ -1024,7 +1064,7 @@ export default async function StudentProfile() {
                     : "You're in the class.")}
             </div>
           </div>
-          <div style={{ marginLeft: "auto", flexShrink: 0 }}>
+          <div style={{ flexShrink: 0 }}>
             <MessagePanel
               messages={msgMessages}
               recipients={msgRecipients}

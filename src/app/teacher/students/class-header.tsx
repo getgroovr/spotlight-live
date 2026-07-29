@@ -14,6 +14,11 @@
 //   - Round count note: "X rounds total (warmup + N student rounds)"
 //   - Review time dropdown filters to values less than round time
 //   - "Round N" → "Student round N" in titles and prompts
+//
+// Session 100:
+//   - Cleaned up GAME_TIME_OPTIONS: removed 15 min, 5 hours, 22 hours,
+//     6 days. Added 6 hours, 12 hours.
+//   - durationLabel updated for new values.
 // ─────────────────────────────────────────────────────────────────────────
 "use client";
 
@@ -38,27 +43,25 @@ const C = {
 };
 
 const GAME_TIME_OPTIONS: { value: string; label: string }[] = [
-  { value: "0.25", label: "15 min" },
   { value: "0.5", label: "30 min" },
   { value: "1", label: "1 hour" },
   { value: "1.5", label: "90 min" },
   { value: "2", label: "2 hours" },
-  { value: "5", label: "5 hours" },
-  { value: "22", label: "22 hours" },
+  { value: "6", label: "6 hours" },
+  { value: "12", label: "12 hours" },
   { value: "24", label: "1 day" },
   { value: "46", label: "46 hours" },
   { value: "48", label: "2 days" },
-  { value: "144", label: "6 days" },
   { value: "168", label: "1 week" },
 ];
 
 const REVIEW_TIME_OPTIONS: { value: string; label: string }[] = [
   { value: "0", label: "None" },
-  { value: "0.25", label: "15 min" },
   { value: "0.5", label: "30 min" },
   { value: "1", label: "1 hour" },
   { value: "2", label: "2 hours" },
-  { value: "5", label: "5 hours" },
+  { value: "6", label: "6 hours" },
+  { value: "12", label: "12 hours" },
   { value: "24", label: "1 day" },
   { value: "48", label: "2 days" },
 ];
@@ -67,9 +70,9 @@ function durationLabel(hours: number | null): string {
   if (hours == null) return "";
   if (hours === 0) return "none";
   const labels: Record<string, string> = {
-    "0.25": "15 min", "0.5": "30 min", "1": "1 hr", "1.5": "90 min",
-    "2": "2 hr", "5": "5 hr", "22": "22 hr", "24": "1 day",
-    "46": "46 hr", "48": "2 days", "144": "6 days", "168": "1 week",
+    "0.5": "30 min", "1": "1 hr", "1.5": "90 min",
+    "2": "2 hr", "6": "6 hr", "12": "12 hr",
+    "24": "1 day", "46": "46 hr", "48": "2 days", "168": "1 week",
   };
   return labels[String(hours)] || `${hours}h`;
 }

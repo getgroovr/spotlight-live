@@ -296,7 +296,7 @@ function RoundSplash({ round, totalRounds, currentTopic, onDismiss }) {
           background: "linear-gradient(145deg, #FBF6EC 0%, #F3E4C4 100%)",
           border: "4px solid #D98A2B",
           borderRadius: 20,
-          padding: "36px 52px",
+          padding: "30px clamp(20px, 8vw, 52px)",
           boxShadow: "0 8px 40px rgba(0,0,0,0.4), 0 0 80px rgba(217,138,43,0.3), inset 0 1px 0 rgba(255,255,255,0.6)",
           textAlign: "center",
           position: "relative",
