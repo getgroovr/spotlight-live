@@ -252,7 +252,10 @@ export default async function PlayBrowsePage() {
         <div style={styles.header}>
           <h1 style={styles.title}>Spotlight</h1>
           <p style={styles.subtitle}>
-            Play a free warmup round to see how it works, then join a class
+            Try a warmup — browse a teacher&apos;s photos, leave comments,
+            and pick your favorite. Join a class to share your own photos,
+            comment on classmates&apos; work, and get personalized feedback
+            from your teacher on your language.
           </p>
         </div>
 

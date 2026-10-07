@@ -79,16 +79,7 @@ export default async function TeacherProfilePage({
     .eq("teacher_id", id)
     .order("created_at", { ascending: true });
 
-  // Count enrolled students per class
-  const classRows: ClassRow[] = [];
-  for (const c of classes || []) {
-    const { count } = await supabase
-      .from("enrollments")
-      .select("id", { count: "exact", head: true })
-      .eq("class_id", c.id)
-      .eq("status", "active");
-    classRows.push({ ...c, _enrolled: count || 0 });
-  }
+  const classRows: ClassRow[] = (classes || []).map((c) => ({ ...c, _enrolled: 0 }));
 
   // Group by level
   const byLevel = new Map<string, ClassRow[]>();
@@ -159,9 +150,7 @@ export default async function TeacherProfilePage({
                     <div key={cls.id} style={styles.classCard}>
                       <div style={styles.classInfo}>
                         <span style={styles.className}>{cls.name}</span>
-                        <span style={styles.classCapacity}>
-                          {cls._enrolled}/{cls.capacity} students
-                        </span>
+
                         {cls.round_topics?.["0"] && (
                           <span style={styles.warmupTitle}>
                             Warmup: {cls.round_topics["0"]}
@@ -301,10 +290,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: "#3D2E1E",
   },
-  classCapacity: {
-    fontSize: "0.85rem",
-    color: "#8A7B6B",
-  },
+
   warmupTitle: {
     fontSize: "0.85rem",
     color: "#7A6B5D",

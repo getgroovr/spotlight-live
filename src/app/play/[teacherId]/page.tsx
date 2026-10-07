@@ -67,50 +67,25 @@ export default async function PlayTeacherPage({
 
     const admin = createServiceClient(supabaseUrl, serviceKey);
 
-    // Verify teacher exists
+    // Verify teacher exists + grab display name for warmup context
     const { data: teacher } = await admin
       .from("profiles")
-      .select("id")
+      .select("id, display_name")
       .eq("id", teacherId)
       .eq("role", "teacher")
       .maybeSingle();
 
     if (!teacher) return <TeacherNotFound />;
+    const teacherDisplayName = teacher.display_name || "Your teacher";
 
-    // Find the recruiting class at this level
-    const { data: targetClass } = await admin
-      .from("classes")
-      .select("id")
-      .eq("teacher_id", teacherId)
-      .eq("level", validLevel)
-      .eq("is_recruiting", true)
-      .eq("is_archived", false)
-      .limit(1)
-      .maybeSingle();
-
-    if (!targetClass) {
-      // No recruiting class at this level — check if ANY class exists
-      const { data: anyClass } = await admin
-        .from("classes")
-        .select("id")
-        .eq("teacher_id", teacherId)
-        .eq("level", validLevel)
-        .eq("is_archived", false)
-        .limit(1)
-        .maybeSingle();
-
-      if (!anyClass) return <TeacherNotFound />;
-      return <DeckBeingPrepared have={0} />;
-    }
-
-    // Load active starters from this specific class only
+    // Load starters flagged for this recruiting level (teacher-level, not class-level)
     const { data: starters } = await admin
       .from("entries")
       .select("id, media_url, description_text")
-      .eq("class_id", targetClass.id)
+      .eq("student_id", teacherId)
       .eq("is_starter", true)
-      .eq("is_active", true)
       .eq("status", "live")
+      .contains("recruiting_levels", [validLevel])
       .order("uploaded_at", { ascending: true });
 
     const active = starters || [];
@@ -142,13 +117,28 @@ export default async function PlayTeacherPage({
       };
     });
 
-    return <GameShell initialStudents={students} />;
+    return <GameShell initialStudents={students} gameType="warmup" teacherName={teacherDisplayName} teacherId={teacherId} />;
   }
 
   // ── Fallback: no level param — use loadTeacherDeck (backward compat) ─
   const deck = await loadTeacherDeck(teacherId);
 
-  if (deck.ok) return <GameShell initialStudents={deck.students} />;
+  if (deck.ok) {
+    // Load teacher name for warmup context
+    let fallbackTeacherName = "Your teacher";
+    const supabaseUrl2 = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey2 = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (supabaseUrl2 && serviceKey2) {
+      const admin2 = createServiceClient(supabaseUrl2, serviceKey2);
+      const { data: profile } = await admin2
+        .from("profiles")
+        .select("display_name")
+        .eq("id", teacherId)
+        .maybeSingle();
+      if (profile?.display_name) fallbackTeacherName = profile.display_name;
+    }
+    return <GameShell initialStudents={deck.students} gameType="warmup" teacherName={fallbackTeacherName} teacherId={teacherId} />;
+  }
 
   if (deck.reason === "no-supabase") return <GameShell />;
   if (deck.reason === "no-teacher") return <TeacherNotFound />;

@@ -737,21 +737,30 @@ export default async function StudentProfile() {
       <div style={{ background: C.bg, minHeight: "100vh", padding: "4rem 1rem",
         fontFamily: F, color: C.text, textAlign: "center" }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');`}</style>
-        <h1 style={{ fontSize: 24, marginBottom: 12 }}>Something&apos;s off</h1>
-        <p style={{ color: C.textDim }}>
-          {data.error === "not-enrolled"
-            ? "You're signed in, but we couldn't find your enrollment. You may need to play the warm-up round first to join a class."
-            : data.error}
-        </p>
-        {data.error === "not-enrolled" && (
-          <a href="/play" style={{
-            display: "inline-block", marginTop: 16,
-            background: C.light, color: "#fff",
-            padding: "12px 24px", borderRadius: 10,
-            fontSize: 14, fontWeight: 700, textDecoration: "none",
-          }}>
-            Play the warm-up round →
-          </a>
+        {data.error === "not-enrolled" ? (
+          <>
+            <div style={{ fontSize: 48, marginBottom: 8 }}>🔦</div>
+            <h1 style={{ fontSize: 24, marginBottom: 12 }}>Welcome to Spotlight</h1>
+            <p style={{ color: C.textDim, maxWidth: 480, margin: "0 auto 8px", lineHeight: 1.6 }}>
+              You&apos;re signed in! Take a look at a teacher&apos;s profile and try
+              a warmup to see how the game works. Your teacher will respond to your
+              comments. If you join a class, you&apos;ll also get personalized language
+              guidance and instruction.
+            </p>
+            <a href="/play" style={{
+              display: "inline-block", marginTop: 16,
+              background: C.light, color: "#fff",
+              padding: "12px 24px", borderRadius: 10,
+              fontSize: 14, fontWeight: 700, textDecoration: "none",
+            }}>
+              Browse teachers →
+            </a>
+          </>
+        ) : (
+          <>
+            <h1 style={{ fontSize: 24, marginBottom: 12 }}>Something&apos;s off</h1>
+            <p style={{ color: C.textDim }}>{data.error}</p>
+          </>
         )}
       </div>
     );

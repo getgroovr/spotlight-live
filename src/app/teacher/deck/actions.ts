@@ -116,6 +116,21 @@ export async function uploadStarter(formData: FormData): Promise<UploadResult> {
     return { ok: false, error: `Could not save entry: ${insErr.message}` };
   }
 
+  // Create the initial class assignment in the junction table
+  // Find the entry we just created (by media_url, unique per upload)
+  const { data: newEntry } = await admin
+    .from("entries")
+    .select("id")
+    .eq("media_url", path)
+    .maybeSingle();
+  if (newEntry) {
+    await admin.from("starter_assignments").insert({
+      entry_id: newEntry.id,
+      class_id: classId,
+      is_active: true,
+    }).then(() => {}); // fire and forget — assignment is supplementary
+  }
+
   revalidatePath("/teacher/deck");
   return { ok: true };
 }
@@ -315,5 +330,107 @@ export async function createClassWithLevel(
 
   revalidatePath("/teacher/deck");
   revalidatePath("/teacher/students");
+  return { ok: true };
+}
+
+// ── toggleClassAssignment ───────────────────────────────────────────────
+// Assigns or unassigns a starter photo to/from a class.
+// If the entry+class row exists → delete it (unassign).
+// If it doesn't exist → insert it (assign, active by default).
+export async function toggleClassAssignment(
+  entryId: string,
+  classId: string,
+): Promise<UploadResult> {
+  const { error, supabase, userId } = await requireTeacher();
+  if (error || !supabase || !userId) return { ok: false, error: error || "Auth failed." };
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return { ok: false, error: "Server config error." };
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // Verify teacher owns this entry
+  const { data: entry } = await admin
+    .from("entries")
+    .select("id, student_id, is_starter")
+    .eq("id", entryId)
+    .maybeSingle();
+  if (!entry || !entry.is_starter || entry.student_id !== userId)
+    return { ok: false, error: "Starter not found." };
+
+  // Verify teacher owns the target class
+  const { data: cls } = await admin
+    .from("classes")
+    .select("id, teacher_id")
+    .eq("id", classId)
+    .maybeSingle();
+  if (!cls || cls.teacher_id !== userId)
+    return { ok: false, error: "Class not found." };
+
+  // Check if assignment exists
+  const { data: existing } = await admin
+    .from("starter_assignments")
+    .select("entry_id")
+    .eq("entry_id", entryId)
+    .eq("class_id", classId)
+    .maybeSingle();
+
+  if (existing) {
+    // Unassign
+    await admin
+      .from("starter_assignments")
+      .delete()
+      .eq("entry_id", entryId)
+      .eq("class_id", classId);
+  } else {
+    // Assign
+    await admin
+      .from("starter_assignments")
+      .insert({ entry_id: entryId, class_id: classId, is_active: true });
+  }
+
+  revalidatePath("/teacher/deck");
+  return { ok: true };
+}
+
+// ── toggleRecruitingLevel ───────────────────────────────────────────────
+// Adds or removes a level from a starter's recruiting_levels array.
+// Controls which anonymous warmups this photo appears in.
+export async function toggleRecruitingLevel(
+  entryId: string,
+  level: string,
+): Promise<UploadResult> {
+  if (!VALID_LEVELS.has(level)) return { ok: false, error: "Invalid level." };
+
+  const { error, supabase, userId } = await requireTeacher();
+  if (error || !supabase || !userId) return { ok: false, error: error || "Auth failed." };
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return { ok: false, error: "Server config error." };
+  const admin = createServiceClient(supabaseUrl, serviceKey);
+
+  // Verify teacher owns this entry
+  const { data: entry } = await admin
+    .from("entries")
+    .select("id, student_id, is_starter, recruiting_levels")
+    .eq("id", entryId)
+    .maybeSingle();
+  if (!entry || !entry.is_starter || entry.student_id !== userId)
+    return { ok: false, error: "Starter not found." };
+
+  const current: string[] = entry.recruiting_levels || [];
+  const hasLevel = current.includes(level);
+  const updated = hasLevel
+    ? current.filter((l: string) => l !== level)
+    : [...current, level];
+
+  const { error: updErr } = await admin
+    .from("entries")
+    .update({ recruiting_levels: updated })
+    .eq("id", entryId);
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/teacher/deck");
   return { ok: true };
 }

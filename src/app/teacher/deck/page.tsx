@@ -80,11 +80,25 @@ export default async function TeacherDeckPage() {
   // ── Fetch all starter entries for this teacher ────────────────────────
   const { data: rows } = await supabase
     .from("entries")
-    .select("id, media_url, description_text, is_active, class_id, uploaded_at")
+    .select("id, media_url, description_text, is_active, class_id, uploaded_at, recruiting_levels")
     .eq("student_id", user.id)
     .eq("is_starter", true)
     .eq("status", "live")
     .order("uploaded_at", { ascending: true });
+
+  // ── Fetch all starter assignments ─────────────────────────────────────
+  const entryIds = (rows || []).map((r) => r.id);
+  let assignmentsByEntry = new Map<string, { class_id: string; is_active: boolean }[]>();
+  if (entryIds.length > 0) {
+    const { data: assignments } = await supabase
+      .from("starter_assignments")
+      .select("entry_id, class_id, is_active")
+      .in("entry_id", entryIds);
+    for (const a of assignments || []) {
+      if (!assignmentsByEntry.has(a.entry_id)) assignmentsByEntry.set(a.entry_id, []);
+      assignmentsByEntry.get(a.entry_id)!.push({ class_id: a.class_id, is_active: a.is_active });
+    }
+  }
 
   // ── Group photos by class_id with signed URLs ─────────────────────────
   const photosByClass = new Map<string, Starter[]>();
@@ -102,6 +116,8 @@ export default async function TeacherDeckPage() {
       is_active: r.is_active ?? true,
       signed_url: publicUrl,
       uploaded_at: r.uploaded_at,
+      recruiting_levels: r.recruiting_levels || [],
+      assignments: assignmentsByEntry.get(r.id) || [],
     };
     const classId = r.class_id;
     if (!photosByClass.has(classId)) photosByClass.set(classId, []);
@@ -123,6 +139,13 @@ export default async function TeacherDeckPage() {
     };
   });
 
+  // ── Build allClasses summary for photo assignment controls ──────────
+  const allClassesSummary = (teacherClasses || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    level: c.level || "beginner",
+  }));
+
   return (
     <Frame>
       <TopNav />
@@ -134,6 +157,7 @@ export default async function TeacherDeckPage() {
       </p>
       <DeckClient
         classes={classesData}
+        allClasses={allClassesSummary}
         initialDisplayName={profile.display_name || ""}
       />
     </Frame>

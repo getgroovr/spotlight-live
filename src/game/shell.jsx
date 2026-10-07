@@ -26,7 +26,7 @@ import App from "./spotlight.jsx";
 //   currentTopic / nextRoundTopic threaded from page → shell → App.
 //   RoundSplash shows "Round N — Topic" when currentTopic is set.
 /**
- * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student", warmupComplete?: boolean, currentRound?: number, totalRounds?: number | null, currentTopic?: string | null, nextRoundTopic?: string | null, teacherPrompt?: string | null }} props
+ * @param {{ initialStudents?: unknown[], mode?: "visitor" | "student", warmupComplete?: boolean, currentRound?: number, totalRounds?: number | null, currentTopic?: string | null, nextRoundTopic?: string | null, teacherPrompt?: string | null, gameType?: "warmup" | null, teacherName?: string | null, teacherId?: string | null }} props
  */
 
 function hasSeenRoundSplash(round) {
@@ -40,7 +40,7 @@ function markRoundSplashSeen(round) {
   } catch {}
 }
 
-export default function GameShell({ initialStudents, mode, warmupComplete, currentRound, totalRounds, currentTopic, nextRoundTopic, teacherPrompt } = {}) {
+export default function GameShell({ initialStudents, mode, warmupComplete, currentRound, totalRounds, currentTopic, nextRoundTopic, teacherPrompt, gameType, teacherName, teacherId } = {}) {
   // B57 FIX: tri-state — null means "still checking sessionStorage."
   // Server renders null → tan background div. Client hydrates to same.
   // useEffect then resolves to true (show splash) or false (skip).
@@ -142,6 +142,9 @@ export default function GameShell({ initialStudents, mode, warmupComplete, curre
           currentTopic={currentTopic || null}
           nextRoundTopic={nextRoundTopic || null}
           teacherPrompt={teacherPrompt || null}
+          gameType={gameType || null}
+          teacherName={teacherName || null}
+          teacherId={teacherId || null}
         />
       </div>
     </div>

@@ -1195,7 +1195,7 @@ function StudentFavoriteEdit({
 // ─────────────────────────────────────────────────────────────────────────
 function DoneScreen({
   myComments, students, totalStudents, onPlayAgain, onCommentChange, mode = "visitor",
-  currentRound, totalRounds, nextRoundTopic,
+  currentRound, totalRounds, nextRoundTopic, gameType, teacherName, teacherId,
 }) {
   const [favoriteId, setFavoriteId] = useState(null);
   const [donePhase, setDonePhase] = useState("review");
@@ -1231,23 +1231,46 @@ function DoneScreen({
                 ↑ Tap the photo you liked the most to continue
               </p>
             )}
-            <button
-              onClick={() => setDonePhase(mode === "student" ? "save" : "enroll")}
-              disabled={!favoriteId}
-              style={{
-                fontFamily: F, fontSize: 15, fontWeight: 700,
-                padding: "12px 34px",
-                background: favoriteId ? C.light : C.panelEdge,
-                color: favoriteId ? C.stageDeep : C.textFaint,
-                border: "none", borderRadius: 30,
-                cursor: favoriteId ? "pointer" : "not-allowed",
-                letterSpacing: 0.5,
-                boxShadow: favoriteId ? `0 8px 24px ${C.light}55` : "none",
-                transition: "all 0.2s ease",
-              }}
-            >
-              {mode === "student" ? "Save your favorite →" : "Join the class →"}
-            </button>
+            {gameType === "warmup" && teacherId ? (
+              /* Warmup mode: link to teacher profile instead of enrollment */
+              <a
+                href={favoriteId ? `/teachers/${teacherId}` : undefined}
+                onClick={(e) => { if (!favoriteId) e.preventDefault(); }}
+                style={{
+                  display: "inline-block",
+                  fontFamily: F, fontSize: 15, fontWeight: 700,
+                  padding: "12px 34px",
+                  background: favoriteId ? C.light : C.panelEdge,
+                  color: favoriteId ? C.stageDeep : C.textFaint,
+                  border: "none", borderRadius: 30,
+                  cursor: favoriteId ? "pointer" : "not-allowed",
+                  letterSpacing: 0.5,
+                  boxShadow: favoriteId ? `0 8px 24px ${C.light}55` : "none",
+                  transition: "all 0.2s ease",
+                  textDecoration: "none",
+                }}
+              >
+                {`See ${teacherName || "teacher"}'s profile →`}
+              </a>
+            ) : (
+              <button
+                onClick={() => setDonePhase(mode === "student" ? "save" : "enroll")}
+                disabled={!favoriteId}
+                style={{
+                  fontFamily: F, fontSize: 15, fontWeight: 700,
+                  padding: "12px 34px",
+                  background: favoriteId ? C.light : C.panelEdge,
+                  color: favoriteId ? C.stageDeep : C.textFaint,
+                  border: "none", borderRadius: 30,
+                  cursor: favoriteId ? "pointer" : "not-allowed",
+                  letterSpacing: 0.5,
+                  boxShadow: favoriteId ? `0 8px 24px ${C.light}55` : "none",
+                  transition: "all 0.2s ease",
+                }}
+              >
+                {mode === "student" ? "Save your favorite →" : "Join the class →"}
+              </button>
+            )}
             {mode !== "student" && (
               <button onClick={onPlayAgain}
                 style={{ fontFamily: F, fontSize: 12, color: C.textDim, background: "none",
@@ -1284,7 +1307,7 @@ function DoneScreen({
   );
 }
 
-export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds, currentTopic, nextRoundTopic, teacherPrompt }) {
+export default function App({ initialStudents = STUDENTS, mode = "visitor", currentRound, totalRounds, currentTopic, nextRoundTopic, teacherPrompt, gameType, teacherName, teacherId }) {
   // Chunk F: pad the deck to 9 with monster filler cards. useMemo ensures
   // the same set of monsters persists across re-renders (shuffle positions
   // are fixed for the session). Monster tiles have isMonster:true and
@@ -1460,7 +1483,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
         <div style={{ position: "relative", zIndex: 1 }}>
           <div style={{ fontFamily: F, fontSize: 13, letterSpacing: 5, color: C.light,
             marginBottom: 10, animation: "fadeUp 0.6s ease", textTransform: "uppercase" }}>
-            {TEACHER.className}
+            {gameType === "warmup" ? "Meet your teacher" : TEACHER.className}
           </div>
           <h1 style={{ fontFamily: F, fontSize: 60, fontWeight: 800, letterSpacing: -2,
             color: C.text, margin: "0 0 6px", animation: "fadeUp 0.7s ease" }}>
@@ -1470,9 +1493,11 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
             maxWidth: 360, margin: "0 auto 24px", lineHeight: 1.6, animation: "fadeUp 0.9s ease" }}>
             {soloSelf
               ? "Here you are. Classmates' photos will appear in the empty spots as they join."
-              : hasSelf
-                ? `${playableCount} ${playableCount === 1 ? "classmate" : "classmates"} to meet. Hit stop, look closely, and tell us what you see.`
-                : `${playableCount} photos. Hit stop, look closely, and tell us what you see.`}
+              : gameType === "warmup"
+                ? `${teacherName || "Your teacher"} picked ${playableCount} photo${playableCount === 1 ? "" : "s"} to share. Take a look and share your thoughts.`
+                : hasSelf
+                  ? `${playableCount} ${playableCount === 1 ? "classmate" : "classmates"} to meet. Hit stop, look closely, and tell us what you see.`
+                  : `${playableCount} photos. Hit stop, look closely, and tell us what you see.`}
           </p>
           {soloSelf ? (
             // No game to play yet — only the student's own tile exists. Render
@@ -1550,7 +1575,7 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
                   cursor: "not-allowed", letterSpacing: 1, opacity: 0.5,
                   display: "block", marginLeft: "auto", marginRight: "auto", marginBottom: 10 }}
               >
-                Enter the stage
+                {gameType === "warmup" ? "Start the warmup" : "Enter the stage"}
               </button>
               <div style={{
                 fontFamily: F, fontSize: 12, color: C.textFaint,
@@ -1588,8 +1613,18 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
                 cursor: "pointer", letterSpacing: 1,
                 animation: "fadeUp 1.1s ease", boxShadow: `0 8px 30px ${C.light}44` }}
             >
-              Enter the stage
+              {gameType === "warmup" ? "Start the warmup →" : "Enter the stage"}
             </button>
+          )}
+          {/* Back link — lets visitors return to the browse page */}
+          {gameType === "warmup" && (
+            <div style={{ marginTop: 16, animation: "fadeUp 1.3s ease" }}>
+              <a href="/play"
+                style={{ fontFamily: F, fontSize: 12, color: C.textFaint,
+                  textDecoration: "underline" }}>
+                ← Browse teachers
+              </a>
+            </div>
           )}
         </div>
       </div>
@@ -1616,6 +1651,8 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
               <button onClick={() => {
                   if (mode === "student") {
                     window.location.href = "/student/dashboard";
+                  } else if (gameType === "warmup") {
+                    window.location.href = "/play";
                   } else {
                     setView("splash");
                   }
@@ -1725,6 +1762,9 @@ export default function App({ initialStudents = STUDENTS, mode = "visitor", curr
           currentRound={currentRound}
           totalRounds={totalRounds}
           nextRoundTopic={nextRoundTopic}
+          gameType={gameType}
+          teacherName={teacherName}
+          teacherId={teacherId}
         />
       )}
     </div>

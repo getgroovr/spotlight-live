@@ -25,6 +25,8 @@ import {
   updateStarterDescription,
   toggleInWarmup,
   toggleRecruiting,
+  toggleClassAssignment,
+  toggleRecruitingLevel,
   saveWarmupTitle,
   saveWarmupPrompt,
   createClassWithLevel,
@@ -38,6 +40,8 @@ export type Starter = {
   is_active: boolean;
   signed_url: string | null;
   uploaded_at: string;
+  recruiting_levels: string[];
+  assignments: { class_id: string; is_active: boolean }[];
 };
 
 export type ClassData = {
@@ -48,6 +52,12 @@ export type ClassData = {
   warmup_title: string;
   warmup_prompt: string;
   photos: Starter[];
+};
+
+export type ClassSummary = {
+  id: string;
+  name: string;
+  level: string;
 };
 
 type Level = "beginner" | "intermediate" | "advanced";
@@ -81,9 +91,11 @@ const CAPACITY_OPTIONS = [
 // ─────────────────────────────────────────────────────────────────────────
 export function DeckClient({
   classes,
+  allClasses,
   initialDisplayName,
 }: {
   classes: ClassData[];
+  allClasses: ClassSummary[];
   initialDisplayName?: string;
 }) {
   const [pending, startTransition] = useTransition();
@@ -117,6 +129,7 @@ export function DeckClient({
             levelKey={key}
             levelLabel={label}
             classes={levelClasses}
+            allClasses={allClasses}
             pending={pending}
             startTransition={startTransition}
             onDelete={onDelete}
@@ -134,6 +147,7 @@ function LevelSection({
   levelKey,
   levelLabel,
   classes,
+  allClasses,
   pending,
   startTransition,
   onDelete,
@@ -141,6 +155,7 @@ function LevelSection({
   levelKey: Level;
   levelLabel: string;
   classes: ClassData[];
+  allClasses: ClassSummary[];
   pending: boolean;
   startTransition: (cb: () => void) => void;
   onDelete: (id: string) => void;
@@ -269,6 +284,7 @@ function LevelSection({
             <ClassCard
               key={cls.id}
               classData={cls}
+              allClasses={allClasses}
               pending={pending}
               startTransition={startTransition}
               onDelete={onDelete}
@@ -285,11 +301,13 @@ function LevelSection({
 // ─────────────────────────────────────────────────────────────────────────
 function ClassCard({
   classData,
+  allClasses,
   pending,
   startTransition,
   onDelete,
 }: {
   classData: ClassData;
+  allClasses: ClassSummary[];
   pending: boolean;
   startTransition: (cb: () => void) => void;
   onDelete: (id: string) => void;
@@ -607,6 +625,8 @@ function ClassCard({
                 <StarterCard
                   key={s.id}
                   starter={s}
+                  homeClassId={classData.id}
+                  allClasses={allClasses}
                   pending={pending}
                   onDelete={() => onDelete(s.id)}
                   onSaveResult={setResult}
@@ -626,12 +646,16 @@ function ClassCard({
 // ─────────────────────────────────────────────────────────────────────────
 function StarterCard({
   starter,
+  homeClassId,
+  allClasses,
   pending,
   onDelete,
   onSaveResult,
   startTransition,
 }: {
   starter: Starter;
+  homeClassId: string;
+  allClasses: ClassSummary[];
   pending: boolean;
   onDelete: () => void;
   onSaveResult: (r: UploadResult) => void;
@@ -640,6 +664,13 @@ function StarterCard({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(starter.description_text);
   const inWarmup = starter.is_active;
+
+  // Local state for optimistic UI on assignments and recruiting levels
+  const [localAssignments, setLocalAssignments] = useState(starter.assignments);
+  const [localRecruitingLevels, setLocalRecruitingLevels] = useState(starter.recruiting_levels);
+
+  const assignedClassIds = new Set(localAssignments.map((a) => a.class_id));
+  const otherClasses = allClasses.filter((c) => c.id !== homeClassId);
 
   const saveEdit = () => {
     const trimmed = draft.trim();
@@ -655,6 +686,32 @@ function StarterCard({
   const onToggleWarmup = () => {
     startTransition(async () => {
       const r = await toggleInWarmup(starter.id, !inWarmup);
+      onSaveResult(r);
+    });
+  };
+
+  const onToggleClass = (classId: string) => {
+    // Optimistic update
+    if (assignedClassIds.has(classId)) {
+      setLocalAssignments((prev) => prev.filter((a) => a.class_id !== classId));
+    } else {
+      setLocalAssignments((prev) => [...prev, { class_id: classId, is_active: true }]);
+    }
+    startTransition(async () => {
+      const r = await toggleClassAssignment(starter.id, classId);
+      onSaveResult(r);
+    });
+  };
+
+  const onToggleRecruitLevel = (level: string) => {
+    // Optimistic update
+    if (localRecruitingLevels.includes(level)) {
+      setLocalRecruitingLevels((prev) => prev.filter((l) => l !== level));
+    } else {
+      setLocalRecruitingLevels((prev) => [...prev, level]);
+    }
+    startTransition(async () => {
+      const r = await toggleRecruitingLevel(starter.id, level);
       onSaveResult(r);
     });
   };
@@ -689,9 +746,73 @@ function StarterCard({
             fontFamily: "inherit", transition: "all 0.15s ease",
           }}
         >
-          {inWarmup ? "In warmup ✓" : "Not in warmup"}
+          {inWarmup ? "Active in class ✓" : "Inactive in class"}
         </button>
       </div>
+
+      {/* ── Recruiting warmup levels ─────────────────────────────── */}
+      <div style={{ padding: "4px 10px", borderTop: `1px solid ${C.panelEdge}22` }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.textFaint, marginBottom: 3,
+          textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Recruiting warmup
+        </div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {LEVELS.map(({ key, label }) => {
+            const isOn = localRecruitingLevels.includes(key);
+            return (
+              <button
+                key={key} type="button" disabled={pending}
+                onClick={() => onToggleRecruitLevel(key)}
+                style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                  border: isOn ? `1.5px solid ${C.recruit}` : `1px solid ${C.panelEdge}`,
+                  background: isOn ? C.recruit + "18" : "transparent",
+                  color: isOn ? C.recruit : C.textFaint,
+                  cursor: pending ? "default" : "pointer",
+                  opacity: pending ? 0.5 : 1,
+                  fontFamily: "inherit", transition: "all 0.12s ease",
+                }}
+              >
+                {label.slice(0, 3)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Class assignments (share to other classes) ────────────── */}
+      {otherClasses.length > 0 && (
+        <div style={{ padding: "4px 10px 6px", borderTop: `1px solid ${C.panelEdge}22` }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textFaint, marginBottom: 3,
+            textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Also in
+          </div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {otherClasses.map((cls) => {
+              const isAssigned = assignedClassIds.has(cls.id);
+              return (
+                <button
+                  key={cls.id} type="button" disabled={pending}
+                  onClick={() => onToggleClass(cls.id)}
+                  style={{
+                    fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999,
+                    border: isAssigned ? `1.5px solid ${C.success}` : `1px solid ${C.panelEdge}`,
+                    background: isAssigned ? C.success + "15" : "transparent",
+                    color: isAssigned ? C.success : C.textFaint,
+                    cursor: pending ? "default" : "pointer",
+                    opacity: pending ? 0.5 : 1,
+                    fontFamily: "inherit", transition: "all 0.12s ease",
+                    maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {isAssigned ? "✓ " : ""}{cls.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div style={{ padding: "6px 10px 10px" }}>
         {editing ? (

@@ -228,20 +228,59 @@ export async function loadClassDeck(): Promise<ClassDeckResult> {
   // ── Load ALL entries for this class in the current round ─────────────
   // B38: also load round 0 starter entries so the warm-up round has tiles.
   // For class rounds (currentRound >= 1): only non-starter entries.
-  // For warm-up (currentRound === 0): only starter entries.
+  // For warm-up (currentRound === 0): starter entries assigned to this class
+  //   via the starter_assignments junction table (supports shared photos).
   const isWarmup = currentRound === 0;
-  const entriesQuery = admin
-    .from("entries")
-    .select("id, student_id, media_url, media_type, uploaded_at, description_text, description_l1, status, round_number, is_starter")
-    .eq("class_id", classId);
+
+  let rawEntries: Array<{
+    id: unknown; student_id: unknown; media_url: unknown; media_type: unknown;
+    uploaded_at: unknown; description_text: unknown; description_l1: unknown;
+    status: unknown; round_number: unknown; is_starter: unknown;
+  }> | null = null;
 
   if (isWarmup) {
-    entriesQuery.eq("is_starter", true);
+    // Session 108: use starter_assignments to support shared starter photos.
+    // 1. Get entry_ids assigned to this class (active only)
+    const { data: assignments } = await admin
+      .from("starter_assignments")
+      .select("entry_id")
+      .eq("class_id", classId)
+      .eq("is_active", true);
+
+    const assignedEntryIds = (assignments || []).map((a) => a.entry_id as string);
+
+    if (assignedEntryIds.length > 0) {
+      // 2. Load the actual entries by id
+      const { data } = await admin
+        .from("entries")
+        .select("id, student_id, media_url, media_type, uploaded_at, description_text, description_l1, status, round_number, is_starter")
+        .in("id", assignedEntryIds)
+        .eq("is_starter", true)
+        .eq("status", "live");
+      rawEntries = data;
+    }
+
+    // Fallback: if no assignments found, try the legacy direct class_id query
+    // (covers cases where the migration backfill hasn't run or entries pre-date
+    // the junction table).
+    if (!rawEntries || rawEntries.length === 0) {
+      const { data } = await admin
+        .from("entries")
+        .select("id, student_id, media_url, media_type, uploaded_at, description_text, description_l1, status, round_number, is_starter")
+        .eq("class_id", classId)
+        .eq("is_starter", true);
+      rawEntries = data;
+    }
   } else {
-    entriesQuery.eq("round_number", currentRound).eq("is_starter", false);
+    const { data } = await admin
+      .from("entries")
+      .select("id, student_id, media_url, media_type, uploaded_at, description_text, description_l1, status, round_number, is_starter")
+      .eq("class_id", classId)
+      .eq("round_number", currentRound)
+      .eq("is_starter", false);
+    rawEntries = data;
   }
 
-  const { data: rawEntries } = await entriesQuery;
   if (!rawEntries || rawEntries.length === 0) {
     return { ok: false, reason: "no-entries", classId };
   }
