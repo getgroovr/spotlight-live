@@ -1,0 +1,45 @@
+# .github/workflows/keepalive.yml
+# Pings Supabase every 3 days so the free-tier project never hits
+# the 7-day inactivity pause. Also runnable by hand from the Actions tab.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_URL       e.g. https://abcdefgh.supabase.co   (no trailing slash)
+#   SUPABASE_ANON_KEY  the anon/public key from Project Settings -> API
+
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: "17 15 */3 * *"   # ~8:17 AM Phoenix time, every 3rd day of the month
+  workflow_dispatch:          # "Run workflow" button for manual testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL or SUPABASE_ANON_KEY secret is missing"
+            exit 1
+          fi
+
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            --retry 3 --retry-delay 10 \
+            "$SUPABASE_URL/rest/v1/admin_settings?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+
+          echo "HTTP $status"
+          cat response.json; echo
+
+          # 2xx = database answered (an empty [] is fine — RLS may hide rows,
+          # but the query still ran, which is what counts as activity).
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::error::Supabase ping failed with HTTP $status (project may be paused)"
+            exit 1
+          fi
