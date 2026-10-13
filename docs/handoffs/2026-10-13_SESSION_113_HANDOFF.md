@@ -58,8 +58,8 @@ These are not preferences to honor when convenient. They are the working agreeme
 
 - [x] **GroovR backed up to GitHub** as `getgroovr/groovr` (it had no git history at all). Done 2026-10-13.
 - [x] **Supabase:** (done 2026-10-13) rename the project's display name `groovr-creator` → `spotlight` (Project Settings → General → Project name). Label only: the project ref `ilctdtppstvmpvuvdqvf`, URL and keys do not change, so `.env.local`, the keep-alive workflow and the app keep working.
-- [ ] **GitHub:** archive `getgroovr/groovr-creator` (Settings → Archive). Read-only, nothing lost.
-- [ ] **Vercel:** delete the stale `groovr-creator` project (it only ever served the May code). When Spotlight is deployed for real, create a new Vercel project named `spotlight` linked to `getgroovr/spotlight-live`.
+- [x] **GitHub:** archived `getgroovr/groovr-creator` (done 2026-10-13). Read-only, nothing lost; Settings → Unarchive undoes it.
+- [x] **Vercel:** deleted the stale `groovr-creator` project (done 2026-10-13; it only ever served the May code). The Vercel account now has no projects. When Spotlight is deployed for real, create a new Vercel project named `spotlight` linked to `getgroovr/spotlight-live`.
 - [ ] **PC:** the `C:\Users\Myked\projects\groovr-creator` folder can be zipped and removed later. Not urgent.
 - Optional, cosmetic: rename repo `spotlight-live` → `spotlight`. GitHub redirects the old name; secrets and Actions move with it. Leave it unless it bothers Mike.
 
